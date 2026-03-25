@@ -361,7 +361,7 @@ export class Controls {
         addSlicerField('slicer-nozzle', 'Nozzle temp', initialSlicerParams.nozzleTempC, '1', '150', '300', (value) => onSlicerParamsChange({ nozzleTempC: value }));
         addSlicerField('slicer-bed', 'Bed temp', initialSlicerParams.bedTempC, '1', '0', '130', (value) => onSlicerParamsChange({ bedTempC: value }));
         addSlicerField('slicer-fan', 'Fan %', initialSlicerParams.fanPercent, '1', '0', '100', (value) => onSlicerParamsChange({ fanPercent: value }));
-        addSlicerField('slicer-flow', 'Flow scalar', initialSlicerParams.extrusionMultiplier, '1', '1', '500', (value) => onSlicerParamsChange({ extrusionMultiplier: value }));
+        addSlicerField('slicer-flow', 'Flow rate', initialSlicerParams.flowRate, '0.01', '0.01', '5.0', (value) => onSlicerParamsChange({ flowRate: value }));
 
         const slicerHint = document.createElement('p');
         slicerHint.className = 'section-caption';

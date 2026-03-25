@@ -23,7 +23,7 @@ export interface VaseSlicerSettings {
     nozzleTempC: number;
     bedTempC: number;
     fanPercent: number;
-    extrusionMultiplier: number;
+    flowRate: number;
 }
 
 export interface ToolpathPoint {
@@ -86,7 +86,7 @@ export class Slicer {
             nozzleTempC: 215,
             bedTempC: 55,
             fanPercent: 100,
-            extrusionMultiplier: 100.0,
+            flowRate: 1.0,
         };
     }
 
@@ -117,7 +117,7 @@ export class Slicer {
         merged.filamentDiameter = clamp(merged.filamentDiameter, 1.0, 3.0);
         merged.printSpeedMmPerMin = clamp(merged.printSpeedMmPerMin, 300, 8000);
         merged.travelSpeedMmPerMin = clamp(merged.travelSpeedMmPerMin, 1000, 15000);
-        merged.extrusionMultiplier = clamp(merged.extrusionMultiplier, 1.0, 500.0);
+        merged.flowRate = clamp(merged.flowRate, 0.01, 5.0);
         if (merged.maxY <= merged.minY) {
             merged.maxY = merged.minY + merged.layerHeight;
         }
@@ -448,7 +448,7 @@ function calculateExtrusionPerMm(settings: VaseSlicerSettings): number {
         : (Math.PI * lineWidth * layerHeight * 0.25);
 
     const filamentArea = Math.PI * Math.pow(settings.filamentDiameter * 0.5, 2);
-    return settings.extrusionMultiplier * (beadArea / filamentArea);
+    return settings.flowRate * (beadArea / filamentArea);
 }
 
 function clamp(value: number, min: number, max: number): number {
