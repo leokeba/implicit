@@ -1,0 +1,11 @@
+{
+  "id": "petg-generic",
+  "name": "Generic PETG",
+  "filamentDiameter": 1.75,
+  "nozzleTempC": 245,
+  "bedTempC": 80,
+  "fanPercent": 40,
+  "flowRate": 1.0,
+  "printSpeedMmPerSec": 30,
+  "travelSpeedMmPerSec": 110
+}

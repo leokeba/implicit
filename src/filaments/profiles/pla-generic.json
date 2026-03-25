@@ -1,0 +1,11 @@
+{
+  "id": "pla-generic",
+  "name": "Generic PLA",
+  "filamentDiameter": 1.75,
+  "nozzleTempC": 215,
+  "bedTempC": 55,
+  "fanPercent": 100,
+  "flowRate": 1.0,
+  "printSpeedMmPerSec": 35,
+  "travelSpeedMmPerSec": 120
+}

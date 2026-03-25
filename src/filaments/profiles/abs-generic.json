@@ -1,0 +1,11 @@
+{
+  "id": "abs-generic",
+  "name": "Generic ABS",
+  "filamentDiameter": 1.75,
+  "nozzleTempC": 250,
+  "bedTempC": 100,
+  "fanPercent": 15,
+  "flowRate": 1.0,
+  "printSpeedMmPerSec": 32,
+  "travelSpeedMmPerSec": 115
+}

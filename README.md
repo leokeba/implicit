@@ -65,6 +65,7 @@ implicit
 
 - Use the controls panel to tune raymarch and viewport parameters.
 - Choose a printer model in the slicer section to apply plate dimensions, max print height, and start/end G-code defaults.
+- Choose a filament profile in the slicer section to apply material temperatures, flow, fan, and speed defaults.
 - Generate vase-mode G-code from the slicer section.
 - Scene edits in src/shaders/scenes/defaultScene.glsl affect both rendering and slicing.
 
@@ -87,6 +88,25 @@ Each file should define one model with this structure:
 
 The `startGcode` and `endGcode` entries can be either arrays of lines or a multiline string.
 The G-code templates support placeholders like `{nozzleTempC}`, `{bedTempC}`, and `{fanPwm}`.
+
+## Filament Profiles
+
+Filament profiles are loaded from JSON files in `src/filaments/profiles/`.
+Each file should define one profile with this structure:
+
+```json
+{
+   "id": "pla-generic",
+   "name": "Generic PLA",
+   "filamentDiameter": 1.75,
+   "nozzleTempC": 215,
+   "bedTempC": 55,
+   "fanPercent": 100,
+   "flowRate": 1.0,
+   "printSpeedMmPerSec": 35,
+   "travelSpeedMmPerSec": 120
+}
+```
 
 ## Contributing
 

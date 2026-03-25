@@ -7,6 +7,8 @@ import {
 export interface VaseSlicerSettings {
     printerModelId: string;
     printerModelName: string;
+    filamentProfileId: string;
+    filamentProfileName: string;
     minY: number;
     maxY: number;
     modelScale: number;
@@ -77,6 +79,8 @@ export class Slicer {
         return {
             printerModelId: 'generic-220',
             printerModelName: 'Generic 220 x 220',
+            filamentProfileId: 'pla-generic',
+            filamentProfileName: 'Generic PLA',
             minY: -1,
             maxY: 1,
             modelScale: 50,
@@ -286,6 +290,7 @@ export class Slicer {
         lines.push(`; Points per layer: ${toolpath.pointsPerLayer}`);
         lines.push(`; Model scale (mm/SDF-unit): ${settings.modelScale.toFixed(2)}`);
         lines.push(`; Printer: ${settings.printerModelName} (${settings.printerModelId})`);
+        lines.push(`; Filament: ${settings.filamentProfileName} (${settings.filamentProfileId})`);
         lines.push(`; Bed size (mm): ${settings.bedWidthMm.toFixed(1)} x ${settings.bedDepthMm.toFixed(1)}`);
         lines.push(`; Max print height (mm): ${settings.maxPrintHeightMm.toFixed(1)}`);
         lines.push(`; Nozzle diameter (mm): ${settings.nozzleDiameter.toFixed(2)}`);
@@ -596,7 +601,7 @@ function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSet
         '; printer_model = Bambu Lab P1S',
         '; printer_settings_id = Bambu Lab P1S 0.4 nozzle',
         '; print_settings_id = Implicit Vase Mode',
-        '; filament_settings_id = Generic PLA',
+        `; filament_settings_id = ${settings.filamentProfileName}`,
         '; printer_structure = corexy',
         '; printer_technology = FFF',
         '; printer_variant = 0.4',

@@ -1,5 +1,6 @@
 import { Controls } from './ui/controls';
 import { Preview } from './ui/preview';
+import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
 import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
 import Renderer from './core/renderer';
 import { Slicer, type ToolpathPoint, type VaseSlicerSettings } from './core/slicer';
@@ -11,6 +12,7 @@ class ImplicitSurfaceStudio {
     private preview: Preview;
     private slicerSettings: VaseSlicerSettings;
     private printerModels: PrinterModel[];
+    private filamentProfiles: FilamentProfile[];
 
     constructor() {
         this.renderer = new Renderer();
@@ -19,9 +21,13 @@ class ImplicitSurfaceStudio {
         this.preview = new Preview();
         this.slicerSettings = this.slicer.getDefaultVaseSettings();
         this.printerModels = loadPrinterModels();
+        this.filamentProfiles = loadFilamentProfiles();
 
         if (this.printerModels.length > 0) {
             this.slicerSettings = applyPrinterModel(this.slicerSettings, this.printerModels[0]);
+        }
+        if (this.filamentProfiles.length > 0) {
+            this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
         }
     }
 
@@ -50,6 +56,17 @@ class ImplicitSurfaceStudio {
                 }
 
                 this.slicerSettings = applyPrinterModel(this.slicerSettings, nextModel);
+                return this.slicerSettings;
+            },
+            this.filamentProfiles,
+            this.slicerSettings.filamentProfileId,
+            (filamentProfileId) => {
+                const nextProfile = this.filamentProfiles.find((profile) => profile.id === filamentProfileId);
+                if (!nextProfile) {
+                    return this.slicerSettings;
+                }
+
+                this.slicerSettings = applyFilamentProfile(this.slicerSettings, nextProfile);
                 return this.slicerSettings;
             },
             this.slicerSettings,

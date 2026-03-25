@@ -1,5 +1,6 @@
 import type { RaymarchParams, ViewportParams } from '../core/renderer';
 
+import type { FilamentProfile } from '../core/filament-profiles';
 import type { PrinterModel } from '../core/printer-models';
 import type { VaseSlicerSettings } from '../core/slicer';
 
@@ -14,6 +15,9 @@ export class Controls {
         printerModels: PrinterModel[],
         currentPrinterModelId: string,
         onPrinterModelChange: (printerModelId: string) => VaseSlicerSettings,
+        filamentProfiles: FilamentProfile[],
+        currentFilamentProfileId: string,
+        onFilamentProfileChange: (filamentProfileId: string) => VaseSlicerSettings,
         initialSlicerParams: VaseSlicerSettings,
         onSlicerParamsChange: (next: Partial<VaseSlicerSettings>) => void,
         onGenerateVaseGcode: () => { filename: string; bytes: number; points: number }
@@ -344,6 +348,32 @@ export class Controls {
         printerFieldRow.appendChild(printerSelect);
         slicerGrid.appendChild(printerFieldRow);
 
+        const filamentFieldLabel = document.createElement('label');
+        filamentFieldLabel.htmlFor = 'slicer-filament-profile';
+        filamentFieldLabel.textContent = 'Filament profile';
+
+        const filamentFieldRow = document.createElement('div');
+        filamentFieldRow.className = 'field-row';
+
+        const filamentSelect = document.createElement('select');
+        filamentSelect.id = 'slicer-filament-profile';
+
+        for (const profile of filamentProfiles) {
+            const option = document.createElement('option');
+            option.value = profile.id;
+            option.text = profile.name;
+            filamentSelect.appendChild(option);
+        }
+
+        if (filamentProfiles.length > 0) {
+            const hasCurrent = filamentProfiles.some((profile) => profile.id === currentFilamentProfileId);
+            filamentSelect.value = hasCurrent ? currentFilamentProfileId : filamentProfiles[0].id;
+        }
+
+        filamentFieldRow.appendChild(filamentFieldLabel);
+        filamentFieldRow.appendChild(filamentSelect);
+        slicerGrid.appendChild(filamentFieldRow);
+
         const syncSlicerUiFromSettings = (next: VaseSlicerSettings): void => {
             for (const key of Object.keys(slicerNumericInputs) as Array<keyof VaseSlicerSettings>) {
                 const input = slicerNumericInputs[key];
@@ -364,10 +394,16 @@ export class Controls {
             }
 
             printerSelect.value = next.printerModelId;
+            filamentSelect.value = next.filamentProfileId;
         };
 
         printerSelect.addEventListener('change', () => {
             const next = onPrinterModelChange(printerSelect.value);
+            syncSlicerUiFromSettings(next);
+        });
+
+        filamentSelect.addEventListener('change', () => {
+            const next = onFilamentProfileChange(filamentSelect.value);
             syncSlicerUiFromSettings(next);
         });
 
