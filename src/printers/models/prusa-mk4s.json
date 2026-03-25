@@ -1,0 +1,27 @@
+{
+  "id": "prusa-mk4s",
+  "name": "Prusa MK4S",
+  "plateWidthMm": 250,
+  "plateDepthMm": 210,
+  "maxHeightMm": 220,
+  "startGcode": [
+    "G90",
+    "M83",
+    "G21",
+    "M104 S{nozzleTempC}",
+    "M140 S{bedTempC}",
+    "M190 S{bedTempC}",
+    "M109 S{nozzleTempC}",
+    "G28",
+    "G92 E0",
+    "M106 S{fanPwm}"
+  ],
+  "endGcode": [
+    "M104 S0",
+    "M140 S0",
+    "M107",
+    "G90",
+    "G1 X0 Y210 F6000",
+    "M84"
+  ]
+}

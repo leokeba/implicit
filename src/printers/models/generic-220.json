@@ -1,0 +1,25 @@
+{
+  "id": "generic-220",
+  "name": "Generic Cartesian 220x220",
+  "plateWidthMm": 220,
+  "plateDepthMm": 220,
+  "maxHeightMm": 250,
+  "startGcode": [
+    "G90",
+    "M82",
+    "G21",
+    "M104 S{nozzleTempC}",
+    "M140 S{bedTempC}",
+    "M190 S{bedTempC}",
+    "M109 S{nozzleTempC}",
+    "G28",
+    "G92 E0",
+    "M106 S{fanPwm}"
+  ],
+  "endGcode": [
+    "M104 S0",
+    "M140 S0",
+    "M107",
+    "M84"
+  ]
+}

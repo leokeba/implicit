@@ -264,6 +264,37 @@ select:focus {
   background: #fcfff9;
 }
 
+textarea {
+  width: 100%;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 0.84rem;
+  line-height: 1.4;
+  padding: 8px 9px;
+  resize: vertical;
+  min-height: 96px;
+  font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+}
+
+textarea:hover {
+  border-color: var(--line-strong);
+}
+
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--glow);
+  background: #fcfff9;
+}
+
+.field-row-textarea {
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
 .section-caption {
   margin: 2px 0 0;
   color: var(--ink-muted);
@@ -361,8 +392,13 @@ select:focus {
   }
 
   input,
-  select {
+  select,
+  textarea {
     height: 36px;
     font-size: 0.95rem;
+  }
+
+  textarea {
+    min-height: 120px;
   }
 }

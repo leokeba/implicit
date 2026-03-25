@@ -1,5 +1,6 @@
 import { Controls } from './ui/controls';
 import { Preview } from './ui/preview';
+import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
 import Renderer from './core/renderer';
 import { Slicer, type ToolpathPoint, type VaseSlicerSettings } from './core/slicer';
 
@@ -9,6 +10,7 @@ class ImplicitSurfaceStudio {
     private controls: Controls;
     private preview: Preview;
     private slicerSettings: VaseSlicerSettings;
+    private printerModels: PrinterModel[];
 
     constructor() {
         this.renderer = new Renderer();
@@ -16,6 +18,11 @@ class ImplicitSurfaceStudio {
         this.controls = new Controls();
         this.preview = new Preview();
         this.slicerSettings = this.slicer.getDefaultVaseSettings();
+        this.printerModels = loadPrinterModels();
+
+        if (this.printerModels.length > 0) {
+            this.slicerSettings = applyPrinterModel(this.slicerSettings, this.printerModels[0]);
+        }
     }
 
     public init(): void {
@@ -33,6 +40,17 @@ class ImplicitSurfaceStudio {
             this.renderer.getViewportParams(),
             (next) => {
                 this.renderer.updateViewportParams(next);
+            },
+            this.printerModels,
+            this.slicerSettings.printerModelId,
+            (printerModelId) => {
+                const nextModel = this.printerModels.find((model) => model.id === printerModelId);
+                if (!nextModel) {
+                    return this.slicerSettings;
+                }
+
+                this.slicerSettings = applyPrinterModel(this.slicerSettings, nextModel);
+                return this.slicerSettings;
             },
             this.slicerSettings,
             (next) => {
@@ -78,7 +96,8 @@ class ImplicitSurfaceStudio {
 
     private buildSlicerFilename(): string {
         const stamp = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '');
-        return `implicit-vase-${stamp}.gcode`;
+        const printerSlug = this.slicerSettings.printerModelId.replace(/[^a-zA-Z0-9-]+/g, '-').toLowerCase();
+        return `implicit-vase-${printerSlug}-${stamp}.gcode`;
     }
 
     private downloadTextFile(filename: string, text: string): void {

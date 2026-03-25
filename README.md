@@ -64,8 +64,29 @@ implicit
 ## Usage
 
 - Use the controls panel to tune raymarch and viewport parameters.
+- Choose a printer model in the slicer section to apply plate dimensions, max print height, and start/end G-code defaults.
 - Generate vase-mode G-code from the slicer section.
 - Scene edits in src/shaders/scenes/defaultScene.glsl affect both rendering and slicing.
+
+## Printer Models
+
+Printer models are loaded from JSON files in `src/printers/models/`.
+Each file should define one model with this structure:
+
+```json
+{
+   "id": "generic-220",
+   "name": "Generic Cartesian 220x220",
+   "plateWidthMm": 220,
+   "plateDepthMm": 220,
+   "maxHeightMm": 250,
+   "startGcode": ["G90", "M82"],
+   "endGcode": ["M104 S0", "M84"]
+}
+```
+
+The `startGcode` and `endGcode` entries can be either arrays of lines or a multiline string.
+The G-code templates support placeholders like `{nozzleTempC}`, `{bedTempC}`, and `{fanPwm}`.
 
 ## Contributing
 

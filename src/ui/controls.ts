@@ -1,5 +1,6 @@
 import type { RaymarchParams, ViewportParams } from '../core/renderer';
 
+import type { PrinterModel } from '../core/printer-models';
 import type { VaseSlicerSettings } from '../core/slicer';
 
 export class Controls {
@@ -10,6 +11,9 @@ export class Controls {
         onRaymarchParamsChange: (next: Partial<RaymarchParams>) => void,
         initialViewportParams: ViewportParams,
         onViewportParamsChange: (next: Partial<ViewportParams>) => void,
+        printerModels: PrinterModel[],
+        currentPrinterModelId: string,
+        onPrinterModelChange: (printerModelId: string) => VaseSlicerSettings,
         initialSlicerParams: VaseSlicerSettings,
         onSlicerParamsChange: (next: Partial<VaseSlicerSettings>) => void,
         onGenerateVaseGcode: () => { filename: string; bytes: number; points: number }
@@ -311,7 +315,64 @@ export class Controls {
         const slicerGrid = document.createElement('div');
         slicerGrid.className = 'field-grid';
 
+        const slicerNumericInputs: Partial<Record<keyof VaseSlicerSettings, HTMLInputElement>> = {};
+        const slicerTextInputs: Partial<Record<keyof VaseSlicerSettings, HTMLTextAreaElement>> = {};
+
+        const printerFieldLabel = document.createElement('label');
+        printerFieldLabel.htmlFor = 'slicer-printer-model';
+        printerFieldLabel.textContent = 'Printer model';
+
+        const printerFieldRow = document.createElement('div');
+        printerFieldRow.className = 'field-row';
+
+        const printerSelect = document.createElement('select');
+        printerSelect.id = 'slicer-printer-model';
+
+        for (const model of printerModels) {
+            const option = document.createElement('option');
+            option.value = model.id;
+            option.text = model.name;
+            printerSelect.appendChild(option);
+        }
+
+        if (printerModels.length > 0) {
+            const hasCurrent = printerModels.some((model) => model.id === currentPrinterModelId);
+            printerSelect.value = hasCurrent ? currentPrinterModelId : printerModels[0].id;
+        }
+
+        printerFieldRow.appendChild(printerFieldLabel);
+        printerFieldRow.appendChild(printerSelect);
+        slicerGrid.appendChild(printerFieldRow);
+
+        const syncSlicerUiFromSettings = (next: VaseSlicerSettings): void => {
+            for (const key of Object.keys(slicerNumericInputs) as Array<keyof VaseSlicerSettings>) {
+                const input = slicerNumericInputs[key];
+                const value = next[key];
+                if (!input || typeof value !== 'number') {
+                    continue;
+                }
+                input.value = String(value);
+            }
+
+            for (const key of Object.keys(slicerTextInputs) as Array<keyof VaseSlicerSettings>) {
+                const input = slicerTextInputs[key];
+                const value = next[key];
+                if (!input || typeof value !== 'string') {
+                    continue;
+                }
+                input.value = value;
+            }
+
+            printerSelect.value = next.printerModelId;
+        };
+
+        printerSelect.addEventListener('change', () => {
+            const next = onPrinterModelChange(printerSelect.value);
+            syncSlicerUiFromSettings(next);
+        });
+
         const addSlicerField = (
+            key: keyof VaseSlicerSettings,
             id: string,
             label: string,
             value: number,
@@ -337,35 +398,71 @@ export class Controls {
             fieldInput.addEventListener('change', () => {
                 onChange(Number(fieldInput.value));
             });
+            slicerNumericInputs[key] = fieldInput;
 
             fieldRow.appendChild(fieldLabel);
             fieldRow.appendChild(fieldInput);
             slicerGrid.appendChild(fieldRow);
         };
 
-        addSlicerField('slicer-min-y', 'Min Y (SDF)', initialSlicerParams.minY, '0.01', '-5.0', '5.0', (value) => onSlicerParamsChange({ minY: value }));
-        addSlicerField('slicer-max-y', 'Max Y (SDF)', initialSlicerParams.maxY, '0.01', '-5.0', '5.0', (value) => onSlicerParamsChange({ maxY: value }));
-        addSlicerField('slicer-model-scale', 'Scale (mm/unit)', initialSlicerParams.modelScale, '1', '1', '400', (value) => onSlicerParamsChange({ modelScale: value }));
-        addSlicerField('slicer-nozzle-diameter', 'Nozzle dia', initialSlicerParams.nozzleDiameter, '0.01', '0.2', '1.2', (value) => onSlicerParamsChange({ nozzleDiameter: value }));
-        addSlicerField('slicer-layer-height', 'Layer height', initialSlicerParams.layerHeight, '0.01', '0.05', '1.0', (value) => onSlicerParamsChange({ layerHeight: value }));
-        addSlicerField('slicer-points', 'Points/layer', initialSlicerParams.pointsPerLayer, '1', '48', '2048', (value) => onSlicerParamsChange({ pointsPerLayer: value }));
-        addSlicerField('slicer-max-radius', 'Max radius', initialSlicerParams.maxRadius, '0.01', '0.1', '3.0', (value) => onSlicerParamsChange({ maxRadius: value }));
-        addSlicerField('slicer-radial-steps', 'Radial steps', initialSlicerParams.radialSteps, '1', '32', '512', (value) => onSlicerParamsChange({ radialSteps: value }));
-        addSlicerField('slicer-hit-eps', 'Hit epsilon', initialSlicerParams.hitEpsilon, '0.0001', '0.0001', '0.02', (value) => onSlicerParamsChange({ hitEpsilon: value }));
-        addSlicerField('slicer-center-x', 'Bed center X', initialSlicerParams.centerX, '0.1', '0', '400', (value) => onSlicerParamsChange({ centerX: value }));
-        addSlicerField('slicer-center-z', 'Bed center Y', initialSlicerParams.centerZ, '0.1', '0', '400', (value) => onSlicerParamsChange({ centerZ: value }));
-        addSlicerField('slicer-line-width', 'Line width', initialSlicerParams.lineWidth, '0.01', '0.2', '1.2', (value) => onSlicerParamsChange({ lineWidth: value }));
-        addSlicerField('slicer-filament', 'Filament dia', initialSlicerParams.filamentDiameter, '0.01', '1.0', '3.0', (value) => onSlicerParamsChange({ filamentDiameter: value }));
-        addSlicerField('slicer-print-speed', 'Print speed (mm/s)', initialSlicerParams.printSpeedMmPerSec, '1', '5', '200', (value) => onSlicerParamsChange({ printSpeedMmPerSec: value }));
-        addSlicerField('slicer-travel-speed', 'Travel speed (mm/s)', initialSlicerParams.travelSpeedMmPerSec, '1', '10', '300', (value) => onSlicerParamsChange({ travelSpeedMmPerSec: value }));
-        addSlicerField('slicer-nozzle', 'Nozzle temp', initialSlicerParams.nozzleTempC, '1', '150', '300', (value) => onSlicerParamsChange({ nozzleTempC: value }));
-        addSlicerField('slicer-bed', 'Bed temp', initialSlicerParams.bedTempC, '1', '0', '130', (value) => onSlicerParamsChange({ bedTempC: value }));
-        addSlicerField('slicer-fan', 'Fan %', initialSlicerParams.fanPercent, '1', '0', '100', (value) => onSlicerParamsChange({ fanPercent: value }));
-        addSlicerField('slicer-flow', 'Flow rate', initialSlicerParams.flowRate, '0.01', '0.01', '5.0', (value) => onSlicerParamsChange({ flowRate: value }));
+        const addSlicerTextField = (
+            key: keyof VaseSlicerSettings,
+            id: string,
+            label: string,
+            value: string,
+            onChange: (value: string) => void
+        ): void => {
+            const fieldLabel = document.createElement('label');
+            fieldLabel.htmlFor = id;
+            fieldLabel.textContent = label;
+
+            const fieldRow = document.createElement('div');
+            fieldRow.className = 'field-row field-row-textarea';
+
+            const fieldInput = document.createElement('textarea');
+            fieldInput.id = id;
+            fieldInput.value = value;
+            fieldInput.rows = 5;
+            fieldInput.addEventListener('change', () => {
+                onChange(fieldInput.value);
+            });
+            slicerTextInputs[key] = fieldInput;
+
+            fieldRow.appendChild(fieldLabel);
+            fieldRow.appendChild(fieldInput);
+            slicerGrid.appendChild(fieldRow);
+        };
+
+        addSlicerField('minY', 'slicer-min-y', 'Min Y (SDF)', initialSlicerParams.minY, '0.01', '-5.0', '5.0', (value) => onSlicerParamsChange({ minY: value }));
+        addSlicerField('maxY', 'slicer-max-y', 'Max Y (SDF)', initialSlicerParams.maxY, '0.01', '-5.0', '5.0', (value) => onSlicerParamsChange({ maxY: value }));
+        addSlicerField('modelScale', 'slicer-model-scale', 'Scale (mm/unit)', initialSlicerParams.modelScale, '1', '1', '400', (value) => onSlicerParamsChange({ modelScale: value }));
+        addSlicerField('bedWidthMm', 'slicer-bed-width', 'Bed width (mm)', initialSlicerParams.bedWidthMm, '1', '50', '1000', (value) => onSlicerParamsChange({ bedWidthMm: value }));
+        addSlicerField('bedDepthMm', 'slicer-bed-depth', 'Bed depth (mm)', initialSlicerParams.bedDepthMm, '1', '50', '1000', (value) => onSlicerParamsChange({ bedDepthMm: value }));
+        addSlicerField('maxPrintHeightMm', 'slicer-max-print-height', 'Max height (mm)', initialSlicerParams.maxPrintHeightMm, '1', '10', '1000', (value) => onSlicerParamsChange({ maxPrintHeightMm: value }));
+        addSlicerField('nozzleDiameter', 'slicer-nozzle-diameter', 'Nozzle dia', initialSlicerParams.nozzleDiameter, '0.01', '0.2', '1.2', (value) => onSlicerParamsChange({ nozzleDiameter: value }));
+        addSlicerField('layerHeight', 'slicer-layer-height', 'Layer height', initialSlicerParams.layerHeight, '0.01', '0.05', '1.0', (value) => onSlicerParamsChange({ layerHeight: value }));
+        addSlicerField('pointsPerLayer', 'slicer-points', 'Points/layer', initialSlicerParams.pointsPerLayer, '1', '48', '2048', (value) => onSlicerParamsChange({ pointsPerLayer: value }));
+        addSlicerField('maxRadius', 'slicer-max-radius', 'Max radius', initialSlicerParams.maxRadius, '0.01', '0.1', '3.0', (value) => onSlicerParamsChange({ maxRadius: value }));
+        addSlicerField('radialSteps', 'slicer-radial-steps', 'Radial steps', initialSlicerParams.radialSteps, '1', '32', '512', (value) => onSlicerParamsChange({ radialSteps: value }));
+        addSlicerField('hitEpsilon', 'slicer-hit-eps', 'Hit epsilon', initialSlicerParams.hitEpsilon, '0.0001', '0.0001', '0.02', (value) => onSlicerParamsChange({ hitEpsilon: value }));
+        addSlicerField('centerX', 'slicer-center-x', 'Bed center X', initialSlicerParams.centerX, '0.1', '0', '400', (value) => onSlicerParamsChange({ centerX: value }));
+        addSlicerField('centerZ', 'slicer-center-z', 'Bed center Y', initialSlicerParams.centerZ, '0.1', '0', '400', (value) => onSlicerParamsChange({ centerZ: value }));
+        addSlicerField('lineWidth', 'slicer-line-width', 'Line width', initialSlicerParams.lineWidth, '0.01', '0.2', '1.2', (value) => onSlicerParamsChange({ lineWidth: value }));
+        addSlicerField('filamentDiameter', 'slicer-filament', 'Filament dia', initialSlicerParams.filamentDiameter, '0.01', '1.0', '3.0', (value) => onSlicerParamsChange({ filamentDiameter: value }));
+        addSlicerField('printSpeedMmPerSec', 'slicer-print-speed', 'Print speed (mm/s)', initialSlicerParams.printSpeedMmPerSec, '1', '5', '200', (value) => onSlicerParamsChange({ printSpeedMmPerSec: value }));
+        addSlicerField('travelSpeedMmPerSec', 'slicer-travel-speed', 'Travel speed (mm/s)', initialSlicerParams.travelSpeedMmPerSec, '1', '10', '300', (value) => onSlicerParamsChange({ travelSpeedMmPerSec: value }));
+        addSlicerField('nozzleTempC', 'slicer-nozzle', 'Nozzle temp', initialSlicerParams.nozzleTempC, '1', '150', '300', (value) => onSlicerParamsChange({ nozzleTempC: value }));
+        addSlicerField('bedTempC', 'slicer-bed', 'Bed temp', initialSlicerParams.bedTempC, '1', '0', '130', (value) => onSlicerParamsChange({ bedTempC: value }));
+        addSlicerField('fanPercent', 'slicer-fan', 'Fan %', initialSlicerParams.fanPercent, '1', '0', '100', (value) => onSlicerParamsChange({ fanPercent: value }));
+        addSlicerField('flowRate', 'slicer-flow', 'Flow rate', initialSlicerParams.flowRate, '0.01', '0.01', '5.0', (value) => onSlicerParamsChange({ flowRate: value }));
+        addSlicerTextField('startGcode', 'slicer-start-gcode', 'Start G-code', initialSlicerParams.startGcode, (value) => onSlicerParamsChange({ startGcode: value }));
+        addSlicerTextField('endGcode', 'slicer-end-gcode', 'End G-code', initialSlicerParams.endGcode, (value) => onSlicerParamsChange({ endGcode: value }));
 
         const slicerHint = document.createElement('p');
         slicerHint.className = 'section-caption';
-        slicerHint.textContent = 'Generates a spiral vase contour using GPU radius sampling and exports .gcode.';
+        slicerHint.textContent = 'Generates a spiral vase contour using GPU radius sampling and exports .gcode. Start/end templates support {nozzleTempC}, {bedTempC}, and {fanPwm}.';
+
+        syncSlicerUiFromSettings(initialSlicerParams);
 
         const slicerActions = document.createElement('div');
         slicerActions.className = 'action-row';
