@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1.0">
+		<title>Implicit</title>
+		<link rel="icon" href="data:,">
+		<link rel="stylesheet" href="/styles.css">
+	</head>
+	<body>
+		<div id="app">
+			<header class="app-header">
+				<div>
+					<p class="kicker">Realtime Raymarching Lab</p>
+					<h1>Implicit</h1>
+					<p class="subtitle">Tune rendering and camera behavior while orbiting the scene in realtime.</p>
+					<div id="shader-status" class="shader-status shader-status-ready" role="status" aria-live="polite">Shader: Ready</div>
+				</div>
+			</header>
+			<main class="layout">
+				<section id="preview" aria-label="Surface preview"></section>
+				<aside id="controls" aria-label="Render controls"></aside>
+			</main>
+		</div>
+		<script type="module" src="/src/main.ts"></script>
+	</body>
+</html>

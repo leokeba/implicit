@@ -1,0 +1,24 @@
+{
+  "name": "implicit",
+  "version": "1.0.0",
+  "description": "A browser-based application for designing, previewing, and slicing implicit surfaces using GPU-accelerated shaders.",
+  "main": "src/main.ts",
+  "scripts": {
+    "build": "vite build",
+    "serve": "vite",
+    "dev": "vite"
+  },
+  "keywords": [
+    "implicit surfaces",
+    "GPU",
+    "shaders",
+    "3D rendering"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^4.5.4",
+    "vite": "^2.6.4"
+  }
+}
