@@ -20,16 +20,13 @@ interface PrinterModelFile {
     endGcode?: unknown;
 }
 
-const printerModelRawModules = import.meta.glob('../printers/models/*.json', {
-    eager: true,
-    as: 'raw',
-}) as Record<string, string>;
+const printerModelModules = import.meta.globEager('../printers/models/*.json') as Record<string, unknown>;
 
 export function loadPrinterModels(): PrinterModel[] {
     const models: PrinterModel[] = [];
 
-    for (const [path, raw] of Object.entries(printerModelRawModules)) {
-        const parsed = safeParsePrinterModel(path, raw);
+    for (const [path, moduleValue] of Object.entries(printerModelModules)) {
+        const parsed = safeParsePrinterModel(path, moduleValue);
         if (!parsed) {
             continue;
         }
@@ -58,14 +55,8 @@ export function applyPrinterModel(
     };
 }
 
-function safeParsePrinterModel(path: string, raw: string): PrinterModel | null {
-    let value: unknown;
-    try {
-        value = JSON.parse(raw);
-    } catch (error) {
-        console.warn(`Skipping invalid printer model JSON: ${path}`, error);
-        return null;
-    }
+function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel | null {
+    const value = extractModuleData(moduleValue);
 
     if (!value || typeof value !== 'object') {
         console.warn(`Skipping malformed printer model object: ${path}`);
@@ -96,6 +87,15 @@ function safeParsePrinterModel(path: string, raw: string): PrinterModel | null {
         startGcode,
         endGcode,
     };
+}
+
+function extractModuleData(moduleValue: unknown): unknown {
+    if (!moduleValue || typeof moduleValue !== 'object') {
+        return moduleValue;
+    }
+
+    const withDefault = moduleValue as { default?: unknown };
+    return withDefault.default ?? moduleValue;
 }
 
 function toFiniteNumber(value: unknown): number {

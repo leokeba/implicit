@@ -24,16 +24,13 @@ interface FilamentProfileFile {
     travelSpeedMmPerSec?: unknown;
 }
 
-const filamentProfileRawModules = import.meta.glob('../filaments/profiles/*.json', {
-    eager: true,
-    as: 'raw',
-}) as Record<string, string>;
+const filamentProfileModules = import.meta.globEager('../filaments/profiles/*.json') as Record<string, unknown>;
 
 export function loadFilamentProfiles(): FilamentProfile[] {
     const profiles: FilamentProfile[] = [];
 
-    for (const [path, raw] of Object.entries(filamentProfileRawModules)) {
-        const parsed = safeParseFilamentProfile(path, raw);
+    for (const [path, moduleValue] of Object.entries(filamentProfileModules)) {
+        const parsed = safeParseFilamentProfile(path, moduleValue);
         if (!parsed) {
             continue;
         }
@@ -62,14 +59,8 @@ export function applyFilamentProfile(
     };
 }
 
-function safeParseFilamentProfile(path: string, raw: string): FilamentProfile | null {
-    let value: unknown;
-    try {
-        value = JSON.parse(raw);
-    } catch (error) {
-        console.warn(`Skipping invalid filament profile JSON: ${path}`, error);
-        return null;
-    }
+function safeParseFilamentProfile(path: string, moduleValue: unknown): FilamentProfile | null {
+    const value = extractModuleData(moduleValue);
 
     if (!value || typeof value !== 'object') {
         console.warn(`Skipping malformed filament profile object: ${path}`);
@@ -108,4 +99,13 @@ function safeParseFilamentProfile(path: string, raw: string): FilamentProfile | 
 
 function toFiniteNumber(value: unknown): number {
     return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function extractModuleData(moduleValue: unknown): unknown {
+    if (!moduleValue || typeof moduleValue !== 'object') {
+        return moduleValue;
+    }
+
+    const withDefault = moduleValue as { default?: unknown };
+    return withDefault.default ?? moduleValue;
 }
