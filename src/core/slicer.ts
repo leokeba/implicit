@@ -68,18 +68,18 @@ export class Slicer {
 
     public getDefaultVaseSettings(): VaseSlicerSettings {
         return {
-            minY: -1.45,
-            maxY: 1.45,
-            modelScale: 45,
+            minY: -1,
+            maxY: 1,
+            modelScale: 50,
             nozzleDiameter: 0.4,
-            layerHeight: 0.22,
+            layerHeight: 0.2,
             pointsPerLayer: 640,
-            maxRadius: 0.75,
-            radialSteps: 192,
+            maxRadius: 1.1,
+            radialSteps: 640,
             hitEpsilon: 0.0014,
             centerX: 110,
             centerZ: 110,
-            lineWidth: 0.44,
+            lineWidth: 0.42,
             filamentDiameter: 1.75,
             printSpeedMmPerSec: 35,
             travelSpeedMmPerSec: 120,
@@ -211,6 +211,7 @@ export class Slicer {
             const nextLayer = Math.min(layer + 1, layers - 1);
             const k = i % perLayer;
             const frac = k / perLayer;
+            const globalProgress = i / Math.max(1, totalPoints - 1);
 
             const angle = (k / perLayer) * Math.PI * 2.0;
 
@@ -221,7 +222,7 @@ export class Slicer {
 
             const x = settings.centerX + Math.cos(angle) * radius;
             const z = settings.centerZ + Math.sin(angle) * radius;
-            const y = ((layer + frac) / Math.max(1, layers - 1)) * modelHeightMm;
+            const y = globalProgress * modelHeightMm;
 
             if (i > 0) {
                 const segment = Math.hypot(x - prevX, y - prevY, z - prevZ);
@@ -279,19 +280,38 @@ export class Slicer {
         lines.push('G28');
         lines.push('G92 E0');
         lines.push(`M106 S${Math.round((settings.fanPercent / 100) * 255)}`);
+        lines.push('; FEATURE: Travel');
         lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(0.2, p0.y).toFixed(3)}`);
         lines.push('G1 F900 E1.2000');
         lines.push('G92 E0');
 
+        let currentLayer = 0;
+        lines.push(';LAYER_CHANGE');
+        lines.push(';LAYER:0');
+        lines.push(`;Z:${Math.max(0.0, p0.y).toFixed(3)}`);
+        lines.push('; FEATURE: Outer wall');
+        lines.push(';TYPE:Outer wall');
+
         for (let i = 1; i < toolpath.points.length; i++) {
             const point = toolpath.points[i];
+            const layer = Math.floor(i / toolpath.pointsPerLayer);
+            if (layer !== currentLayer) {
+                currentLayer = layer;
+                lines.push(';LAYER_CHANGE');
+                lines.push(`;LAYER:${layer}`);
+                lines.push(`;Z:${Math.max(0.0, point.y).toFixed(3)}`);
+                lines.push('; FEATURE: Outer wall');
+                lines.push(';TYPE:Outer wall');
+            }
+
             lines.push(
                 `G1 F${mmPerSecToFeedrate(point.speedMmPerSec).toFixed(0)} X${point.x.toFixed(3)} Y${point.z.toFixed(3)} Z${Math.max(0.0, point.y).toFixed(3)} E${point.e.toFixed(5)}`
             );
         }
 
         lines.push('G1 F1200 E' + Math.max(0, toolpath.points[toolpath.points.length - 1].e - 1.2).toFixed(5));
-        lines.push('G0 F6000 Z' + (toolpath.estimatedHeight + 8.0).toFixed(3));
+        lines.push('; FEATURE: Travel');
+        lines.push('G0 F6000 Z' + Math.max(0.0, toolpath.points[toolpath.points.length - 1].y).toFixed(3));
         lines.push('M104 S0');
         lines.push('M140 S0');
         lines.push('M107');
