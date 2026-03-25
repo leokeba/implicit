@@ -356,8 +356,8 @@ export class Controls {
         addSlicerField('slicer-center-z', 'Bed center Y', initialSlicerParams.centerZ, '0.1', '0', '400', (value) => onSlicerParamsChange({ centerZ: value }));
         addSlicerField('slicer-line-width', 'Line width', initialSlicerParams.lineWidth, '0.01', '0.2', '1.2', (value) => onSlicerParamsChange({ lineWidth: value }));
         addSlicerField('slicer-filament', 'Filament dia', initialSlicerParams.filamentDiameter, '0.01', '1.0', '3.0', (value) => onSlicerParamsChange({ filamentDiameter: value }));
-        addSlicerField('slicer-print-speed', 'Print speed', initialSlicerParams.printSpeedMmPerMin, '10', '300', '8000', (value) => onSlicerParamsChange({ printSpeedMmPerMin: value }));
-        addSlicerField('slicer-travel-speed', 'Travel speed', initialSlicerParams.travelSpeedMmPerMin, '10', '1000', '15000', (value) => onSlicerParamsChange({ travelSpeedMmPerMin: value }));
+        addSlicerField('slicer-print-speed', 'Print speed (mm/s)', initialSlicerParams.printSpeedMmPerSec, '1', '5', '200', (value) => onSlicerParamsChange({ printSpeedMmPerSec: value }));
+        addSlicerField('slicer-travel-speed', 'Travel speed (mm/s)', initialSlicerParams.travelSpeedMmPerSec, '1', '10', '300', (value) => onSlicerParamsChange({ travelSpeedMmPerSec: value }));
         addSlicerField('slicer-nozzle', 'Nozzle temp', initialSlicerParams.nozzleTempC, '1', '150', '300', (value) => onSlicerParamsChange({ nozzleTempC: value }));
         addSlicerField('slicer-bed', 'Bed temp', initialSlicerParams.bedTempC, '1', '0', '130', (value) => onSlicerParamsChange({ bedTempC: value }));
         addSlicerField('slicer-fan', 'Fan %', initialSlicerParams.fanPercent, '1', '0', '100', (value) => onSlicerParamsChange({ fanPercent: value }));

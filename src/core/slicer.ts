@@ -18,8 +18,8 @@ export interface VaseSlicerSettings {
     centerZ: number;
     lineWidth: number;
     filamentDiameter: number;
-    printSpeedMmPerMin: number;
-    travelSpeedMmPerMin: number;
+    printSpeedMmPerSec: number;
+    travelSpeedMmPerSec: number;
     nozzleTempC: number;
     bedTempC: number;
     fanPercent: number;
@@ -31,7 +31,7 @@ export interface ToolpathPoint {
     y: number;
     z: number;
     e: number;
-    f: number;
+    speedMmPerSec: number;
 }
 
 export interface VaseToolpath {
@@ -81,8 +81,8 @@ export class Slicer {
             centerZ: 110,
             lineWidth: 0.44,
             filamentDiameter: 1.75,
-            printSpeedMmPerMin: 2100,
-            travelSpeedMmPerMin: 7200,
+            printSpeedMmPerSec: 35,
+            travelSpeedMmPerSec: 120,
             nozzleTempC: 215,
             bedTempC: 55,
             fanPercent: 100,
@@ -115,8 +115,8 @@ export class Slicer {
         merged.hitEpsilon = clamp(merged.hitEpsilon, 0.0001, 0.02);
         merged.lineWidth = clamp(merged.lineWidth, 0.2, 1.2);
         merged.filamentDiameter = clamp(merged.filamentDiameter, 1.0, 3.0);
-        merged.printSpeedMmPerMin = clamp(merged.printSpeedMmPerMin, 300, 8000);
-        merged.travelSpeedMmPerMin = clamp(merged.travelSpeedMmPerMin, 1000, 15000);
+        merged.printSpeedMmPerSec = clamp(merged.printSpeedMmPerSec, 5, 200);
+        merged.travelSpeedMmPerSec = clamp(merged.travelSpeedMmPerSec, 10, 300);
         merged.flowRate = clamp(merged.flowRate, 0.01, 5.0);
         if (merged.maxY <= merged.minY) {
             merged.maxY = merged.minY + merged.layerHeight;
@@ -233,7 +233,7 @@ export class Slicer {
                 y,
                 z,
                 e: eAcc,
-                f: settings.printSpeedMmPerMin,
+                speedMmPerSec: settings.printSpeedMmPerSec,
             });
 
             prevX = x;
@@ -265,6 +265,8 @@ export class Slicer {
         lines.push(`; Nozzle diameter (mm): ${settings.nozzleDiameter.toFixed(2)}`);
         lines.push(`; Line width (mm): ${settings.lineWidth.toFixed(3)}`);
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
+        lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
+        lines.push(`; Travel speed (mm/s): ${settings.travelSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings).toFixed(5)}`);
         lines.push(`; Estimated height (mm): ${toolpath.estimatedHeight.toFixed(3)}`);
         lines.push('G90');
@@ -277,14 +279,14 @@ export class Slicer {
         lines.push('G28');
         lines.push('G92 E0');
         lines.push(`M106 S${Math.round((settings.fanPercent / 100) * 255)}`);
-        lines.push(`G0 F${settings.travelSpeedMmPerMin.toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(0.2, p0.y).toFixed(3)}`);
+        lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(0.2, p0.y).toFixed(3)}`);
         lines.push('G1 F900 E1.2000');
         lines.push('G92 E0');
 
         for (let i = 1; i < toolpath.points.length; i++) {
             const point = toolpath.points[i];
             lines.push(
-                `G1 F${point.f.toFixed(0)} X${point.x.toFixed(3)} Y${point.z.toFixed(3)} Z${Math.max(0.0, point.y).toFixed(3)} E${point.e.toFixed(5)}`
+                `G1 F${mmPerSecToFeedrate(point.speedMmPerSec).toFixed(0)} X${point.x.toFixed(3)} Y${point.z.toFixed(3)} Z${Math.max(0.0, point.y).toFixed(3)} E${point.e.toFixed(5)}`
             );
         }
 
@@ -449,6 +451,10 @@ function calculateExtrusionPerMm(settings: VaseSlicerSettings): number {
 
     const filamentArea = Math.PI * Math.pow(settings.filamentDiameter * 0.5, 2);
     return settings.flowRate * (beadArea / filamentArea);
+}
+
+function mmPerSecToFeedrate(mmPerSec: number): number {
+    return mmPerSec * 60.0;
 }
 
 function clamp(value: number, min: number, max: number): number {
