@@ -184,7 +184,10 @@ export class Slicer {
         this.setUniform2f('uTextureSize', width, height);
         this.setUniform1f('uMinY', settings.minY);
         this.setUniform1f('uMaxY', settings.maxY);
+        this.setUniform1f('uLayerHeight', settings.layerHeight);
         this.setUniform1f('uMaxRadius', settings.maxRadius);
+        this.setUniform1f('uNozzleDiameter', settings.nozzleDiameter);
+        this.setUniform1f('uFlowRate', settings.flowRate);
         this.setUniform1i('uRadialSteps', settings.radialSteps);
         this.setUniform1f('uHitEpsilon', settings.hitEpsilon);
 

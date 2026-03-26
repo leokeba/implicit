@@ -3,7 +3,10 @@ precision highp float;
 uniform vec2 uTextureSize;
 uniform float uMinY;
 uniform float uMaxY;
+uniform float uLayerHeight;
 uniform float uMaxRadius;
+uniform float uNozzleDiameter;
+uniform float uFlowRate;
 uniform int uRadialSteps;
 uniform float uHitEpsilon;
 

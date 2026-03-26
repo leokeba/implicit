@@ -32,6 +32,15 @@ interface ShaderSources {
     materials: string;
 }
 
+export interface SceneSlicerDefaults {
+    minY?: number;
+    maxY?: number;
+    maxRadius?: number;
+    nozzleDiameterMm?: number;
+    flowRate?: number;
+    layerHeightMm?: number;
+}
+
 let activeSources: ShaderSources = {
     rendererVertex: rendererVertexSource,
     rendererFragmentTemplate: rendererFragmentTemplateSource,
@@ -97,4 +106,61 @@ export function composeSlicerFragmentSource(): string {
 
 export function getSlicerProgramSignature(): string {
     return `${activeSources.slicerVertex}::${composeSlicerFragmentSource()}`;
+}
+
+export function getSceneSlicerDefaults(): SceneSlicerDefaults {
+    return parseSceneSlicerDefaults(activeSources.scene);
+}
+
+function parseSceneSlicerDefaults(sceneSource: string): SceneSlicerDefaults {
+    const defaults: SceneSlicerDefaults = {};
+    const readPositive = (macroName: string): number | undefined => {
+        const parsed = readDefineNumber(sceneSource, macroName);
+        if (typeof parsed !== 'number' || parsed <= 0) {
+            return undefined;
+        }
+        return parsed;
+    };
+
+    const minY = readDefineNumber(sceneSource, 'SCENE_DEFAULT_MIN_Y');
+    const maxY = readDefineNumber(sceneSource, 'SCENE_DEFAULT_MAX_Y');
+    const maxRadius = readPositive('SCENE_DEFAULT_MAX_RADIUS');
+    const nozzleDiameterMm = readPositive('SCENE_DEFAULT_NOZZLE_DIAMETER_MM');
+    const flowRate = readPositive('SCENE_DEFAULT_FLOW_RATE');
+    const layerHeightMm = readPositive('SCENE_DEFAULT_LAYER_HEIGHT_MM');
+
+    if (typeof minY === 'number') {
+        defaults.minY = minY;
+    }
+    if (typeof maxY === 'number') {
+        defaults.maxY = maxY;
+    }
+    if (typeof maxRadius === 'number') {
+        defaults.maxRadius = maxRadius;
+    }
+    if (typeof nozzleDiameterMm === 'number') {
+        defaults.nozzleDiameterMm = nozzleDiameterMm;
+    }
+    if (typeof flowRate === 'number') {
+        defaults.flowRate = flowRate;
+    }
+    if (typeof layerHeightMm === 'number') {
+        defaults.layerHeightMm = layerHeightMm;
+    }
+
+    return defaults;
+}
+
+function readDefineNumber(source: string, macroName: string): number | undefined {
+    const escapedName = macroName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const match = source.match(new RegExp(`#define\\s+${escapedName}\\s+([-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)`));
+    if (!match?.[1]) {
+        return undefined;
+    }
+
+    const parsed = Number(match[1]);
+    if (!Number.isFinite(parsed)) {
+        return undefined;
+    }
+    return parsed;
 }

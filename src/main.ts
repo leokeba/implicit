@@ -3,6 +3,7 @@ import { Preview } from './ui/preview';
 import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
 import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
 import Renderer from './core/renderer';
+import { getSceneSlicerDefaults, type SceneSlicerDefaults } from './core/shader-pipeline';
 import { Slicer, type ToolpathPoint, type VaseSlicerSettings } from './core/slicer';
 
 class ImplicitSurfaceStudio {
@@ -29,11 +30,14 @@ class ImplicitSurfaceStudio {
         if (this.filamentProfiles.length > 0) {
             this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
         }
+
+        this.applySceneSlicerDefaults(getSceneSlicerDefaults());
     }
 
     public init(): void {
         this.preview.init();
         this.renderer.init(this.preview.getCanvas());
+        this.syncSceneSlicerUniforms();
         this.controls.init(
             this.renderer.getViewMode(),
             (viewMode: number) => {
@@ -56,6 +60,7 @@ class ImplicitSurfaceStudio {
                 }
 
                 this.slicerSettings = applyPrinterModel(this.slicerSettings, nextModel);
+                this.syncSceneSlicerUniforms();
                 return this.slicerSettings;
             },
             this.filamentProfiles,
@@ -67,11 +72,13 @@ class ImplicitSurfaceStudio {
                 }
 
                 this.slicerSettings = applyFilamentProfile(this.slicerSettings, nextProfile);
+                this.syncSceneSlicerUniforms();
                 return this.slicerSettings;
             },
             this.slicerSettings,
             (next) => {
                 this.slicerSettings = { ...this.slicerSettings, ...next };
+                this.syncSceneSlicerUniforms();
             },
             () => {
                 const result = this.slicer.generateVaseGcode(this.slicerSettings);
@@ -115,6 +122,38 @@ class ImplicitSurfaceStudio {
         const stamp = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '');
         const printerSlug = this.slicerSettings.printerModelId.replace(/[^a-zA-Z0-9-]+/g, '-').toLowerCase();
         return `implicit-vase-${printerSlug}-${stamp}.gcode`;
+    }
+
+    private applySceneSlicerDefaults(defaults: SceneSlicerDefaults): void {
+        if (typeof defaults.minY === 'number') {
+            this.slicerSettings.minY = defaults.minY;
+        }
+        if (typeof defaults.maxY === 'number') {
+            this.slicerSettings.maxY = defaults.maxY;
+        }
+        if (typeof defaults.maxRadius === 'number') {
+            this.slicerSettings.maxRadius = defaults.maxRadius;
+        }
+        if (typeof defaults.nozzleDiameterMm === 'number') {
+            this.slicerSettings.nozzleDiameter = defaults.nozzleDiameterMm;
+        }
+        if (typeof defaults.flowRate === 'number') {
+            this.slicerSettings.flowRate = defaults.flowRate;
+        }
+        if (typeof defaults.layerHeightMm === 'number') {
+            this.slicerSettings.layerHeight = defaults.layerHeightMm;
+        }
+    }
+
+    private syncSceneSlicerUniforms(): void {
+        this.renderer.setSceneSlicerUniformState({
+            minY: this.slicerSettings.minY,
+            maxY: this.slicerSettings.maxY,
+            maxRadius: this.slicerSettings.maxRadius,
+            nozzleDiameter: this.slicerSettings.nozzleDiameter,
+            flowRate: this.slicerSettings.flowRate,
+            layerHeight: this.slicerSettings.layerHeight,
+        });
     }
 
     private downloadTextFile(filename: string, text: string): void {

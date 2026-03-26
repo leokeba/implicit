@@ -41,6 +41,15 @@ export interface CameraState {
     viewportHeight: number;
 }
 
+export interface SceneSlicerUniformState {
+    minY: number;
+    maxY: number;
+    maxRadius: number;
+    nozzleDiameter: number;
+    flowRate: number;
+    layerHeight: number;
+}
+
 class Renderer {
     private gl: WebGLRenderingContext | null;
     private canvas: HTMLCanvasElement | null;
@@ -59,6 +68,12 @@ class Renderer {
     private minStepLocation: WebGLUniformLocation | null;
     private normalEpsilonLocation: WebGLUniformLocation | null;
     private refineStepsLocation: WebGLUniformLocation | null;
+    private layerHeightLocation: WebGLUniformLocation | null;
+    private minYLocation: WebGLUniformLocation | null;
+    private maxYLocation: WebGLUniformLocation | null;
+    private maxRadiusLocation: WebGLUniformLocation | null;
+    private nozzleDiameterLocation: WebGLUniformLocation | null;
+    private flowRateLocation: WebGLUniformLocation | null;
     private startTimeMs: number;
     private orbitYaw: number;
     private orbitPitch: number;
@@ -71,6 +86,7 @@ class Renderer {
     private targetY: number;
     private targetZ: number;
     private viewMode: number;
+    private slicerUniformState: SceneSlicerUniformState;
     private raymarchParams: RaymarchParams;
     private viewportParams: ViewportParams;
 
@@ -93,6 +109,12 @@ class Renderer {
         this.minStepLocation = null;
         this.normalEpsilonLocation = null;
         this.refineStepsLocation = null;
+        this.layerHeightLocation = null;
+        this.minYLocation = null;
+        this.maxYLocation = null;
+        this.maxRadiusLocation = null;
+        this.nozzleDiameterLocation = null;
+        this.flowRateLocation = null;
         this.startTimeMs = 0;
         const savedState = this.readStoredCameraState();
         this.orbitYaw = savedState.yaw;
@@ -106,6 +128,14 @@ class Renderer {
         this.lastPointerX = 0;
         this.lastPointerY = 0;
         this.viewMode = 0;
+        this.slicerUniformState = {
+            minY: -1.0,
+            maxY: 1.0,
+            maxRadius: 1.1,
+            nozzleDiameter: 0.4,
+            flowRate: 1.0,
+            layerHeight: 0.2,
+        };
         this.raymarchParams = {
             maxSteps: 128,
             hitEpsilon: 0.001,
@@ -264,6 +294,30 @@ class Renderer {
             gl.uniform1i(this.refineStepsLocation, this.raymarchParams.refineSteps);
         }
 
+        if (this.layerHeightLocation) {
+            gl.uniform1f(this.layerHeightLocation, this.slicerUniformState.layerHeight);
+        }
+
+        if (this.minYLocation) {
+            gl.uniform1f(this.minYLocation, this.slicerUniformState.minY);
+        }
+
+        if (this.maxYLocation) {
+            gl.uniform1f(this.maxYLocation, this.slicerUniformState.maxY);
+        }
+
+        if (this.maxRadiusLocation) {
+            gl.uniform1f(this.maxRadiusLocation, this.slicerUniformState.maxRadius);
+        }
+
+        if (this.nozzleDiameterLocation) {
+            gl.uniform1f(this.nozzleDiameterLocation, this.slicerUniformState.nozzleDiameter);
+        }
+
+        if (this.flowRateLocation) {
+            gl.uniform1f(this.flowRateLocation, this.slicerUniformState.flowRate);
+        }
+
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
@@ -278,6 +332,21 @@ class Renderer {
 
     public getViewMode(): number {
         return this.viewMode;
+    }
+
+    public setSceneSlicerUniformState(next: Partial<SceneSlicerUniformState>): void {
+        this.slicerUniformState = {
+            minY: this.clampFloat(next.minY ?? this.slicerUniformState.minY, -5.0, 5.0),
+            maxY: this.clampFloat(next.maxY ?? this.slicerUniformState.maxY, -5.0, 5.0),
+            maxRadius: this.clampFloat(next.maxRadius ?? this.slicerUniformState.maxRadius, 0.1, 3.0),
+            nozzleDiameter: this.clampFloat(next.nozzleDiameter ?? this.slicerUniformState.nozzleDiameter, 0.2, 1.2),
+            flowRate: this.clampFloat(next.flowRate ?? this.slicerUniformState.flowRate, 0.01, 5.0),
+            layerHeight: this.clampFloat(next.layerHeight ?? this.slicerUniformState.layerHeight, 0.05, 1.0),
+        };
+
+        if (this.slicerUniformState.maxY <= this.slicerUniformState.minY) {
+            this.slicerUniformState.maxY = this.slicerUniformState.minY + this.slicerUniformState.layerHeight;
+        }
     }
 
     public getRaymarchParams(): RaymarchParams {
@@ -602,6 +671,12 @@ class Renderer {
         this.minStepLocation = this.gl.getUniformLocation(this.program, 'uMinStep');
         this.normalEpsilonLocation = this.gl.getUniformLocation(this.program, 'uNormalEpsilon');
         this.refineStepsLocation = this.gl.getUniformLocation(this.program, 'uRefineSteps');
+        this.layerHeightLocation = this.gl.getUniformLocation(this.program, 'uLayerHeight');
+        this.minYLocation = this.gl.getUniformLocation(this.program, 'uMinY');
+        this.maxYLocation = this.gl.getUniformLocation(this.program, 'uMaxY');
+        this.maxRadiusLocation = this.gl.getUniformLocation(this.program, 'uMaxRadius');
+        this.nozzleDiameterLocation = this.gl.getUniformLocation(this.program, 'uNozzleDiameter');
+        this.flowRateLocation = this.gl.getUniformLocation(this.program, 'uFlowRate');
     }
 
     public resize(): void {

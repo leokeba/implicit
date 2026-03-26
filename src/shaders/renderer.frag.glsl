@@ -15,6 +15,12 @@ uniform float uStepScale;
 uniform float uMinStep;
 uniform float uNormalEpsilon;
 uniform int uRefineSteps;
+uniform float uMinY;
+uniform float uMaxY;
+uniform float uMaxRadius;
+uniform float uNozzleDiameter;
+uniform float uFlowRate;
+uniform float uLayerHeight;
 
 __SDF_PRIMITIVES_GLSL__
 
