@@ -304,6 +304,8 @@ export class Slicer {
         for (const line of startLines) {
             lines.push(expandGcodeTemplate(line, settings));
         }
+        // Force relative extrusion for exported toolpaths so each move carries only its local extrusion delta.
+        lines.push('M83');
         lines.push('; FEATURE: Travel');
         lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(0.2, p0.y).toFixed(3)}`);
         lines.push('G1 F900 E1.2000');
@@ -318,6 +320,7 @@ export class Slicer {
 
         for (let i = 1; i < toolpath.points.length; i++) {
             const point = toolpath.points[i];
+            const prevPoint = toolpath.points[i - 1];
             const layer = Math.floor(i / toolpath.pointsPerLayer);
             if (layer !== currentLayer) {
                 currentLayer = layer;
@@ -329,11 +332,11 @@ export class Slicer {
             }
 
             lines.push(
-                `G1 F${mmPerSecToFeedrate(point.speedMmPerSec).toFixed(0)} X${point.x.toFixed(3)} Y${point.z.toFixed(3)} Z${Math.max(0.0, point.y).toFixed(3)} E${point.e.toFixed(5)}`
+                `G1 F${mmPerSecToFeedrate(point.speedMmPerSec).toFixed(0)} X${point.x.toFixed(3)} Y${point.z.toFixed(3)} Z${Math.max(0.0, point.y).toFixed(3)} E${Math.max(0, point.e - prevPoint.e).toFixed(5)}`
             );
         }
 
-        lines.push('G1 F1200 E' + Math.max(0, toolpath.points[toolpath.points.length - 1].e - 1.2).toFixed(5));
+        lines.push('G1 F1200 E-1.20000');
         lines.push('; FEATURE: Travel');
         lines.push('G0 F6000 Z' + Math.max(0.0, toolpath.points[toolpath.points.length - 1].y).toFixed(3));
 
