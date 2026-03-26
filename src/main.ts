@@ -36,8 +36,6 @@ class ImplicitSurfaceStudio {
 
     public init(): void {
         this.preview.init();
-        this.renderer.init(this.preview.getCanvas());
-        this.syncSceneSlicerUniforms();
         this.controls.init(
             this.renderer.getViewMode(),
             (viewMode: number) => {
@@ -94,6 +92,8 @@ class ImplicitSurfaceStudio {
                 };
             }
         );
+        this.renderer.init(this.preview.getCanvas());
+        this.syncSceneSlicerUniforms();
         this.startRenderingLoop();
     }
 
@@ -172,19 +172,51 @@ class ImplicitSurfaceStudio {
 
 type ShaderStatusMode = 'ready' | 'compiling' | 'ok' | 'error';
 
+const MAX_SHADER_ERROR_CHARS = 6000;
+
 function setShaderStatus(mode: ShaderStatusMode, message: string): void {
     const statusElement = document.getElementById('shader-status');
     if (!statusElement) {
         return;
     }
 
+    const normalized = normalizeShaderStatusMessage(message);
     statusElement.className = `shader-status shader-status-${mode}`;
-    statusElement.textContent = `Shader: ${message}`;
+    statusElement.textContent = `Shader: ${compactShaderStatusMessage(normalized)}`;
+
+    const statusContainer = statusElement.parentElement;
+    if (!statusContainer) {
+        return;
+    }
+
+    let detailElement = document.getElementById('shader-status-detail');
+    if (!detailElement) {
+        detailElement = document.createElement('pre');
+        detailElement.id = 'shader-status-detail';
+        detailElement.className = 'shader-status-detail';
+        detailElement.setAttribute('aria-live', 'polite');
+        detailElement.hidden = true;
+        statusContainer.appendChild(detailElement);
+    }
+
+    if (mode === 'error') {
+        detailElement.hidden = false;
+        detailElement.textContent = normalized;
+    } else {
+        detailElement.hidden = true;
+        detailElement.textContent = '';
+    }
 }
 
 const app = new ImplicitSurfaceStudio();
-app.init();
-setShaderStatus('ready', 'Ready');
+try {
+    app.init();
+    setShaderStatus('ready', 'Ready');
+} catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to initialize renderer';
+    setShaderStatus('error', message);
+    console.error('[Startup] Renderer initialization failed.', error);
+}
 
 window.addEventListener('shader-hmr-status', (event: Event) => {
     const customEvent = event as CustomEvent<{ mode?: ShaderStatusMode; message?: string }>;
@@ -196,3 +228,26 @@ window.addEventListener('shader-hmr-status', (event: Event) => {
 
     setShaderStatus(mode, message);
 });
+
+function normalizeShaderStatusMessage(message: string): string {
+    const trimmed = message.trim();
+    if (!trimmed) {
+        return 'Unknown shader error';
+    }
+
+    if (trimmed.length <= MAX_SHADER_ERROR_CHARS) {
+        return trimmed;
+    }
+
+    return `${trimmed.slice(0, MAX_SHADER_ERROR_CHARS)}\n\n...truncated`;
+}
+
+function compactShaderStatusMessage(message: string): string {
+    const firstLine = message.split(/\r?\n/, 1)[0]?.trim() || 'Shader status changed';
+    const maxInlineLen = 88;
+    if (firstLine.length <= maxInlineLen) {
+        return firstLine;
+    }
+
+    return `${firstLine.slice(0, maxInlineLen - 1)}…`;
+}
