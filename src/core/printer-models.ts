@@ -6,6 +6,8 @@ export interface PrinterModel {
     plateWidthMm: number;
     plateDepthMm: number;
     maxHeightMm: number;
+    defaultPrintSpeedMmPerSec?: number;
+    defaultTravelSpeedMmPerSec?: number;
     startGcode: string[];
     endGcode: string[];
 }
@@ -16,6 +18,8 @@ interface PrinterModelFile {
     plateWidthMm?: unknown;
     plateDepthMm?: unknown;
     maxHeightMm?: unknown;
+    defaultPrintSpeedMmPerSec?: unknown;
+    defaultTravelSpeedMmPerSec?: unknown;
     startGcode?: unknown;
     endGcode?: unknown;
 }
@@ -41,7 +45,7 @@ export function applyPrinterModel(
     settings: VaseSlicerSettings,
     model: PrinterModel
 ): VaseSlicerSettings {
-    return {
+    const nextSettings: VaseSlicerSettings = {
         ...settings,
         printerModelId: model.id,
         printerModelName: model.name,
@@ -53,6 +57,15 @@ export function applyPrinterModel(
         startGcode: model.startGcode.join('\n'),
         endGcode: model.endGcode.join('\n'),
     };
+
+    if (typeof model.defaultPrintSpeedMmPerSec === 'number') {
+        nextSettings.printSpeedMmPerSec = model.defaultPrintSpeedMmPerSec;
+    }
+    if (typeof model.defaultTravelSpeedMmPerSec === 'number') {
+        nextSettings.travelSpeedMmPerSec = model.defaultTravelSpeedMmPerSec;
+    }
+
+    return nextSettings;
 }
 
 function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel | null {
@@ -70,6 +83,8 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
     const plateWidthMm = toFiniteNumber(model.plateWidthMm);
     const plateDepthMm = toFiniteNumber(model.plateDepthMm);
     const maxHeightMm = toFiniteNumber(model.maxHeightMm);
+    const defaultPrintSpeedMmPerSec = toOptionalPositiveNumber(model.defaultPrintSpeedMmPerSec);
+    const defaultTravelSpeedMmPerSec = toOptionalPositiveNumber(model.defaultTravelSpeedMmPerSec);
     const startGcode = toGcodeLines(model.startGcode);
     const endGcode = toGcodeLines(model.endGcode);
 
@@ -84,6 +99,8 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
         plateWidthMm,
         plateDepthMm,
         maxHeightMm,
+        defaultPrintSpeedMmPerSec,
+        defaultTravelSpeedMmPerSec,
         startGcode,
         endGcode,
     };
@@ -100,6 +117,13 @@ function extractModuleData(moduleValue: unknown): unknown {
 
 function toFiniteNumber(value: unknown): number {
     return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function toOptionalPositiveNumber(value: unknown): number | undefined {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+        return undefined;
+    }
+    return value;
 }
 
 function toGcodeLines(value: unknown): string[] {

@@ -4,6 +4,8 @@
   "plateWidthMm": 256,
   "plateDepthMm": 256,
   "maxHeightMm": 250,
+  "defaultPrintSpeedMmPerSec": 80,
+  "defaultTravelSpeedMmPerSec": 220,
   "startGcode": [
     "; ===== Bambu P1S start (adapted from OrcaSlicer output) =====",
     "M73 P0 R73",

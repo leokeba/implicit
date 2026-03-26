@@ -491,6 +491,7 @@ export class Controls {
         addSlicerField('bedTempC', 'slicer-bed', 'Bed temp', initialSlicerParams.bedTempC, '1', '0', '130', (value) => onSlicerParamsChange({ bedTempC: value }));
         addSlicerField('fanPercent', 'slicer-fan', 'Fan %', initialSlicerParams.fanPercent, '1', '0', '100', (value) => onSlicerParamsChange({ fanPercent: value }));
         addSlicerField('flowRate', 'slicer-flow', 'Flow rate', initialSlicerParams.flowRate, '0.01', '0.01', '5.0', (value) => onSlicerParamsChange({ flowRate: value }));
+        addSlicerField('brimWidthMm', 'slicer-brim-width', 'Brim width (mm)', initialSlicerParams.brimWidthMm, '0.1', '0', '30', (value) => onSlicerParamsChange({ brimWidthMm: value }));
         addSlicerTextField('startGcode', 'slicer-start-gcode', 'Start G-code', initialSlicerParams.startGcode, (value) => onSlicerParamsChange({ startGcode: value }));
         addSlicerTextField('endGcode', 'slicer-end-gcode', 'End G-code', initialSlicerParams.endGcode, (value) => onSlicerParamsChange({ endGcode: value }));
 

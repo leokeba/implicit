@@ -4,6 +4,8 @@
   "plateWidthMm": 250,
   "plateDepthMm": 210,
   "maxHeightMm": 220,
+  "defaultPrintSpeedMmPerSec": 60,
+  "defaultTravelSpeedMmPerSec": 180,
   "startGcode": [
     "G90",
     "M83",

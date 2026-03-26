@@ -64,8 +64,9 @@ implicit
 ## Usage
 
 - Use the controls panel to tune raymarch and viewport parameters.
-- Choose a printer model in the slicer section to apply plate dimensions, max print height, and start/end G-code defaults.
+- Choose a printer model in the slicer section to apply plate dimensions, max print height, print/travel speed defaults, and start/end G-code defaults.
 - Choose a filament profile in the slicer section to apply material temperatures, flow, fan, and speed defaults.
+- Set brim width in the slicer section to add or remove a generated brim (`0` disables brim).
 - Generate vase-mode G-code from the slicer section.
 - Scene edits in src/shaders/scenes/defaultScene.glsl affect both rendering and slicing.
 
@@ -81,6 +82,8 @@ Each file should define one model with this structure:
    "plateWidthMm": 220,
    "plateDepthMm": 220,
    "maxHeightMm": 250,
+   "defaultPrintSpeedMmPerSec": 40,
+   "defaultTravelSpeedMmPerSec": 120,
    "startGcode": ["G90", "M82"],
    "endGcode": ["M104 S0", "M84"]
 }

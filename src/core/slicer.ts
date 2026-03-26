@@ -31,6 +31,7 @@ export interface VaseSlicerSettings {
     bedTempC: number;
     fanPercent: number;
     flowRate: number;
+    brimWidthMm: number;
     startGcode: string;
     endGcode: string;
 }
@@ -103,6 +104,7 @@ export class Slicer {
             bedTempC: 55,
             fanPercent: 100,
             flowRate: 1.0,
+            brimWidthMm: 5,
             startGcode: getDefaultStartGcode().join('\n'),
             endGcode: getDefaultEndGcode().join('\n'),
         };
@@ -139,6 +141,7 @@ export class Slicer {
         merged.printSpeedMmPerSec = clamp(merged.printSpeedMmPerSec, 5, 200);
         merged.travelSpeedMmPerSec = clamp(merged.travelSpeedMmPerSec, 10, 300);
         merged.flowRate = clamp(merged.flowRate, 0.01, 5.0);
+        merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
         if (merged.maxY <= merged.minY) {
             merged.maxY = merged.minY + merged.layerHeight;
         }
@@ -298,6 +301,7 @@ export class Slicer {
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Travel speed (mm/s): ${settings.travelSpeedMmPerSec.toFixed(1)}`);
+        lines.push(`; Brim width (mm): ${settings.brimWidthMm.toFixed(2)}`);
         lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings).toFixed(5)}`);
         lines.push(`; Estimated height (mm): ${toolpath.estimatedHeight.toFixed(3)}`);
         const startLines = parseGcodeLines(settings.startGcode, getDefaultStartGcode());
@@ -306,6 +310,7 @@ export class Slicer {
         }
         // Force relative extrusion for exported toolpaths so each move carries only its local extrusion delta.
         lines.push('M83');
+        appendBrimGcode(lines, toolpath, settings, Math.max(0.2, p0.y), calculateExtrusionPerMm(settings));
         lines.push('; FEATURE: Travel');
         lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(0.2, p0.y).toFixed(3)}`);
         lines.push('G1 F900 E1.2000');
@@ -514,6 +519,85 @@ function mmPerSecToFeedrate(mmPerSec: number): number {
     return mmPerSec * 60.0;
 }
 
+function appendBrimGcode(
+    lines: string[],
+    toolpath: VaseToolpath,
+    settings: VaseSlicerSettings,
+    firstLayerZ: number,
+    extrusionPerMm: number
+): void {
+    const lineWidth = Math.max(0.01, settings.lineWidth);
+    const brimLoops = Math.floor(settings.brimWidthMm / lineWidth);
+    if (brimLoops <= 0 || toolpath.pointsPerLayer < 3) {
+        return;
+    }
+
+    const firstLayer = toolpath.points.slice(0, toolpath.pointsPerLayer);
+    if (firstLayer.length < 3) {
+        return;
+    }
+
+    const printFeed = mmPerSecToFeedrate(settings.printSpeedMmPerSec).toFixed(0);
+    const travelFeed = mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0);
+
+    lines.push('; FEATURE: Brim');
+    for (let loopIndex = 1; loopIndex <= brimLoops; loopIndex++) {
+        const offset = loopIndex * lineWidth;
+        const loop = buildBrimLoop(firstLayer, settings.centerX, settings.centerZ, offset);
+        if (loop.length < 3) {
+            continue;
+        }
+
+        const start = loop[0];
+        lines.push(';TYPE:Brim');
+        lines.push(`G0 F${travelFeed} X${start.x.toFixed(3)} Y${start.y.toFixed(3)} Z${firstLayerZ.toFixed(3)}`);
+        if (loopIndex === 1) {
+            lines.push('G1 F900 E0.6000');
+        }
+
+        let previous = start;
+        for (let i = 1; i < loop.length; i++) {
+            const point = loop[i];
+            const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+            if (distance > 0) {
+                lines.push(`G1 F${printFeed} X${point.x.toFixed(3)} Y${point.y.toFixed(3)} E${(distance * extrusionPerMm).toFixed(5)}`);
+            }
+            previous = point;
+        }
+
+        const closingDistance = Math.hypot(start.x - previous.x, start.y - previous.y);
+        if (closingDistance > 0) {
+            lines.push(`G1 F${printFeed} X${start.x.toFixed(3)} Y${start.y.toFixed(3)} E${(closingDistance * extrusionPerMm).toFixed(5)}`);
+        }
+    }
+
+    lines.push('G1 F1200 E-0.60000');
+    lines.push('G92 E0');
+}
+
+function buildBrimLoop(
+    source: ToolpathPoint[],
+    centerX: number,
+    centerY: number,
+    offsetMm: number
+): Array<{ x: number; y: number }> {
+    return source.map((point) => {
+        const dx = point.x - centerX;
+        const dy = point.z - centerY;
+        const length = Math.hypot(dx, dy);
+        if (length < 1e-6) {
+            return { x: point.x, y: point.z };
+        }
+
+        const nx = dx / length;
+        const ny = dy / length;
+        return {
+            x: point.x + nx * offsetMm,
+            y: point.z + ny * offsetMm,
+        };
+    });
+}
+
 function shouldEmitOrcaMetadata(settings: VaseSlicerSettings): boolean {
     return settings.printerModelId === 'bambu-p1s';
 }
@@ -529,6 +613,8 @@ function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSet
     const endGcodeCfg = escapeConfigValue(settings.endGcode);
     const travelSpeedMmPerSec = Math.round(settings.travelSpeedMmPerSec);
     const printSpeedMmPerSec = Math.round(settings.printSpeedMmPerSec);
+    const brimWidthMm = Math.max(0, settings.brimWidthMm);
+    const brimType = brimWidthMm > 0 ? 'auto_brim' : 'no_brim';
 
     return [
         '; HEADER_BLOCK_START',
@@ -558,8 +644,8 @@ function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSet
         '; bed_mesh_max = 99999,99999',
         '; bed_mesh_min = -99999,-99999',
         '; bed_mesh_probe_distance = 50,50',
-        '; brim_type = auto_brim',
-        '; brim_width = 5',
+        `; brim_type = ${brimType}`,
+        `; brim_width = ${brimWidthMm.toFixed(2)}`,
         '; close_fan_the_first_x_layers = 1',
         '; complete_print_exhaust_fan_speed = 70',
         '; curr_bed_type = High Temp Plate',
