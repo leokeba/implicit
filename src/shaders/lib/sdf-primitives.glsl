@@ -342,19 +342,34 @@ const int SDF_MAX_POLY_VERTS = 64;
 float sdPolygon(vec2 p, vec2 v[SDF_MAX_POLY_VERTS], int n) {
     float d = dot2(p - v[0]);
     float s = 1.0;
+
+    // WebGL1 requires array indices to be constants or loop indices.
+    // Resolve v[n - 1] via a loop-index-only pass.
+    vec2 prev = v[0];
+    for (int i = 1; i < SDF_MAX_POLY_VERTS; i++) {
+        if (i >= n) {
+            break;
+        }
+        prev = v[i];
+    }
+
     for (int i = 0; i < SDF_MAX_POLY_VERTS; i++) {
         if (i >= n) {
             break;
         }
-        int j = (i == 0) ? (n - 1) : (i - 1);
-        vec2 e = v[j] - v[i];
-        vec2 w = p - v[i];
+
+        vec2 curr = v[i];
+        vec2 e = prev - curr;
+        vec2 w = p - curr;
         vec2 b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
         d = min(d, dot(b, b));
-        bvec3 c = bvec3(p.y >= v[i].y, p.y < v[j].y, e.x * w.y > e.y * w.x);
+
+        bvec3 c = bvec3(p.y >= curr.y, p.y < prev.y, e.x * w.y > e.y * w.x);
         if (all(c) || all(not(c))) {
             s = -s;
         }
+
+        prev = curr;
     }
     return s * sqrt(d);
 }
