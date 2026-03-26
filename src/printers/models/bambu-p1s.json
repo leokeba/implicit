@@ -42,7 +42,18 @@
     "M83",
     "M106 S{fanPwm}",
     "G21",
-    "G90"
+    "G90",
+    "; ===== nozzle load line (priming) =====",
+    "G1 X18.0 Y1.0 Z0.8 F18000",
+    "G1 Z0.2",
+    "G0 E2 F300",
+    "G0 X240 E15 F4800",
+    "G0 Y11 E0.700 F1200",
+    "G0 X239.5",
+    "G0 E0.2",
+    "G0 Y1.5 E0.700",
+    "G0 X25 E15 F4800",
+    "G92 E0"
   ],
   "endGcode": [
     "; ===== Bambu P1S end (adapted from OrcaSlicer machine_end_gcode) =====",
