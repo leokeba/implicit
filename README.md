@@ -61,6 +61,16 @@ implicit
 
 4. Open the app in a browser at http://localhost:3000.
 
+## VS Code Preview Action
+
+If you want to open the app directly inside VS Code (Simple Browser tab), use the workspace task:
+
+1. Open Command Palette.
+2. Run `Tasks: Run Task`.
+3. Choose `Preview: Start + Open in VS Code Tab`.
+
+You can also run `Preview: Open in VS Code Tab` if the dev server is already running.
+
 ## Usage
 
 - Use the controls panel to tune raymarch and viewport parameters.

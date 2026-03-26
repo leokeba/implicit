@@ -1,0 +1,62 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Dev: Start Vite (Background)",
+      "type": "shell",
+      "command": "npm run dev -- --port 3000",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "custom",
+        "fileLocation": "absolute",
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 1,
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "Local:\\s+http://localhost:3000/?"
+        }
+      },
+      "runOptions": {
+        "instanceLimit": 1
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": false
+      }
+    },
+    {
+      "label": "Preview: Open in VS Code Tab",
+      "type": "shell",
+      "command": "echo ${input:implicitOpenPreview}",
+      "problemMatcher": []
+    },
+    {
+      "label": "Preview: Start + Open in VS Code Tab",
+      "dependsOn": [
+        "Dev: Start Vite (Background)",
+        "Preview: Open in VS Code Tab"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "implicitOpenPreview",
+      "type": "command",
+      "command": "simpleBrowser.show",
+      "args": {
+        "url": "http://localhost:3000"
+      }
+    }
+  ]
+}
