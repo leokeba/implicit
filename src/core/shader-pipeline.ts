@@ -35,6 +35,7 @@ interface ShaderSources {
 export interface SceneSlicerDefaults {
     minY?: number;
     maxY?: number;
+    modelScale?: number;
     maxRadius?: number;
     nozzleDiameterMm?: number;
     flowRate?: number;
@@ -124,6 +125,7 @@ function parseSceneSlicerDefaults(sceneSource: string): SceneSlicerDefaults {
 
     const minY = readDefineNumber(sceneSource, 'SCENE_DEFAULT_MIN_Y');
     const maxY = readDefineNumber(sceneSource, 'SCENE_DEFAULT_MAX_Y');
+    const modelScale = readPositive('SCENE_DEFAULT_MODEL_SCALE');
     const maxRadius = readPositive('SCENE_DEFAULT_MAX_RADIUS');
     const nozzleDiameterMm = readPositive('SCENE_DEFAULT_NOZZLE_DIAMETER_MM');
     const flowRate = readPositive('SCENE_DEFAULT_FLOW_RATE');
@@ -134,6 +136,9 @@ function parseSceneSlicerDefaults(sceneSource: string): SceneSlicerDefaults {
     }
     if (typeof maxY === 'number') {
         defaults.maxY = maxY;
+    }
+    if (typeof modelScale === 'number') {
+        defaults.modelScale = modelScale;
     }
     if (typeof maxRadius === 'number') {
         defaults.maxRadius = maxRadius;

@@ -44,6 +44,7 @@ export interface CameraState {
 export interface SceneSlicerUniformState {
     minY: number;
     maxY: number;
+    modelScale: number;
     maxRadius: number;
     nozzleDiameter: number;
     flowRate: number;
@@ -71,6 +72,7 @@ class Renderer {
     private layerHeightLocation: WebGLUniformLocation | null;
     private minYLocation: WebGLUniformLocation | null;
     private maxYLocation: WebGLUniformLocation | null;
+    private scaleLocation: WebGLUniformLocation | null;
     private maxRadiusLocation: WebGLUniformLocation | null;
     private nozzleDiameterLocation: WebGLUniformLocation | null;
     private flowRateLocation: WebGLUniformLocation | null;
@@ -112,6 +114,7 @@ class Renderer {
         this.layerHeightLocation = null;
         this.minYLocation = null;
         this.maxYLocation = null;
+        this.scaleLocation = null;
         this.maxRadiusLocation = null;
         this.nozzleDiameterLocation = null;
         this.flowRateLocation = null;
@@ -131,6 +134,7 @@ class Renderer {
         this.slicerUniformState = {
             minY: -1.0,
             maxY: 1.0,
+            modelScale: 50.0,
             maxRadius: 1.1,
             nozzleDiameter: 0.4,
             flowRate: 1.0,
@@ -306,6 +310,10 @@ class Renderer {
             gl.uniform1f(this.maxYLocation, this.slicerUniformState.maxY);
         }
 
+        if (this.scaleLocation) {
+            gl.uniform1f(this.scaleLocation, this.slicerUniformState.modelScale);
+        }
+
         if (this.maxRadiusLocation) {
             gl.uniform1f(this.maxRadiusLocation, this.slicerUniformState.maxRadius);
         }
@@ -338,6 +346,7 @@ class Renderer {
         this.slicerUniformState = {
             minY: this.clampFloat(next.minY ?? this.slicerUniformState.minY, -5.0, 5.0),
             maxY: this.clampFloat(next.maxY ?? this.slicerUniformState.maxY, -5.0, 5.0),
+            modelScale: this.clampFloat(next.modelScale ?? this.slicerUniformState.modelScale, 1.0, 400.0),
             maxRadius: this.clampFloat(next.maxRadius ?? this.slicerUniformState.maxRadius, 0.1, 3.0),
             nozzleDiameter: this.clampFloat(next.nozzleDiameter ?? this.slicerUniformState.nozzleDiameter, 0.2, 1.2),
             flowRate: this.clampFloat(next.flowRate ?? this.slicerUniformState.flowRate, 0.01, 5.0),
@@ -685,6 +694,7 @@ class Renderer {
         this.layerHeightLocation = this.gl.getUniformLocation(this.program, 'uLayerHeight');
         this.minYLocation = this.gl.getUniformLocation(this.program, 'uMinY');
         this.maxYLocation = this.gl.getUniformLocation(this.program, 'uMaxY');
+        this.scaleLocation = this.gl.getUniformLocation(this.program, 'uScale');
         this.maxRadiusLocation = this.gl.getUniformLocation(this.program, 'uMaxRadius');
         this.nozzleDiameterLocation = this.gl.getUniformLocation(this.program, 'uNozzleDiameter');
         this.flowRateLocation = this.gl.getUniformLocation(this.program, 'uFlowRate');

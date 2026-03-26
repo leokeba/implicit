@@ -131,6 +131,9 @@ class ImplicitSurfaceStudio {
         if (typeof defaults.maxY === 'number') {
             this.slicerSettings.maxY = defaults.maxY;
         }
+        if (typeof defaults.modelScale === 'number') {
+            this.slicerSettings.modelScale = defaults.modelScale;
+        }
         if (typeof defaults.maxRadius === 'number') {
             this.slicerSettings.maxRadius = defaults.maxRadius;
         }
@@ -149,6 +152,7 @@ class ImplicitSurfaceStudio {
         this.renderer.setSceneSlicerUniformState({
             minY: this.slicerSettings.minY,
             maxY: this.slicerSettings.maxY,
+            modelScale: this.slicerSettings.modelScale,
             maxRadius: this.slicerSettings.maxRadius,
             nozzleDiameter: this.slicerSettings.nozzleDiameter,
             flowRate: this.slicerSettings.flowRate,

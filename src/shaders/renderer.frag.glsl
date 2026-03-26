@@ -17,6 +17,7 @@ uniform float uNormalEpsilon;
 uniform int uRefineSteps;
 uniform float uMinY;
 uniform float uMaxY;
+uniform float uScale;
 uniform float uMaxRadius;
 uniform float uNozzleDiameter;
 uniform float uFlowRate;

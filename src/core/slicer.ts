@@ -184,6 +184,7 @@ export class Slicer {
         this.setUniform2f('uTextureSize', width, height);
         this.setUniform1f('uMinY', settings.minY);
         this.setUniform1f('uMaxY', settings.maxY);
+        this.setUniform1f('uScale', settings.modelScale);
         this.setUniform1f('uLayerHeight', settings.layerHeight);
         this.setUniform1f('uMaxRadius', settings.maxRadius);
         this.setUniform1f('uNozzleDiameter', settings.nozzleDiameter);
