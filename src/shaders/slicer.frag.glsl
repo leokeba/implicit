@@ -10,6 +10,8 @@ uniform float uHitEpsilon;
 const int MAX_RADIAL_STEPS = 512;
 const int MAX_BISECT_STEPS = 12;
 
+__SDF_PRIMITIVES_GLSL__
+
 __SCENE_GLSL__
 
 vec4 encodeRadius(float radius, float maxRadius) {

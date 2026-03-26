@@ -16,7 +16,10 @@ uniform float uMinStep;
 uniform float uNormalEpsilon;
 uniform int uRefineSteps;
 
+__SDF_PRIMITIVES_GLSL__
+
 __SCENE_GLSL__
+
 __RAYMARCH_GLSL__
 
 __ENVIRONMENT_GLSL__

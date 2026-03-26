@@ -4,6 +4,7 @@ import materialsSource from '../shaders/lib/materials.glsl?raw';
 import raymarchSource from '../shaders/lib/raymarch.glsl?raw';
 import rendererFragmentTemplateSource from '../shaders/renderer.frag.glsl?raw';
 import rendererVertexSource from '../shaders/renderer.vert.glsl?raw';
+import sdfPrimitivesSource from '../shaders/lib/sdf-primitives.glsl?raw';
 import slicerFragmentTemplateSource from '../shaders/slicer.frag.glsl?raw';
 import slicerVertexSource from '../shaders/slicer.vert.glsl?raw';
 
@@ -14,6 +15,7 @@ export interface ShaderSourceUpdates {
     slicerFragmentTemplate?: string;
     scene?: string;
     raymarch?: string;
+    sdfPrimitives?: string;
     environment?: string;
     materials?: string;
 }
@@ -25,6 +27,7 @@ interface ShaderSources {
     slicerFragmentTemplate: string;
     scene: string;
     raymarch: string;
+    sdfPrimitives: string;
     environment: string;
     materials: string;
 }
@@ -36,6 +39,7 @@ let activeSources: ShaderSources = {
     slicerFragmentTemplate: slicerFragmentTemplateSource,
     scene: defaultSceneSource,
     raymarch: raymarchSource,
+    sdfPrimitives: sdfPrimitivesSource,
     environment: environmentSource,
     materials: materialsSource,
 };
@@ -48,6 +52,7 @@ export function getImportedShaderSources(): ShaderSourceUpdates {
         slicerFragmentTemplate: slicerFragmentTemplateSource,
         scene: defaultSceneSource,
         raymarch: raymarchSource,
+        sdfPrimitives: sdfPrimitivesSource,
         environment: environmentSource,
         materials: materialsSource,
     };
@@ -61,6 +66,7 @@ export function applyShaderSourceUpdates(updates: ShaderSourceUpdates): void {
         slicerFragmentTemplate: updates.slicerFragmentTemplate ?? activeSources.slicerFragmentTemplate,
         scene: updates.scene ?? activeSources.scene,
         raymarch: updates.raymarch ?? activeSources.raymarch,
+        sdfPrimitives: updates.sdfPrimitives ?? activeSources.sdfPrimitives,
         environment: updates.environment ?? activeSources.environment,
         materials: updates.materials ?? activeSources.materials,
     };
@@ -72,6 +78,7 @@ export function getRendererVertexSource(): string {
 
 export function composeRendererFragmentSource(): string {
     return activeSources.rendererFragmentTemplate
+    .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
         .replace('__SCENE_GLSL__', activeSources.scene)
         .replace('__RAYMARCH_GLSL__', activeSources.raymarch)
         .replace('__ENVIRONMENT_GLSL__', activeSources.environment)
@@ -83,7 +90,9 @@ export function getSlicerVertexSource(): string {
 }
 
 export function composeSlicerFragmentSource(): string {
-    return activeSources.slicerFragmentTemplate.replace('__SCENE_GLSL__', activeSources.scene);
+    return activeSources.slicerFragmentTemplate
+        .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
+        .replace('__SCENE_GLSL__', activeSources.scene);
 }
 
 export function getSlicerProgramSignature(): string {
