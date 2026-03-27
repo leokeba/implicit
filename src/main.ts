@@ -3,7 +3,14 @@ import { Preview } from './ui/preview';
 import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
 import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
 import Renderer from './core/renderer';
-import { getSceneSlicerDefaults, type SceneSlicerDefaults } from './core/shader-pipeline';
+import {
+    getActiveSceneId,
+    getAvailableScenes,
+    getSceneSlicerDefaults,
+    setActiveSceneById,
+    type SceneOption,
+    type SceneSlicerDefaults,
+} from './core/shader-pipeline';
 import { Slicer, type ToolpathPoint, type VaseSlicerSettings } from './core/slicer';
 
 class ImplicitSurfaceStudio {
@@ -14,6 +21,7 @@ class ImplicitSurfaceStudio {
     private slicerSettings: VaseSlicerSettings;
     private printerModels: PrinterModel[];
     private filamentProfiles: FilamentProfile[];
+    private sceneOptions: SceneOption[];
 
     constructor() {
         this.renderer = new Renderer();
@@ -23,6 +31,7 @@ class ImplicitSurfaceStudio {
         this.slicerSettings = this.slicer.getDefaultVaseSettings();
         this.printerModels = loadPrinterModels();
         this.filamentProfiles = loadFilamentProfiles();
+        this.sceneOptions = getAvailableScenes();
 
         if (this.printerModels.length > 0) {
             this.slicerSettings = applyPrinterModel(this.slicerSettings, this.printerModels[0]);
@@ -40,6 +49,33 @@ class ImplicitSurfaceStudio {
             this.renderer.getViewMode(),
             (viewMode: number) => {
                 this.renderer.setViewMode(viewMode);
+            },
+            this.sceneOptions,
+            getActiveSceneId(),
+            (sceneId: string) => {
+                const previousSceneId = getActiveSceneId();
+                if (sceneId === previousSceneId) {
+                    return this.slicerSettings;
+                }
+
+                if (!setActiveSceneById(sceneId)) {
+                    setShaderStatus('error', `Scene '${sceneId}' was not found.`);
+                    return this.slicerSettings;
+                }
+
+                setShaderStatus('compiling', 'Compiling...');
+                const result = this.renderer.hotReloadShaders({});
+                if (!result.ok && result.message !== 'Renderer not initialized') {
+                    setActiveSceneById(previousSceneId);
+                    this.renderer.hotReloadShaders({});
+                    setShaderStatus('error', result.message);
+                    return this.slicerSettings;
+                }
+
+                this.applySceneSlicerDefaults(getSceneSlicerDefaults());
+                this.syncSceneSlicerUniforms();
+                setShaderStatus('ok', `Loaded scene: ${sceneId}`);
+                return this.slicerSettings;
             },
             this.renderer.getRaymarchParams(),
             (next) => {

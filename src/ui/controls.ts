@@ -2,12 +2,16 @@ import type { RaymarchParams, ViewportParams } from '../core/renderer';
 
 import type { FilamentProfile } from '../core/filament-profiles';
 import type { PrinterModel } from '../core/printer-models';
+import type { SceneOption } from '../core/shader-pipeline';
 import type { VaseSlicerSettings } from '../core/slicer';
 
 export class Controls {
     public init(
         currentViewMode: number,
         onViewModeChange: (viewMode: number) => void,
+        sceneOptions: SceneOption[],
+        currentSceneId: string,
+        onSceneChange: (sceneId: string) => VaseSlicerSettings,
         initialRaymarchParams: RaymarchParams,
         onRaymarchParamsChange: (next: Partial<RaymarchParams>) => void,
         initialViewportParams: ViewportParams,
@@ -51,6 +55,9 @@ export class Controls {
         const viewModeRow = document.createElement('div');
         viewModeRow.className = 'view-mode-row';
 
+        const sceneRow = document.createElement('div');
+        sceneRow.className = 'view-mode-row';
+
         const viewModeTitle = document.createElement('h3');
         viewModeTitle.textContent = 'View';
 
@@ -64,6 +71,25 @@ export class Controls {
 
         const viewModeSelect = document.createElement('select');
         viewModeSelect.id = 'view-mode-select';
+
+        const sceneLabel = document.createElement('label');
+        sceneLabel.textContent = 'Scene';
+        sceneLabel.htmlFor = 'scene-select';
+
+        const sceneSelect = document.createElement('select');
+        sceneSelect.id = 'scene-select';
+
+        for (const scene of sceneOptions) {
+            const option = document.createElement('option');
+            option.value = scene.id;
+            option.text = scene.name;
+            sceneSelect.appendChild(option);
+        }
+
+        if (sceneOptions.length > 0) {
+            const hasCurrent = sceneOptions.some((scene) => scene.id === currentSceneId);
+            sceneSelect.value = hasCurrent ? currentSceneId : sceneOptions[0].id;
+        }
 
         const shadedOption = document.createElement('option');
         shadedOption.value = '0';
@@ -88,8 +114,12 @@ export class Controls {
         viewModeRow.appendChild(viewModeLabel);
         viewModeRow.appendChild(viewModeSelect);
 
+        sceneRow.appendChild(sceneLabel);
+        sceneRow.appendChild(sceneSelect);
+
         viewCard.appendChild(viewModeTitle);
         viewCard.appendChild(viewModeRow);
+        viewCard.appendChild(sceneRow);
         viewCard.appendChild(viewModeHint);
 
         const raymarchCard = document.createElement('section');
@@ -396,6 +426,11 @@ export class Controls {
             printerSelect.value = next.printerModelId;
             filamentSelect.value = next.filamentProfileId;
         };
+
+        sceneSelect.addEventListener('change', () => {
+            const next = onSceneChange(sceneSelect.value);
+            syncSlicerUiFromSettings(next);
+        });
 
         printerSelect.addEventListener('change', () => {
             const next = onPrinterModelChange(printerSelect.value);

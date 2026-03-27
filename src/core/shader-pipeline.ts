@@ -8,6 +8,13 @@ import sdfPrimitivesSource from '../shaders/lib/sdf-primitives.glsl?raw';
 import slicerFragmentTemplateSource from '../shaders/slicer.frag.glsl?raw';
 import slicerVertexSource from '../shaders/slicer.vert.glsl?raw';
 
+const sceneSourceModules = (
+    import.meta.glob as unknown as (pattern: string, options: { as: 'raw'; eager: true }) => Record<string, string>
+)('../shaders/scenes/*.glsl', {
+    as: 'raw',
+    eager: true,
+});
+
 export interface ShaderSourceUpdates {
     rendererVertex?: string;
     rendererFragmentTemplate?: string;
@@ -42,12 +49,27 @@ export interface SceneSlicerDefaults {
     layerHeightMm?: number;
 }
 
+export interface SceneOption {
+    id: string;
+    name: string;
+}
+
+interface SceneEntry extends SceneOption {
+    source: string;
+}
+
+const sceneEntries: SceneEntry[] = buildSceneEntries(sceneSourceModules);
+if (sceneEntries.length === 0) {
+    sceneEntries.push({ id: 'defaultScene', name: 'Default Scene', source: defaultSceneSource });
+}
+let activeSceneId: string = sceneEntries[0]?.id ?? 'defaultScene';
+
 let activeSources: ShaderSources = {
     rendererVertex: rendererVertexSource,
     rendererFragmentTemplate: rendererFragmentTemplateSource,
     slicerVertex: slicerVertexSource,
     slicerFragmentTemplate: slicerFragmentTemplateSource,
-    scene: defaultSceneSource,
+    scene: getSceneSourceById(activeSceneId),
     raymarch: raymarchSource,
     sdfPrimitives: sdfPrimitivesSource,
     environment: environmentSource,
@@ -60,12 +82,34 @@ export function getImportedShaderSources(): ShaderSourceUpdates {
         rendererFragmentTemplate: rendererFragmentTemplateSource,
         slicerVertex: slicerVertexSource,
         slicerFragmentTemplate: slicerFragmentTemplateSource,
-        scene: defaultSceneSource,
+        scene: getSceneSourceById(activeSceneId),
         raymarch: raymarchSource,
         sdfPrimitives: sdfPrimitivesSource,
         environment: environmentSource,
         materials: materialsSource,
     };
+}
+
+export function getAvailableScenes(): SceneOption[] {
+    return sceneEntries.map((scene) => ({ id: scene.id, name: scene.name }));
+}
+
+export function getActiveSceneId(): string {
+    return activeSceneId;
+}
+
+export function setActiveSceneById(sceneId: string): boolean {
+    const nextSource = getSceneSourceById(sceneId);
+    if (!nextSource) {
+        return false;
+    }
+
+    activeSceneId = sceneId;
+    activeSources = {
+        ...activeSources,
+        scene: nextSource,
+    };
+    return true;
 }
 
 export function applyShaderSourceUpdates(updates: ShaderSourceUpdates): void {
@@ -168,4 +212,41 @@ function readDefineNumber(source: string, macroName: string): number | undefined
         return undefined;
     }
     return parsed;
+}
+
+function buildSceneEntries(modules: Record<string, string>): SceneEntry[] {
+    return Object.entries(modules)
+        .map(([path, source]) => {
+            const filename = path.split('/').pop() ?? '';
+            const id = filename.replace(/\.glsl(?:\?raw)?$/i, '');
+            const name = toSceneLabel(id);
+            return { id, name, source };
+        })
+        .filter((entry) => entry.id.length > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function getSceneSourceById(sceneId: string): string {
+    const direct = sceneEntries.find((scene) => scene.id === sceneId);
+    if (direct) {
+        return direct.source;
+    }
+
+    const fallback = sceneEntries[0];
+    return fallback?.source ?? '';
+}
+
+function toSceneLabel(sceneId: string): string {
+    const withSpaces = sceneId
+        .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+        .replace(/[_-]+/g, ' ')
+        .trim();
+    if (!withSpaces) {
+        return 'Scene';
+    }
+
+    return withSpaces
+        .split(/\s+/)
+        .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+        .join(' ');
 }
