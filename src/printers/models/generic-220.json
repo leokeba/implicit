@@ -4,6 +4,7 @@
   "plateWidthMm": 220,
   "plateDepthMm": 220,
   "maxHeightMm": 250,
+  "defaultFirstLayerPrintSpeedMmPerSec": 24,
   "defaultPrintSpeedMmPerSec": 40,
   "defaultTravelSpeedMmPerSec": 120,
   "startGcode": [

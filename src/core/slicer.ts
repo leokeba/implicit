@@ -25,6 +25,7 @@ export interface VaseSlicerSettings {
     centerZ: number;
     lineWidth: number;
     filamentDiameter: number;
+    firstLayerPrintSpeedMmPerSec: number;
     printSpeedMmPerSec: number;
     travelSpeedMmPerSec: number;
     nozzleTempC: number;
@@ -99,6 +100,7 @@ export class Slicer {
             centerZ: 110,
             lineWidth: 0.42,
             filamentDiameter: 1.75,
+            firstLayerPrintSpeedMmPerSec: 20,
             printSpeedMmPerSec: 35,
             travelSpeedMmPerSec: 120,
             nozzleTempC: 215,
@@ -141,6 +143,7 @@ export class Slicer {
         merged.lineWidth = clamp(merged.lineWidth, 0.2, 1.2);
         merged.filamentDiameter = clamp(merged.filamentDiameter, 1.0, 3.0);
         merged.printSpeedMmPerSec = clamp(merged.printSpeedMmPerSec, 5, 200);
+        merged.firstLayerPrintSpeedMmPerSec = clamp(merged.firstLayerPrintSpeedMmPerSec, 5, merged.printSpeedMmPerSec);
         merged.travelSpeedMmPerSec = clamp(merged.travelSpeedMmPerSec, 10, 300);
         merged.flowRate = clamp(merged.flowRate, 0.01, 5.0);
         merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
@@ -266,7 +269,7 @@ export class Slicer {
                 y,
                 z,
                 e: eAcc,
-                speedMmPerSec: settings.printSpeedMmPerSec,
+                speedMmPerSec: layer === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
             });
 
             prevX = x;
@@ -314,6 +317,7 @@ export class Slicer {
         lines.push(`; Fan speed (%): ${settings.fanPercent.toFixed(0)}`);
         lines.push(`; Line width (mm): ${settings.lineWidth.toFixed(3)}`);
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
+        lines.push(`; First layer print speed (mm/s): ${settings.firstLayerPrintSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Travel speed (mm/s): ${settings.travelSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Brim width (mm): ${settings.brimWidthMm.toFixed(2)}`);
@@ -554,7 +558,7 @@ function appendBrimGcode(
         return;
     }
 
-    const printFeed = mmPerSecToFeedrate(settings.printSpeedMmPerSec).toFixed(0);
+    const printFeed = mmPerSecToFeedrate(settings.firstLayerPrintSpeedMmPerSec).toFixed(0);
     const travelFeed = mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0);
 
     lines.push('; FEATURE: Brim');
@@ -636,6 +640,7 @@ function buildOrcaMetadataHeader(
     const endGcodeCfg = escapeConfigValue(settings.endGcode);
     const travelSpeedMmPerSec = Math.round(settings.travelSpeedMmPerSec);
     const printSpeedMmPerSec = Math.round(settings.printSpeedMmPerSec);
+    const firstLayerPrintSpeedMmPerSec = Math.round(settings.firstLayerPrintSpeedMmPerSec);
     const brimWidthMm = Math.max(0, settings.brimWidthMm);
     const brimGapMm = Math.max(0, settings.brimGapMm);
     const brimType = brimWidthMm > 0 ? 'auto_brim' : 'no_brim';
@@ -824,7 +829,7 @@ function buildOrcaMetadataHeader(
         `; print_speed = ${printSpeedMmPerSec}`,
         `; outer_wall_speed = ${printSpeedMmPerSec}`,
         `; travel_speed = ${travelSpeedMmPerSec}`,
-        `; initial_layer_speed = ${Math.max(10, Math.round(printSpeedMmPerSec * 0.5))}`,
+        `; initial_layer_speed = ${firstLayerPrintSpeedMmPerSec}`,
         '; use_relative_e_distances = 1',
         '; wipe = 1',
         '; timelapse_type = 0',

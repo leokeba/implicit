@@ -6,6 +6,7 @@ export interface PrinterModel {
     plateWidthMm: number;
     plateDepthMm: number;
     maxHeightMm: number;
+    defaultFirstLayerPrintSpeedMmPerSec?: number;
     defaultPrintSpeedMmPerSec?: number;
     defaultTravelSpeedMmPerSec?: number;
     startGcode: string[];
@@ -18,6 +19,7 @@ interface PrinterModelFile {
     plateWidthMm?: unknown;
     plateDepthMm?: unknown;
     maxHeightMm?: unknown;
+    defaultFirstLayerPrintSpeedMmPerSec?: unknown;
     defaultPrintSpeedMmPerSec?: unknown;
     defaultTravelSpeedMmPerSec?: unknown;
     startGcode?: unknown;
@@ -61,6 +63,9 @@ export function applyPrinterModel(
     if (typeof model.defaultPrintSpeedMmPerSec === 'number') {
         nextSettings.printSpeedMmPerSec = model.defaultPrintSpeedMmPerSec;
     }
+    if (typeof model.defaultFirstLayerPrintSpeedMmPerSec === 'number') {
+        nextSettings.firstLayerPrintSpeedMmPerSec = model.defaultFirstLayerPrintSpeedMmPerSec;
+    }
     if (typeof model.defaultTravelSpeedMmPerSec === 'number') {
         nextSettings.travelSpeedMmPerSec = model.defaultTravelSpeedMmPerSec;
     }
@@ -83,6 +88,7 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
     const plateWidthMm = toFiniteNumber(model.plateWidthMm);
     const plateDepthMm = toFiniteNumber(model.plateDepthMm);
     const maxHeightMm = toFiniteNumber(model.maxHeightMm);
+    const defaultFirstLayerPrintSpeedMmPerSec = toOptionalPositiveNumber(model.defaultFirstLayerPrintSpeedMmPerSec);
     const defaultPrintSpeedMmPerSec = toOptionalPositiveNumber(model.defaultPrintSpeedMmPerSec);
     const defaultTravelSpeedMmPerSec = toOptionalPositiveNumber(model.defaultTravelSpeedMmPerSec);
     const startGcode = toGcodeLines(model.startGcode);
@@ -99,6 +105,7 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
         plateWidthMm,
         plateDepthMm,
         maxHeightMm,
+        defaultFirstLayerPrintSpeedMmPerSec,
         defaultPrintSpeedMmPerSec,
         defaultTravelSpeedMmPerSec,
         startGcode,
