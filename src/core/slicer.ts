@@ -238,17 +238,18 @@ export class Slicer {
         let prevZ = 0;
 
         for (let i = 0; i < totalPoints; i++) {
-            const layer = Math.floor(i / perLayer);
-            const nextLayer = Math.min(layer + 1, layers - 1);
             const k = i % perLayer;
-            const frac = k / perLayer;
             const globalProgress = i / Math.max(1, totalPoints - 1);
+            const layerPos = globalProgress * Math.max(1, layers - 1);
+            const layer = Math.floor(layerPos);
+            const nextLayer = Math.min(layer + 1, layers - 1);
+            const layerBlend = layerPos - layer;
 
             const angle = (k / perLayer) * Math.PI * 2.0;
 
             const r0 = radiusMap[layer][k] ?? 0;
             const r1 = radiusMap[nextLayer][k] ?? r0;
-            const radiusSdf = r0 * (1.0 - frac) + r1 * frac;
+            const radiusSdf = r0 * (1.0 - layerBlend) + r1 * layerBlend;
             const radius = radiusSdf * settings.modelScale;
 
             const x = settings.centerX + Math.cos(angle) * radius;
@@ -289,9 +290,10 @@ export class Slicer {
         const lines: string[] = [];
         const p0 = toolpath.points[0];
         const emitOrcaMetadata = shouldEmitOrcaMetadata(settings);
+        const filamentMeta = inferFilamentMetadata(settings);
 
         if (emitOrcaMetadata) {
-            lines.push(...buildOrcaMetadataHeader(toolpath, settings));
+            lines.push(...buildOrcaMetadataHeader(toolpath, settings, filamentMeta));
         }
 
         lines.push('; Implicit vase-mode toolpath');
@@ -301,9 +303,15 @@ export class Slicer {
         lines.push(`; Model scale (mm/SDF-unit): ${settings.modelScale.toFixed(2)}`);
         lines.push(`; Printer: ${settings.printerModelName} (${settings.printerModelId})`);
         lines.push(`; Filament: ${settings.filamentProfileName} (${settings.filamentProfileId})`);
+        lines.push(`; Filament type: ${filamentMeta.type}`);
+        lines.push(`; Filament density (g/cm3): ${filamentMeta.densityGcm3.toFixed(2)}`);
+        lines.push(`; Filament cost (per kg): ${filamentMeta.costPerKg.toFixed(2)}`);
         lines.push(`; Bed size (mm): ${settings.bedWidthMm.toFixed(1)} x ${settings.bedDepthMm.toFixed(1)}`);
         lines.push(`; Max print height (mm): ${settings.maxPrintHeightMm.toFixed(1)}`);
         lines.push(`; Nozzle diameter (mm): ${settings.nozzleDiameter.toFixed(2)}`);
+        lines.push(`; Nozzle temperature (C): ${settings.nozzleTempC.toFixed(0)}`);
+        lines.push(`; Bed temperature (C): ${settings.bedTempC.toFixed(0)}`);
+        lines.push(`; Fan speed (%): ${settings.fanPercent.toFixed(0)}`);
         lines.push(`; Line width (mm): ${settings.lineWidth.toFixed(3)}`);
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
@@ -613,7 +621,11 @@ function shouldEmitOrcaMetadata(settings: VaseSlicerSettings): boolean {
     return settings.printerModelId === 'bambu-p1s';
 }
 
-function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSettings): string[] {
+function buildOrcaMetadataHeader(
+    toolpath: VaseToolpath,
+    settings: VaseSlicerSettings,
+    filamentMeta: { type: string; densityGcm3: number; costPerKg: number }
+): string[] {
     const generatedAt = formatLocalTimestamp(new Date());
     const bedWidth = Math.round(settings.bedWidthMm);
     const bedDepth = Math.round(settings.bedDepthMm);
@@ -635,7 +647,7 @@ function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSet
         `; estimated first layer printing time (normal mode) = ${Math.max(1, Math.round(estimatedPrintSeconds * 0.08))}s`,
         `; total layer number: ${toolpath.layerCount}`,
         '; model label id: 195',
-        `; filament_density: 1.24`,
+        `; filament_density: ${filamentMeta.densityGcm3.toFixed(2)}`,
         `; filament_diameter: ${settings.filamentDiameter.toFixed(2)}`,
         `; max_z_height: ${toolpath.estimatedHeight.toFixed(2)}`,
         '; HEADER_BLOCK_END',
@@ -677,7 +689,7 @@ function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSet
         '; fan_min_speed = 100',
         '; fan_speedup_overhangs = 1',
         '; filament_colour = #26A69A',
-        '; filament_cost = 20',
+        `; filament_cost = ${filamentMeta.costPerKg.toFixed(0)}`,
         '; travel_acceleration = 10000',
         '; first_layer_acceleration = 500',
         '; bridge_acceleration = 50%',
@@ -735,7 +747,7 @@ function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSet
         `; nozzle_diameter = ${settings.nozzleDiameter.toFixed(2)}`,
         `; filament_diameter = ${settings.filamentDiameter.toFixed(2)}`,
         '; filament_density = 1.24',
-        '; filament_type = PLA',
+        `; filament_type = ${filamentMeta.type}`,
         '; filament_vendor = Generic',
         '; filament_flow_ratio = 1',
         '; filament_max_volumetric_speed = 12',
@@ -828,6 +840,27 @@ function buildOrcaMetadataHeader(toolpath: VaseToolpath, settings: VaseSlicerSet
         '',
         '; EXECUTABLE_BLOCK_START',
     ];
+}
+
+function inferFilamentMetadata(settings: VaseSlicerSettings): { type: string; densityGcm3: number; costPerKg: number } {
+    const probe = `${settings.filamentProfileId} ${settings.filamentProfileName}`.toUpperCase();
+    if (probe.includes('PETG')) {
+        return { type: 'PETG', densityGcm3: 1.27, costPerKg: 24 };
+    }
+    if (probe.includes('ABS')) {
+        return { type: 'ABS', densityGcm3: 1.04, costPerKg: 22 };
+    }
+    if (probe.includes('ASA')) {
+        return { type: 'ASA', densityGcm3: 1.07, costPerKg: 28 };
+    }
+    if (probe.includes('TPU')) {
+        return { type: 'TPU', densityGcm3: 1.21, costPerKg: 35 };
+    }
+    if (probe.includes('PA') || probe.includes('NYLON')) {
+        return { type: 'PA', densityGcm3: 1.14, costPerKg: 40 };
+    }
+
+    return { type: 'PLA', densityGcm3: 1.24, costPerKg: 20 };
 }
 
 function estimatePrintTimeSeconds(toolpath: VaseToolpath): number {

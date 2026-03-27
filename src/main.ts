@@ -156,8 +156,9 @@ class ImplicitSurfaceStudio {
 
     private buildSlicerFilename(): string {
         const stamp = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '');
-        const printerSlug = this.slicerSettings.printerModelId.replace(/[^a-zA-Z0-9-]+/g, '-').toLowerCase();
-        return `implicit-vase-${printerSlug}-${stamp}.gcode`;
+        const printerSlug = slugifyForFilename(this.slicerSettings.printerModelId, 'printer');
+        const sceneSlug = slugifyForFilename(getActiveSceneId(), 'scene');
+        return `implicit-vase-${printerSlug}-${sceneSlug}-${stamp}.gcode`;
     }
 
     private applySceneSlicerDefaults(defaults: SceneSlicerDefaults): void {
@@ -290,4 +291,13 @@ function compactShaderStatusMessage(message: string): string {
     }
 
     return `${firstLine.slice(0, maxInlineLen - 1)}…`;
+}
+
+function slugifyForFilename(value: string, fallback: string): string {
+    const normalized = value
+        .trim()
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase();
+    return normalized.length > 0 ? normalized : fallback;
 }
