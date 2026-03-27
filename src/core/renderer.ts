@@ -1,8 +1,11 @@
 import {
     applyShaderSourceUpdates,
     composeRendererFragmentSource,
+    getActiveSceneFileName,
+    getActiveSceneId,
     getImportedShaderSources,
     getRendererVertexSource,
+    updateSceneSourceById,
     type ShaderSourceUpdates,
 } from './shader-pipeline';
 
@@ -734,30 +737,106 @@ function emitShaderStatus(mode: ShaderStatusMode, message: string): void {
     );
 }
 
-if (import.meta.hot) {
-    import.meta.hot.accept(() => {
-        emitShaderStatus('compiling', 'Compiling...');
+interface ShaderPipelineHmrModule {
+    getImportedShaderSources?: () => ShaderSourceUpdates;
+}
 
-        const updates = getImportedShaderSources();
-        let anySuccess = false;
-        let lastError = 'Compile failed';
+function reloadRenderersFromUpdates(updates: ShaderSourceUpdates): void {
+    emitShaderStatus('compiling', 'Compiling...');
 
-        activeRenderers.forEach((renderer) => {
-            const result = renderer.hotReloadShaders(updates);
-            if (result.ok) {
-                anySuccess = true;
-            } else {
-                lastError = result.message;
-            }
-        });
+    let anySuccess = false;
+    let lastError = 'Compile failed';
 
-        if (anySuccess || activeRenderers.size === 0) {
-            emitShaderStatus('ok', 'Updated');
-            return;
+    activeRenderers.forEach((renderer) => {
+        const result = renderer.hotReloadShaders(updates);
+        if (result.ok) {
+            anySuccess = true;
+        } else {
+            lastError = result.message;
         }
-
-        emitShaderStatus('error', lastError);
     });
+
+    if (anySuccess || activeRenderers.size === 0) {
+        emitShaderStatus('ok', 'Updated');
+        return;
+    }
+
+    emitShaderStatus('error', lastError);
+}
+
+const shaderHotDependencyPaths = Object.keys(
+    import.meta.glob('../shaders/**/*.glsl', {
+        as: 'raw',
+    })
+);
+
+let scenePollingStarted = false;
+
+function startScenePollingFallback(): void {
+    if (scenePollingStarted || typeof window === 'undefined' || !import.meta.env.DEV) {
+        return;
+    }
+
+    scenePollingStarted = true;
+    let lastSceneId = '';
+    let lastSceneSource = '';
+
+    const poll = async () => {
+        try {
+            const sceneId = getActiveSceneId();
+            const fileName = getActiveSceneFileName();
+            if (!sceneId || !fileName) {
+                return;
+            }
+
+            const response = await fetch(`/src/shaders/scenes/${encodeURIComponent(fileName)}?t=${Date.now()}`, {
+                cache: 'no-store',
+            });
+            if (!response.ok) {
+                return;
+            }
+
+            const source = await response.text();
+            const sceneChanged = sceneId !== lastSceneId;
+            const sourceChanged = source !== lastSceneSource;
+            if (!sceneChanged && !sourceChanged) {
+                return;
+            }
+
+            lastSceneId = sceneId;
+            lastSceneSource = source;
+
+            if (updateSceneSourceById(sceneId, source)) {
+                reloadRenderersFromUpdates(getImportedShaderSources());
+            }
+        } catch {
+            // Ignore transient polling failures while saving files.
+        }
+    };
+
+    window.setInterval(() => {
+        void poll();
+    }, 600);
+}
+
+if (import.meta.hot) {
+    startScenePollingFallback();
+
+    import.meta.hot.accept(() => {
+        reloadRenderersFromUpdates(getImportedShaderSources());
+    });
+
+    import.meta.hot.accept('./shader-pipeline', (nextModule) => {
+        const resolvedModule = (Array.isArray(nextModule) ? nextModule[0] : nextModule) as ShaderPipelineHmrModule | undefined;
+        const updates = resolvedModule?.getImportedShaderSources?.() ?? getImportedShaderSources();
+        reloadRenderersFromUpdates(updates);
+    });
+
+    if (shaderHotDependencyPaths.length > 0) {
+        import.meta.hot.accept(shaderHotDependencyPaths, () => {
+            reloadRenderersFromUpdates(getImportedShaderSources());
+        });
+    }
 }
 
 const CAMERA_STATE_STORAGE_KEY = 'implicit.camera.orbit.v1';

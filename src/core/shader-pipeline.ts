@@ -8,12 +8,20 @@ import sdfPrimitivesSource from '../shaders/lib/sdf-primitives.glsl?raw';
 import slicerFragmentTemplateSource from '../shaders/slicer.frag.glsl?raw';
 import slicerVertexSource from '../shaders/slicer.vert.glsl?raw';
 
-const sceneSourceModules = (
-    import.meta.glob as unknown as (pattern: string, options: { as: 'raw'; eager: true }) => Record<string, string>
-)('../shaders/scenes/*.glsl', {
-    as: 'raw',
+const sceneSourceModules = import.meta.glob('../shaders/scenes/*.glsl', {
     eager: true,
-});
+    as: 'raw',
+}) as Record<string, string | { default: string }>;
+
+const sceneSourceModulesWithQuery = import.meta.glob('../shaders/scenes/*.glsl?raw', {
+    eager: true,
+}) as Record<string, string | { default: string }>;
+
+const sceneHotDependencyPaths = Object.keys(
+    import.meta.glob('../shaders/scenes/*.glsl', {
+        as: 'raw',
+    })
+);
 
 export interface ShaderSourceUpdates {
     rendererVertex?: string;
@@ -55,14 +63,29 @@ export interface SceneOption {
 }
 
 interface SceneEntry extends SceneOption {
+    fileName: string;
     source: string;
 }
 
-const sceneEntries: SceneEntry[] = buildSceneEntries(sceneSourceModules);
-if (sceneEntries.length === 0) {
-    sceneEntries.push({ id: 'defaultScene', name: 'Default Scene', source: defaultSceneSource });
+interface ShaderPipelineRuntimeState {
+    activeSceneId?: string;
 }
-let activeSceneId: string = sceneEntries[0]?.id ?? 'defaultScene';
+
+const ACTIVE_SCENE_STORAGE_KEY = 'implicit.activeScene.v1';
+
+const sceneEntries: SceneEntry[] = buildSceneEntries({
+    ...sceneSourceModules,
+    ...sceneSourceModulesWithQuery,
+});
+if (sceneEntries.length === 0) {
+    sceneEntries.push({ id: 'defaultScene', name: 'Default Scene', fileName: 'defaultScene.glsl', source: defaultSceneSource });
+}
+
+const runtimeState: ShaderPipelineRuntimeState = ((globalThis as any).__implicitShaderPipelineState as ShaderPipelineRuntimeState | undefined) ?? {};
+(globalThis as any).__implicitShaderPipelineState = runtimeState;
+
+let activeSceneId: string = resolveInitialActiveSceneId();
+runtimeState.activeSceneId = activeSceneId;
 
 let activeSources: ShaderSources = {
     rendererVertex: rendererVertexSource,
@@ -98,6 +121,28 @@ export function getActiveSceneId(): string {
     return activeSceneId;
 }
 
+export function getActiveSceneFileName(): string | null {
+    const entry = resolveSceneEntryById(activeSceneId);
+    return entry?.fileName ?? null;
+}
+
+export function updateSceneSourceById(sceneId: string, source: string): boolean {
+    const entry = resolveSceneEntryById(sceneId);
+    if (!entry) {
+        return false;
+    }
+
+    entry.source = source;
+    if (entry.id === activeSceneId) {
+        activeSources = {
+            ...activeSources,
+            scene: source,
+        };
+    }
+
+    return true;
+}
+
 export function setActiveSceneById(sceneId: string): boolean {
     const nextEntry = resolveSceneEntryById(sceneId);
     if (!nextEntry) {
@@ -105,6 +150,8 @@ export function setActiveSceneById(sceneId: string): boolean {
     }
 
     activeSceneId = nextEntry.id;
+    runtimeState.activeSceneId = nextEntry.id;
+    storeActiveSceneId(nextEntry.id);
     activeSources = {
         ...activeSources,
         scene: nextEntry.source,
@@ -214,16 +261,30 @@ function readDefineNumber(source: string, macroName: string): number | undefined
     return parsed;
 }
 
-function buildSceneEntries(modules: Record<string, string>): SceneEntry[] {
-    return Object.entries(modules)
-        .map(([path, source]) => {
+function buildSceneEntries(modules: Record<string, string | { default: string }>): SceneEntry[] {
+    const deduped = new Map<string, SceneEntry>();
+
+    Object.entries(modules)
+        .map(([path, module]) => {
             const filename = path.split('/').pop() ?? '';
             const id = filename.replace(/\.glsl(?:\?raw)?$/i, '');
             const name = toSceneLabel(id);
-            return { id, name, source };
+            const source = typeof module === 'string'
+                ? module
+                : typeof module.default === 'string'
+                    ? module.default
+                    : '';
+            return { id, name, fileName: filename, source };
         })
         .filter((entry) => entry.id.length > 0)
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .forEach((entry) => {
+            const existing = deduped.get(entry.id);
+            if (!existing || (existing.source.length === 0 && entry.source.length > 0)) {
+                deduped.set(entry.id, entry);
+            }
+        });
+
+    return Array.from(deduped.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getSceneSourceById(sceneId: string): string {
@@ -266,4 +327,85 @@ function toSceneLabel(sceneId: string): string {
         .split(/\s+/)
         .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
         .join(' ');
+}
+
+function resolveInitialActiveSceneId(): string {
+    const fromRuntime = runtimeState.activeSceneId;
+    const fromSession = readStoredActiveSceneId();
+    const fromDefault = sceneEntries[0]?.id;
+    const candidate = fromRuntime ?? fromSession ?? fromDefault ?? 'defaultScene';
+    const entry = resolveSceneEntryById(candidate);
+    return entry?.id ?? (sceneEntries[0]?.id ?? 'defaultScene');
+}
+
+function readStoredActiveSceneId(): string | undefined {
+    if (typeof window === 'undefined') {
+        return undefined;
+    }
+
+    try {
+        const value = window.sessionStorage.getItem(ACTIVE_SCENE_STORAGE_KEY);
+        return value ?? undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+function storeActiveSceneId(sceneId: string): void {
+    if (typeof window === 'undefined') {
+        return;
+    }
+
+    try {
+        window.sessionStorage.setItem(ACTIVE_SCENE_STORAGE_KEY, sceneId);
+    } catch {
+        // Ignore storage write failures.
+    }
+}
+
+if (import.meta.hot && sceneHotDependencyPaths.length > 0) {
+    import.meta.hot.accept(sceneHotDependencyPaths, (nextModules) => {
+        const modules = Array.isArray(nextModules) ? nextModules : [nextModules];
+        const byId = new Map(sceneEntries.map((entry) => [entry.id, entry]));
+
+        for (let index = 0; index < sceneHotDependencyPaths.length; index += 1) {
+            const path = sceneHotDependencyPaths[index];
+            if (!path) {
+                continue;
+            }
+
+            const filename = path.split('/').pop() ?? '';
+            const id = filename.replace(/\.glsl(?:\?raw)?$/i, '');
+            if (!id) {
+                continue;
+            }
+
+            const moduleValue = modules[index] as string | { default?: string } | undefined;
+            const source = typeof moduleValue === 'string'
+                ? moduleValue
+                : typeof moduleValue?.default === 'string'
+                    ? moduleValue.default
+                    : '';
+
+            const existing = byId.get(id);
+            if (existing) {
+                existing.fileName = filename;
+                existing.source = source;
+                existing.name = toSceneLabel(id);
+            } else {
+                byId.set(id, { id, name: toSceneLabel(id), fileName: filename, source });
+            }
+        }
+
+        sceneEntries.length = 0;
+        sceneEntries.push(...Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name)));
+
+        const activeEntry = resolveSceneEntryById(activeSceneId);
+        if (activeEntry) {
+            activeSources = {
+                ...activeSources,
+                scene: activeEntry.source,
+            };
+        }
+    });
 }
