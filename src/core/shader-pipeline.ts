@@ -99,15 +99,15 @@ export function getActiveSceneId(): string {
 }
 
 export function setActiveSceneById(sceneId: string): boolean {
-    const nextSource = getSceneSourceById(sceneId);
-    if (!nextSource) {
+    const nextEntry = resolveSceneEntryById(sceneId);
+    if (!nextEntry) {
         return false;
     }
 
-    activeSceneId = sceneId;
+    activeSceneId = nextEntry.id;
     activeSources = {
         ...activeSources,
-        scene: nextSource,
+        scene: nextEntry.source,
     };
     return true;
 }
@@ -227,13 +227,30 @@ function buildSceneEntries(modules: Record<string, string>): SceneEntry[] {
 }
 
 function getSceneSourceById(sceneId: string): string {
-    const direct = sceneEntries.find((scene) => scene.id === sceneId);
-    if (direct) {
-        return direct.source;
+    const entry = resolveSceneEntryById(sceneId);
+    if (entry) {
+        return entry.source;
     }
 
     const fallback = sceneEntries[0];
     return fallback?.source ?? '';
+}
+
+function resolveSceneEntryById(sceneId: string): SceneEntry | undefined {
+    const normalizedTarget = normalizeSceneId(sceneId);
+    if (!normalizedTarget) {
+        return undefined;
+    }
+
+    return sceneEntries.find((scene) => normalizeSceneId(scene.id) === normalizedTarget);
+}
+
+function normalizeSceneId(sceneId: string): string {
+    return sceneId
+        .trim()
+        .replace(/\.glsl$/i, '')
+        .replace(/[-\s]+/g, '_')
+        .toLowerCase();
 }
 
 function toSceneLabel(sceneId: string): string {
