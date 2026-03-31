@@ -156,9 +156,9 @@ class ImplicitSurfaceStudio {
 
     private buildSlicerFilename(): string {
         const stamp = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '');
+        const modelSlug = slugifyForFilename(getActiveSceneId(), 'model');
         const printerSlug = slugifyForFilename(this.slicerSettings.printerModelId, 'printer');
-        const sceneSlug = slugifyForFilename(getActiveSceneId(), 'scene');
-        return `implicit-vase-${printerSlug}-${sceneSlug}-${stamp}.gcode`;
+        return `${modelSlug}-${printerSlug}-${stamp}.gcode`;
     }
 
     private applySceneSlicerDefaults(defaults: SceneSlicerDefaults): void {
