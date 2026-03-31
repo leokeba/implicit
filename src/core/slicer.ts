@@ -110,7 +110,7 @@ export class Slicer {
             fanPercent: 100,
             flowRate: 1.0,
             brimWidthMm: 5,
-            brimGapMm: 0,
+            brimGapMm: 0.1,
             startGcode: getDefaultStartGcode().join('\n'),
             endGcode: getDefaultEndGcode().join('\n'),
         };
@@ -355,11 +355,20 @@ export class Slicer {
         lines.push('M83');
         // Keep first layer fan off for adhesion, then restore configured fan after layer 0.
         lines.push('M106 S0');
-        appendBrimGcode(lines, toolpath, settings, Math.max(settings.layerHeight, p0.y), calculateExtrusionPerMm(settings, settings.firstLayerLineWidth));
+        const emittedBrim = appendBrimGcode(
+            lines,
+            toolpath,
+            settings,
+            Math.max(settings.layerHeight, p0.y),
+            calculateExtrusionPerMm(settings, settings.firstLayerLineWidth)
+        );
         lines.push('; FEATURE: Travel');
         lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(settings.layerHeight, p0.y).toFixed(3)}`);
-        lines.push('G1 F900 E1.2000');
-        lines.push('G92 E0');
+        if (!emittedBrim) {
+            // Mirror Orca's small restore pulse only when no brim path already primed the nozzle.
+            lines.push('G1 F900 E0.8000');
+            lines.push('G92 E0');
+        }
 
         let currentLayer = 0;
         lines.push('; CHANGE_LAYER');
@@ -585,17 +594,17 @@ function appendBrimGcode(
     settings: VaseSlicerSettings,
     firstLayerZ: number,
     extrusionPerMm: number
-): void {
+): boolean {
     const lineWidth = Math.max(0.01, settings.firstLayerLineWidth);
     const brimLoops = Math.floor(settings.brimWidthMm / lineWidth);
     const brimGap = Math.max(0, settings.brimGapMm);
     if (brimLoops <= 0 || toolpath.pointsPerLayer < 3) {
-        return;
+        return false;
     }
 
     const firstLayer = toolpath.points.slice(0, toolpath.pointsPerLayer);
     if (firstLayer.length < 3) {
-        return;
+        return false;
     }
 
     const printFeed = mmPerSecToFeedrate(settings.firstLayerPrintSpeedMmPerSec).toFixed(0);
@@ -603,12 +612,15 @@ function appendBrimGcode(
 
     lines.push('; FEATURE: Brim');
     let isFirstBrimLoop = true;
+    let emittedAnyBrimLoop = false;
     for (let loopIndex = brimLoops; loopIndex >= 1; loopIndex--) {
         const offset = lineWidth + brimGap + (loopIndex - 1) * lineWidth;
         const loop = buildBrimLoop(firstLayer, settings.centerX, settings.centerZ, offset);
         if (loop.length < 3) {
             continue;
         }
+
+        emittedAnyBrimLoop = true;
 
         const start = loop[0];
         lines.push(';TYPE:Brim');
@@ -634,8 +646,7 @@ function appendBrimGcode(
         }
     }
 
-    lines.push('G1 F1200 E-0.60000');
-    lines.push('G92 E0');
+    return emittedAnyBrimLoop;
 }
 
 function buildBrimLoop(
