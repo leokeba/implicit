@@ -528,6 +528,10 @@ export class Controls {
         addSlicerField('bedTempC', 'slicer-bed', 'Bed temp', initialSlicerParams.bedTempC, '1', '0', '130', (value) => onSlicerParamsChange({ bedTempC: value }));
         addSlicerField('fanPercent', 'slicer-fan', 'Fan %', initialSlicerParams.fanPercent, '1', '0', '100', (value) => onSlicerParamsChange({ fanPercent: value }));
         addSlicerField('flowRate', 'slicer-flow', 'Flow rate', initialSlicerParams.flowRate, '0.01', '0.01', '5.0', (value) => onSlicerParamsChange({ flowRate: value }));
+        addSlicerField('moveMergeMinMoveMm', 'slicer-merge-min-move', 'Merge min move (mm)', initialSlicerParams.moveMergeMinMoveMm, '0.005', '0.005', '1.0', (value) => onSlicerParamsChange({ moveMergeMinMoveMm: value }));
+        addSlicerField('moveMergeMaxDeviationMm', 'slicer-merge-max-deviation', 'Merge max deviation (mm)', initialSlicerParams.moveMergeMaxDeviationMm, '0.001', '0.001', '0.5', (value) => onSlicerParamsChange({ moveMergeMaxDeviationMm: value }));
+        addSlicerField('moveMergeMaxTurnDeg', 'slicer-merge-max-turn', 'Merge max turn (deg)', initialSlicerParams.moveMergeMaxTurnDeg, '0.1', '0.5', '45', (value) => onSlicerParamsChange({ moveMergeMaxTurnDeg: value }));
+        addSlicerField('moveMergeKeepStride', 'slicer-merge-keep-stride', 'Merge keep stride', initialSlicerParams.moveMergeKeepStride, '1', '1', '200', (value) => onSlicerParamsChange({ moveMergeKeepStride: value }));
         addSlicerField('brimWidthMm', 'slicer-brim-width', 'Brim width (mm)', initialSlicerParams.brimWidthMm, '0.1', '0', '30', (value) => onSlicerParamsChange({ brimWidthMm: value }));
         addSlicerField('brimGapMm', 'slicer-brim-gap', 'Brim gap (mm)', initialSlicerParams.brimGapMm, '0.05', '0', '5', (value) => onSlicerParamsChange({ brimGapMm: value }));
         addSlicerTextField('startGcode', 'slicer-start-gcode', 'Start G-code', initialSlicerParams.startGcode, (value) => onSlicerParamsChange({ startGcode: value }));
@@ -535,7 +539,7 @@ export class Controls {
 
         const slicerHint = document.createElement('p');
         slicerHint.className = 'section-caption';
-        slicerHint.textContent = 'Generates a spiral vase contour using GPU radius sampling and exports .gcode. Start/end templates support {nozzleTempC}, {bedTempC}, and {fanPwm}.';
+        slicerHint.textContent = 'Generates a spiral vase contour using GPU radius sampling and exports .gcode. Merge controls tune move simplification aggressiveness. Start/end templates support {nozzleTempC}, {bedTempC}, and {fanPwm}.';
 
         syncSlicerUiFromSettings(initialSlicerParams);
 

@@ -33,6 +33,10 @@ export interface VaseSlicerSettings {
     bedTempC: number;
     fanPercent: number;
     flowRate: number;
+    moveMergeMinMoveMm: number;
+    moveMergeMaxDeviationMm: number;
+    moveMergeMaxTurnDeg: number;
+    moveMergeKeepStride: number;
     brimWidthMm: number;
     brimGapMm: number;
     startGcode: string;
@@ -45,6 +49,7 @@ export interface ToolpathPoint {
     z: number;
     e: number;
     speedMmPerSec: number;
+    layer: number;
 }
 
 export interface VaseToolpath {
@@ -109,6 +114,10 @@ export class Slicer {
             bedTempC: 55,
             fanPercent: 100,
             flowRate: 1.0,
+            moveMergeMinMoveMm: 0.10,
+            moveMergeMaxDeviationMm: 0.025,
+            moveMergeMaxTurnDeg: 4.0,
+            moveMergeKeepStride: 12,
             brimWidthMm: 5,
             brimGapMm: 0.1,
             startGcode: getDefaultStartGcode().join('\n'),
@@ -149,6 +158,10 @@ export class Slicer {
         merged.firstLayerPrintSpeedMmPerSec = clamp(merged.firstLayerPrintSpeedMmPerSec, 5, merged.printSpeedMmPerSec);
         merged.travelSpeedMmPerSec = clamp(merged.travelSpeedMmPerSec, 10, 300);
         merged.flowRate = clamp(merged.flowRate, 0.01, 5.0);
+        merged.moveMergeMinMoveMm = clamp(merged.moveMergeMinMoveMm, 0.005, 1.0);
+        merged.moveMergeMaxDeviationMm = clamp(merged.moveMergeMaxDeviationMm, 0.001, 0.5);
+        merged.moveMergeMaxTurnDeg = clamp(merged.moveMergeMaxTurnDeg, 0.5, 45);
+        merged.moveMergeKeepStride = clampInt(merged.moveMergeKeepStride, 1, 200);
         merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
         merged.brimGapMm = clamp(merged.brimGapMm, 0, 5);
         if (merged.maxY <= merged.minY) {
@@ -287,6 +300,7 @@ export class Slicer {
                 z,
                 e: eAcc,
                 speedMmPerSec: layerIndex === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
+                layer: layerIndex,
             });
 
             prevX = x;
@@ -294,12 +308,101 @@ export class Slicer {
             prevZ = z;
         }
 
+        const optimizedPoints = this.optimizeToolpath(points, settings);
+        this.recomputeExtrusion(optimizedPoints, settings);
+
         return {
-            points,
+            points: optimizedPoints,
             layerCount: layers,
             pointsPerLayer: perLayer,
             estimatedHeight: modelHeightMm,
         };
+    }
+
+    private optimizeToolpath(points: ToolpathPoint[], settings: VaseSlicerSettings): ToolpathPoint[] {
+        if (points.length < 4) {
+            return points;
+        }
+
+        const reduced: ToolpathPoint[] = [];
+        let cursor = 0;
+        while (cursor < points.length) {
+            const layer = points[cursor].layer;
+            let end = cursor + 1;
+            while (end < points.length && points[end].layer === layer) {
+                end++;
+            }
+
+            const layerPoints = points.slice(cursor, end);
+            const simplified = this.simplifyLayerMoves(layerPoints, settings, layer);
+            reduced.push(...simplified);
+            cursor = end;
+        }
+
+        return reduced;
+    }
+
+    private simplifyLayerMoves(points: ToolpathPoint[], settings: VaseSlicerSettings, layer: number): ToolpathPoint[] {
+        if (points.length <= 3) {
+            return points;
+        }
+
+        const minMoveMm = settings.moveMergeMinMoveMm;
+        const maxDeviationMm = settings.moveMergeMaxDeviationMm;
+        const maxTurnDeg = settings.moveMergeMaxTurnDeg;
+        const keepStride = settings.moveMergeKeepStride;
+
+        const out: ToolpathPoint[] = [points[0]];
+        let skipped = 0;
+
+        for (let i = 1; i < points.length - 1; i++) {
+            const prev = out[out.length - 1];
+            const cur = points[i];
+            const next = points[i + 1];
+
+            const a = distance3(prev, cur);
+            const b = distance3(cur, next);
+            const chord = distance3(prev, next);
+            const turnDeg = turnAngleDegrees(prev, cur, next);
+            const deviation = chord > 1e-6 ? pointLineDistance3(cur, prev, next) : 0;
+            const isTinyMove = a <= minMoveMm && b <= minMoveMm;
+            const isSmoothEnough = deviation <= maxDeviationMm && turnDeg <= maxTurnDeg;
+
+            const canMerge =
+                (isTinyMove || isSmoothEnough) &&
+                skipped < keepStride;
+
+            if (canMerge) {
+                skipped++;
+                continue;
+            }
+
+            out.push(cur);
+            skipped = 0;
+        }
+
+        out.push(points[points.length - 1]);
+        return out;
+    }
+
+    private recomputeExtrusion(points: ToolpathPoint[], settings: VaseSlicerSettings): void {
+        if (points.length === 0) {
+            return;
+        }
+
+        const firstLayerExtrusionPerMm = calculateExtrusionPerMm(settings, settings.firstLayerLineWidth);
+        const extrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
+
+        points[0].e = 0;
+        let eAcc = 0;
+        for (let i = 1; i < points.length; i++) {
+            const prev = points[i - 1];
+            const point = points[i];
+            const segment = distance3(prev, point);
+            const segmentExtrusionPerMm = point.layer === 0 ? firstLayerExtrusionPerMm : extrusionPerMm;
+            eAcc += segment * segmentExtrusionPerMm;
+            point.e = eAcc;
+        }
     }
 
     private buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings): string {
@@ -344,6 +447,11 @@ export class Slicer {
         lines.push(`; First layer extrusion/mm: ${calculateExtrusionPerMm(settings, settings.firstLayerLineWidth).toFixed(5)}`);
         lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings, settings.lineWidth).toFixed(5)}`);
         lines.push(`; Estimated height (mm): ${toolpath.estimatedHeight.toFixed(3)}`);
+        const rawPathPoints = toolpath.layerCount * toolpath.pointsPerLayer;
+        const mergedPathPoints = toolpath.points.length;
+        const removedPathPoints = Math.max(0, rawPathPoints - mergedPathPoints);
+        const mergeReductionPct = rawPathPoints > 0 ? (removedPathPoints / rawPathPoints) * 100 : 0;
+        lines.push(`; Move merge: ${removedPathPoints} points removed (${mergeReductionPct.toFixed(1)}%)`);
         const startLines = parseGcodeLines(settings.startGcode, getDefaultStartGcode());
         for (const line of startLines) {
             lines.push(expandGcodeTemplate(line, settings));
@@ -370,7 +478,7 @@ export class Slicer {
             lines.push('G92 E0');
         }
 
-        let currentLayer = 0;
+        let currentLayer = p0.layer;
         lines.push('; CHANGE_LAYER');
         lines.push(`; Z_HEIGHT: ${Math.max(0.0, p0.y).toFixed(3)}`);
         lines.push(`; LAYER_HEIGHT: ${settings.layerHeight.toFixed(3)}`);
@@ -383,7 +491,7 @@ export class Slicer {
         for (let i = 1; i < toolpath.points.length; i++) {
             const point = toolpath.points[i];
             const prevPoint = toolpath.points[i - 1];
-            const layer = Math.floor(i / toolpath.pointsPerLayer);
+            const layer = point.layer;
             if (layer !== currentLayer) {
                 currentLayer = layer;
                 lines.push('; CHANGE_LAYER');
@@ -583,6 +691,56 @@ function mmPerSecToFeedrate(mmPerSec: number): number {
     return mmPerSec * 60.0;
 }
 
+function distance3(a: Pick<ToolpathPoint, 'x' | 'y' | 'z'>, b: Pick<ToolpathPoint, 'x' | 'y' | 'z'>): number {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+function turnAngleDegrees(
+    a: Pick<ToolpathPoint, 'x' | 'y' | 'z'>,
+    b: Pick<ToolpathPoint, 'x' | 'y' | 'z'>,
+    c: Pick<ToolpathPoint, 'x' | 'y' | 'z'>
+): number {
+    const ux = b.x - a.x;
+    const uy = b.y - a.y;
+    const uz = b.z - a.z;
+    const vx = c.x - b.x;
+    const vy = c.y - b.y;
+    const vz = c.z - b.z;
+
+    const lu = Math.hypot(ux, uy, uz);
+    const lv = Math.hypot(vx, vy, vz);
+    if (lu < 1e-9 || lv < 1e-9) {
+        return 0;
+    }
+
+    const cosTheta = clamp(((ux * vx) + (uy * vy) + (uz * vz)) / (lu * lv), -1, 1);
+    return (Math.acos(cosTheta) * 180) / Math.PI;
+}
+
+function pointLineDistance3(
+    p: Pick<ToolpathPoint, 'x' | 'y' | 'z'>,
+    a: Pick<ToolpathPoint, 'x' | 'y' | 'z'>,
+    b: Pick<ToolpathPoint, 'x' | 'y' | 'z'>
+): number {
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const abz = b.z - a.z;
+    const apx = p.x - a.x;
+    const apy = p.y - a.y;
+    const apz = p.z - a.z;
+
+    const abLenSq = (abx * abx) + (aby * aby) + (abz * abz);
+    if (abLenSq < 1e-12) {
+        return Math.hypot(apx, apy, apz);
+    }
+
+    const t = clamp(((apx * abx) + (apy * aby) + (apz * abz)) / abLenSq, 0, 1);
+    const qx = a.x + abx * t;
+    const qy = a.y + aby * t;
+    const qz = a.z + abz * t;
+    return Math.hypot(p.x - qx, p.y - qy, p.z - qz);
+}
+
 function percentToPwm(percent: number): number {
     const clamped = clamp(percent, 0, 100);
     return Math.round((clamped / 100) * 255);
@@ -602,7 +760,7 @@ function appendBrimGcode(
         return false;
     }
 
-    const firstLayer = toolpath.points.slice(0, toolpath.pointsPerLayer);
+    const firstLayer = toolpath.points.filter((point) => point.layer === 0);
     if (firstLayer.length < 3) {
         return false;
     }
