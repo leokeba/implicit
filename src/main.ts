@@ -33,11 +33,11 @@ class ImplicitSurfaceStudio {
         this.filamentProfiles = loadFilamentProfiles();
         this.sceneOptions = getAvailableScenes();
 
-        if (this.printerModels.length > 0) {
-            this.slicerSettings = applyPrinterModel(this.slicerSettings, this.printerModels[0]);
-        }
         if (this.filamentProfiles.length > 0) {
             this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
+        }
+        if (this.printerModels.length > 0) {
+            this.slicerSettings = applyPrinterModel(this.slicerSettings, this.printerModels[0]);
         }
 
         this.applySceneSlicerDefaults(getSceneSlicerDefaults());

@@ -24,6 +24,7 @@ export interface VaseSlicerSettings {
     centerX: number;
     centerZ: number;
     lineWidth: number;
+    firstLayerLineWidth: number;
     filamentDiameter: number;
     firstLayerPrintSpeedMmPerSec: number;
     printSpeedMmPerSec: number;
@@ -99,6 +100,7 @@ export class Slicer {
             centerX: 110,
             centerZ: 110,
             lineWidth: 0.42,
+            firstLayerLineWidth: 0.5,
             filamentDiameter: 1.75,
             firstLayerPrintSpeedMmPerSec: 20,
             printSpeedMmPerSec: 35,
@@ -141,6 +143,7 @@ export class Slicer {
         merged.radialSteps = clampInt(merged.radialSteps, 32, 512);
         merged.hitEpsilon = clamp(merged.hitEpsilon, 0.0001, 0.02);
         merged.lineWidth = clamp(merged.lineWidth, 0.2, 1.2);
+        merged.firstLayerLineWidth = clamp(merged.firstLayerLineWidth, 0.2, 1.2);
         merged.filamentDiameter = clamp(merged.filamentDiameter, 1.0, 3.0);
         merged.printSpeedMmPerSec = clamp(merged.printSpeedMmPerSec, 5, 200);
         merged.firstLayerPrintSpeedMmPerSec = clamp(merged.firstLayerPrintSpeedMmPerSec, 5, merged.printSpeedMmPerSec);
@@ -231,8 +234,13 @@ export class Slicer {
         const perLayer = settings.pointsPerLayer;
         const totalPoints = layers * perLayer;
         const modelHeightMm = this.getModelHeightMm(settings);
+        const firstLayerZ = Math.max(0.0, settings.layerHeight);
+        const remainingHeightMm = Math.max(0.0, modelHeightMm - firstLayerZ);
+        const firstLayerPoints = Math.min(perLayer, totalPoints);
+        const remainingPoints = Math.max(1, totalPoints - firstLayerPoints);
 
-        const extrusionPerMm = calculateExtrusionPerMm(settings);
+        const firstLayerExtrusionPerMm = calculateExtrusionPerMm(settings, settings.firstLayerLineWidth);
+        const extrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
 
         const points: ToolpathPoint[] = [];
         let eAcc = 0;
@@ -242,26 +250,35 @@ export class Slicer {
 
         for (let i = 0; i < totalPoints; i++) {
             const k = i % perLayer;
-            const globalProgress = i / Math.max(1, totalPoints - 1);
-            const layerPos = globalProgress * Math.max(1, layers - 1);
-            const layer = Math.floor(layerPos);
-            const nextLayer = Math.min(layer + 1, layers - 1);
-            const layerBlend = layerPos - layer;
+            const layerIndex = Math.floor(i / perLayer);
+
+            let sampleLayerPos = 0;
+            let y = firstLayerZ;
+            if (i >= firstLayerPoints) {
+                const t = (i - firstLayerPoints + 1) / remainingPoints;
+                y = firstLayerZ + (t * remainingHeightMm);
+                sampleLayerPos = 1 + (t * Math.max(0, layers - 2));
+            }
+
+            const sampleLayer = Math.floor(sampleLayerPos);
+            const nextLayer = Math.min(sampleLayer + 1, layers - 1);
+            const layerBlend = sampleLayerPos - sampleLayer;
 
             const angle = (k / perLayer) * Math.PI * 2.0;
 
-            const r0 = radiusMap[layer][k] ?? 0;
+            const r0 = radiusMap[sampleLayer][k] ?? 0;
             const r1 = radiusMap[nextLayer][k] ?? r0;
             const radiusSdf = r0 * (1.0 - layerBlend) + r1 * layerBlend;
             const radius = radiusSdf * settings.modelScale;
 
             const x = settings.centerX + Math.cos(angle) * radius;
             const z = settings.centerZ + Math.sin(angle) * radius;
-            const y = globalProgress * modelHeightMm;
 
             if (i > 0) {
                 const segment = Math.hypot(x - prevX, y - prevY, z - prevZ);
-                eAcc += segment * extrusionPerMm;
+                const segmentLayer = Math.floor(i / perLayer);
+                const segmentExtrusionPerMm = segmentLayer === 0 ? firstLayerExtrusionPerMm : extrusionPerMm;
+                eAcc += segment * segmentExtrusionPerMm;
             }
 
             points.push({
@@ -269,7 +286,7 @@ export class Slicer {
                 y,
                 z,
                 e: eAcc,
-                speedMmPerSec: layer === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
+                speedMmPerSec: layerIndex === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
             });
 
             prevX = x;
@@ -292,6 +309,7 @@ export class Slicer {
 
         const lines: string[] = [];
         const p0 = toolpath.points[0];
+        const configuredFanPwm = percentToPwm(settings.fanPercent);
         const emitOrcaMetadata = shouldEmitOrcaMetadata(settings);
         const filamentMeta = inferFilamentMetadata(settings);
 
@@ -316,27 +334,37 @@ export class Slicer {
         lines.push(`; Bed temperature (C): ${settings.bedTempC.toFixed(0)}`);
         lines.push(`; Fan speed (%): ${settings.fanPercent.toFixed(0)}`);
         lines.push(`; Line width (mm): ${settings.lineWidth.toFixed(3)}`);
+        lines.push(`; First layer line width (mm): ${settings.firstLayerLineWidth.toFixed(3)}`);
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
         lines.push(`; First layer print speed (mm/s): ${settings.firstLayerPrintSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Travel speed (mm/s): ${settings.travelSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Brim width (mm): ${settings.brimWidthMm.toFixed(2)}`);
         lines.push(`; Brim gap (mm): ${settings.brimGapMm.toFixed(2)}`);
-        lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings).toFixed(5)}`);
+        lines.push(`; First layer extrusion/mm: ${calculateExtrusionPerMm(settings, settings.firstLayerLineWidth).toFixed(5)}`);
+        lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings, settings.lineWidth).toFixed(5)}`);
         lines.push(`; Estimated height (mm): ${toolpath.estimatedHeight.toFixed(3)}`);
         const startLines = parseGcodeLines(settings.startGcode, getDefaultStartGcode());
         for (const line of startLines) {
             lines.push(expandGcodeTemplate(line, settings));
         }
+        // Normalize motion/extrusion modes regardless of custom start G-code state.
+        lines.push('G21');
+        lines.push('G90');
         // Force relative extrusion for exported toolpaths so each move carries only its local extrusion delta.
         lines.push('M83');
-        appendBrimGcode(lines, toolpath, settings, Math.max(0.2, p0.y), calculateExtrusionPerMm(settings));
+        // Keep first layer fan off for adhesion, then restore configured fan after layer 0.
+        lines.push('M106 S0');
+        appendBrimGcode(lines, toolpath, settings, Math.max(settings.layerHeight, p0.y), calculateExtrusionPerMm(settings, settings.firstLayerLineWidth));
         lines.push('; FEATURE: Travel');
-        lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(0.2, p0.y).toFixed(3)}`);
+        lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(settings.layerHeight, p0.y).toFixed(3)}`);
         lines.push('G1 F900 E1.2000');
         lines.push('G92 E0');
 
         let currentLayer = 0;
+        lines.push('; CHANGE_LAYER');
+        lines.push(`; Z_HEIGHT: ${Math.max(0.0, p0.y).toFixed(3)}`);
+        lines.push(`; LAYER_HEIGHT: ${settings.layerHeight.toFixed(3)}`);
         lines.push(';LAYER_CHANGE');
         lines.push(';LAYER:0');
         lines.push(`;Z:${Math.max(0.0, p0.y).toFixed(3)}`);
@@ -349,9 +377,15 @@ export class Slicer {
             const layer = Math.floor(i / toolpath.pointsPerLayer);
             if (layer !== currentLayer) {
                 currentLayer = layer;
+                lines.push('; CHANGE_LAYER');
+                lines.push(`; Z_HEIGHT: ${Math.max(0.0, point.y).toFixed(3)}`);
+                lines.push(`; LAYER_HEIGHT: ${settings.layerHeight.toFixed(3)}`);
                 lines.push(';LAYER_CHANGE');
                 lines.push(`;LAYER:${layer}`);
                 lines.push(`;Z:${Math.max(0.0, point.y).toFixed(3)}`);
+                if (layer === 1) {
+                    lines.push(`M106 S${configuredFanPwm}`);
+                }
                 lines.push('; FEATURE: Outer wall');
                 lines.push(';TYPE:Outer wall');
             }
@@ -522,8 +556,9 @@ export class Slicer {
     }
 }
 
-function calculateExtrusionPerMm(settings: VaseSlicerSettings): number {
-    const lineWidth = Math.max(settings.lineWidth, settings.nozzleDiameter);
+function calculateExtrusionPerMm(settings: VaseSlicerSettings, targetLineWidth?: number): number {
+    const requestedLineWidth = typeof targetLineWidth === 'number' ? targetLineWidth : settings.lineWidth;
+    const lineWidth = Math.max(requestedLineWidth, settings.nozzleDiameter);
     const layerHeight = Math.min(settings.layerHeight, lineWidth);
 
     // Stadium profile gives a better bead area estimate than a pure rectangle.
@@ -539,6 +574,11 @@ function mmPerSecToFeedrate(mmPerSec: number): number {
     return mmPerSec * 60.0;
 }
 
+function percentToPwm(percent: number): number {
+    const clamped = clamp(percent, 0, 100);
+    return Math.round((clamped / 100) * 255);
+}
+
 function appendBrimGcode(
     lines: string[],
     toolpath: VaseToolpath,
@@ -546,7 +586,7 @@ function appendBrimGcode(
     firstLayerZ: number,
     extrusionPerMm: number
 ): void {
-    const lineWidth = Math.max(0.01, settings.lineWidth);
+    const lineWidth = Math.max(0.01, settings.firstLayerLineWidth);
     const brimLoops = Math.floor(settings.brimWidthMm / lineWidth);
     const brimGap = Math.max(0, settings.brimGapMm);
     if (brimLoops <= 0 || toolpath.pointsPerLayer < 3) {
@@ -708,7 +748,7 @@ function buildOrcaMetadataHeader(
         '; infill_direction = 45',
         '; infill_wall_overlap = 15%',
         '; initial_layer_infill_speed = 105',
-        '; initial_layer_line_width = 0.5',
+        `; initial_layer_line_width = ${settings.firstLayerLineWidth.toFixed(2)}`,
         '; initial_layer_print_height = 0.2',
         '; initial_layer_travel_speed = 100%',
         '; inner_wall_acceleration = 10000',
@@ -768,6 +808,7 @@ function buildOrcaMetadataHeader(
         `; first_layer_bed_temperature = ${settings.bedTempC.toFixed(0)}`,
         `; layer_height = ${settings.layerHeight.toFixed(2)}`,
         `; line_width = ${settings.lineWidth.toFixed(2)}`,
+        `; first_layer_line_width = ${settings.firstLayerLineWidth.toFixed(2)}`,
         `; first_layer_bed_temperature = ${settings.bedTempC.toFixed(0)}`,
         '; overhang_fan_speed = 100',
         '; overhang_fan_threshold = 50%',
@@ -841,7 +882,7 @@ function buildOrcaMetadataHeader(
         '; infill extrusion width = 0.45mm',
         '; solid infill extrusion width = 0.42mm',
         '; top infill extrusion width = 0.42mm',
-        '; first layer extrusion width = 0.50mm',
+        `; first layer extrusion width = ${settings.firstLayerLineWidth.toFixed(2)}mm`,
         '',
         '; EXECUTABLE_BLOCK_START',
     ];

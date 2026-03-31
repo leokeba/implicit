@@ -2,9 +2,7 @@
 #define SCENE_DEFAULT_MIN_Y -1.0
 #define SCENE_DEFAULT_MAX_Y 1.0
 #define SCENE_DEFAULT_MAX_RADIUS 1.1
-#define SCENE_DEFAULT_NOZZLE_DIAMETER_MM 0.4
-#define SCENE_DEFAULT_FLOW_RATE 1.0
-#define SCENE_DEFAULT_LAYER_HEIGHT_MM 0.2
+#define SCENE_DEFAULT_MODEL_SCALE 25.0
 
 float saturate(float x) {
     return clamp(x, 0.0, 1.0);
