@@ -57,7 +57,8 @@ void main() {
     float angleIndex = fragCoord.x;
     float layerIndex = fragCoord.y;
 
-    float angleT = angleIndex / max(uTextureSize.x - 1.0, 1.0);
+    // Angle is periodic; sample [0, 1) so the first and last columns are not duplicates.
+    float angleT = angleIndex / max(uTextureSize.x, 1.0);
     float layerT = layerIndex / max(uTextureSize.y - 1.0, 1.0);
 
     float theta = angleT * 6.28318530718;
