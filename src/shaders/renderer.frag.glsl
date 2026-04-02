@@ -4,6 +4,8 @@ varying vec2 vUv;
 
 uniform vec2 uResolution;
 uniform float uTime;
+uniform float uFrameModulo;
+uniform float uFramePeriod;
 uniform vec3 uCameraPos;
 uniform vec3 uCameraTarget;
 uniform int uViewMode;

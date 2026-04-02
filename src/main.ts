@@ -107,6 +107,10 @@ class ImplicitSurfaceStudio {
             (next) => {
                 this.renderer.updateViewportParams(next);
             },
+            this.renderer.getAnimationParams(),
+            (next) => {
+                this.renderer.updateAnimationParams(next);
+            },
             this.printerModels,
             this.slicerSettings.printerModelId,
             (printerModelId) => {
@@ -163,9 +167,10 @@ class ImplicitSurfaceStudio {
     }
 
     private startRenderingLoop(): void {
-        const render = () => {
-            this.renderer.render();
-            this.preview.renderOverlayInScene(this.renderer.getCameraState());
+        const render = (nowMs: number) => {
+            if (this.renderer.render(nowMs)) {
+                this.preview.renderOverlayInScene(this.renderer.getCameraState());
+            }
             requestAnimationFrame(render);
         };
         requestAnimationFrame(render);

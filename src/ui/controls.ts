@@ -1,4 +1,4 @@
-import type { RaymarchParams, ViewportParams } from '../core/renderer';
+import type { AnimationParams, RaymarchParams, ViewportParams } from '../core/renderer';
 
 import type { FilamentProfile } from '../core/filament-profiles';
 import type { PrinterModel } from '../core/printer-models';
@@ -16,6 +16,8 @@ export class Controls {
         onRaymarchParamsChange: (next: Partial<RaymarchParams>) => void,
         initialViewportParams: ViewportParams,
         onViewportParamsChange: (next: Partial<ViewportParams>) => void,
+        initialAnimationParams: AnimationParams,
+        onAnimationParamsChange: (next: Partial<AnimationParams>) => void,
         printerModels: PrinterModel[],
         currentPrinterModelId: string,
         onPrinterModelChange: (printerModelId: string) => VaseSlicerSettings,
@@ -348,6 +350,71 @@ export class Controls {
         viewportHint.className = 'section-caption';
         viewportHint.textContent = 'Adjust interaction feel for orbiting, panning, wheel zoom, and dolly drag.';
 
+        const animationCard = document.createElement('section');
+        animationCard.className = 'section-card';
+
+        const animationTitle = document.createElement('h3');
+        animationTitle.textContent = 'Animation';
+
+        const animationGrid = document.createElement('div');
+        animationGrid.className = 'field-grid';
+
+        const addAnimationField = (
+            id: string,
+            label: string,
+            value: number,
+            step: string,
+            min: string,
+            max: string,
+            onChange: (value: number) => void
+        ): void => {
+            const fieldLabel = document.createElement('label');
+            fieldLabel.htmlFor = id;
+            fieldLabel.textContent = label;
+
+            const fieldRow = document.createElement('div');
+            fieldRow.className = 'field-row';
+
+            const fieldInput = document.createElement('input');
+            fieldInput.id = id;
+            fieldInput.type = 'number';
+            fieldInput.step = step;
+            fieldInput.min = min;
+            fieldInput.max = max;
+            fieldInput.value = String(value);
+            fieldInput.addEventListener('change', () => {
+                onChange(Number(fieldInput.value));
+            });
+
+            fieldRow.appendChild(fieldLabel);
+            fieldRow.appendChild(fieldInput);
+            animationGrid.appendChild(fieldRow);
+        };
+
+        addAnimationField(
+            'animation-target-frame-rate',
+            'Target FPS',
+            initialAnimationParams.targetFrameRate,
+            '1',
+            '0',
+            '120',
+            (value) => onAnimationParamsChange({ targetFrameRate: value })
+        );
+
+        addAnimationField(
+            'animation-frame-period',
+            'Frame periodicity',
+            initialAnimationParams.framePeriod,
+            '1',
+            '1',
+            '4096',
+            (value) => onAnimationParamsChange({ framePeriod: value })
+        );
+
+        const animationHint = document.createElement('p');
+        animationHint.className = 'section-caption';
+        animationHint.textContent = 'Throttle redraws with Target FPS. A Target FPS of 0 keeps the browser uncapped. Scene shaders can read uFrameModulo and uFramePeriod.';
+
         raymarchCard.appendChild(raymarchTitle);
         raymarchCard.appendChild(raymarchGrid);
         raymarchCard.appendChild(raymarchHint);
@@ -355,6 +422,10 @@ export class Controls {
         viewportCard.appendChild(viewportTitle);
         viewportCard.appendChild(viewportGrid);
         viewportCard.appendChild(viewportHint);
+
+        animationCard.appendChild(animationTitle);
+        animationCard.appendChild(animationGrid);
+        animationCard.appendChild(animationHint);
 
         const slicerCard = document.createElement('section');
         slicerCard.className = 'section-card';
@@ -649,6 +720,7 @@ export class Controls {
         shell.appendChild(viewCard);
         shell.appendChild(raymarchCard);
         shell.appendChild(viewportCard);
+        shell.appendChild(animationCard);
         shell.appendChild(slicerCard);
         controlsHost.appendChild(shell);
     }

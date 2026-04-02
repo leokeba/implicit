@@ -34,6 +34,11 @@ export interface ViewportParams {
     dollySensitivity: number;
 }
 
+export interface AnimationParams {
+    targetFrameRate: number;
+    framePeriod: number;
+}
+
 export interface CameraState {
     position: { x: number; y: number; z: number };
     forward: { x: number; y: number; z: number };
@@ -60,6 +65,8 @@ class Renderer {
     private program: WebGLProgram | null;
     private positionBuffer: WebGLBuffer | null;
     private timeLocation: WebGLUniformLocation | null;
+    private frameModuloLocation: WebGLUniformLocation | null;
+    private framePeriodLocation: WebGLUniformLocation | null;
     private resolutionLocation: WebGLUniformLocation | null;
     private cameraPosLocation: WebGLUniformLocation | null;
     private cameraTargetLocation: WebGLUniformLocation | null;
@@ -80,6 +87,8 @@ class Renderer {
     private nozzleDiameterLocation: WebGLUniformLocation | null;
     private flowRateLocation: WebGLUniformLocation | null;
     private startTimeMs: number;
+    private lastRenderTimeMs: number;
+    private renderedFrameCount: number;
     private orbitYaw: number;
     private orbitPitch: number;
     private orbitDistance: number;
@@ -94,6 +103,7 @@ class Renderer {
     private slicerUniformState: SceneSlicerUniformState;
     private raymarchParams: RaymarchParams;
     private viewportParams: ViewportParams;
+    private animationParams: AnimationParams;
 
     constructor() {
         activeRenderers.add(this);
@@ -102,6 +112,8 @@ class Renderer {
         this.program = null;
         this.positionBuffer = null;
         this.timeLocation = null;
+        this.frameModuloLocation = null;
+        this.framePeriodLocation = null;
         this.resolutionLocation = null;
         this.cameraPosLocation = null;
         this.cameraTargetLocation = null;
@@ -122,6 +134,8 @@ class Renderer {
         this.nozzleDiameterLocation = null;
         this.flowRateLocation = null;
         this.startTimeMs = 0;
+        this.lastRenderTimeMs = 0;
+        this.renderedFrameCount = 0;
         const savedState = this.readStoredCameraState();
         this.orbitYaw = savedState.yaw;
         this.orbitPitch = savedState.pitch;
@@ -158,6 +172,10 @@ class Renderer {
             panSensitivity: 1.0,
             zoomSensitivity: 0.0015,
             dollySensitivity: 0.004,
+        };
+        this.animationParams = {
+            targetFrameRate: 0,
+            framePeriod: 120,
         };
     }
 
@@ -197,6 +215,8 @@ class Renderer {
         this.attachInteractionHandlers(canvas);
         this.gl.clearColor(0.06, 0.08, 0.14, 1.0);
         this.startTimeMs = performance.now();
+        this.lastRenderTimeMs = 0;
+        this.renderedFrameCount = 0;
     }
 
     public hotReloadShaders(updates: ShaderSourceUpdates): ShaderReloadResult {
@@ -231,9 +251,13 @@ class Renderer {
         }
     }
 
-    public render(): void {
+    public render(nowMs: number = performance.now()): boolean {
         if (!this.gl || !this.canvas || !this.program || !this.positionBuffer) {
-            return;
+            return false;
+        }
+
+        if (!this.shouldRenderAt(nowMs)) {
+            return false;
         }
 
         this.resize();
@@ -248,8 +272,19 @@ class Renderer {
         gl.enableVertexAttribArray(positionLocation);
         gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
+        const framePeriod = this.animationParams.framePeriod;
+        const frameModulo = this.renderedFrameCount % framePeriod;
+
         if (this.timeLocation) {
-            gl.uniform1f(this.timeLocation, (performance.now() - this.startTimeMs) * 0.001);
+            gl.uniform1f(this.timeLocation, (nowMs - this.startTimeMs) * 0.001);
+        }
+
+        if (this.frameModuloLocation) {
+            gl.uniform1f(this.frameModuloLocation, frameModulo);
+        }
+
+        if (this.framePeriodLocation) {
+            gl.uniform1f(this.framePeriodLocation, framePeriod);
         }
 
         if (this.resolutionLocation) {
@@ -330,6 +365,8 @@ class Renderer {
         }
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        this.renderedFrameCount += 1;
+        return true;
     }
 
     public setViewMode(mode: number): void {
@@ -388,6 +425,17 @@ class Renderer {
             panSensitivity: this.clampFloat(next.panSensitivity ?? this.viewportParams.panSensitivity, 0.2, 5.0),
             zoomSensitivity: this.clampFloat(next.zoomSensitivity ?? this.viewportParams.zoomSensitivity, 0.0002, 0.02),
             dollySensitivity: this.clampFloat(next.dollySensitivity ?? this.viewportParams.dollySensitivity, 0.0005, 0.04),
+        };
+    }
+
+    public getAnimationParams(): AnimationParams {
+        return { ...this.animationParams };
+    }
+
+    public updateAnimationParams(next: Partial<AnimationParams>): void {
+        this.animationParams = {
+            targetFrameRate: this.clampInt(next.targetFrameRate ?? this.animationParams.targetFrameRate, 0, 120),
+            framePeriod: this.clampInt(next.framePeriod ?? this.animationParams.framePeriod, 1, 4096),
         };
     }
 
@@ -682,6 +730,8 @@ class Renderer {
         }
 
         this.timeLocation = this.gl.getUniformLocation(this.program, 'uTime');
+        this.frameModuloLocation = this.gl.getUniformLocation(this.program, 'uFrameModulo');
+        this.framePeriodLocation = this.gl.getUniformLocation(this.program, 'uFramePeriod');
         this.resolutionLocation = this.gl.getUniformLocation(this.program, 'uResolution');
         this.cameraPosLocation = this.gl.getUniformLocation(this.program, 'uCameraPos');
         this.cameraTargetLocation = this.gl.getUniformLocation(this.program, 'uCameraTarget');
@@ -701,6 +751,27 @@ class Renderer {
         this.maxRadiusLocation = this.gl.getUniformLocation(this.program, 'uMaxRadius');
         this.nozzleDiameterLocation = this.gl.getUniformLocation(this.program, 'uNozzleDiameter');
         this.flowRateLocation = this.gl.getUniformLocation(this.program, 'uFlowRate');
+    }
+
+    private shouldRenderAt(nowMs: number): boolean {
+        const targetFrameRate = this.animationParams.targetFrameRate;
+        if (targetFrameRate <= 0) {
+            this.lastRenderTimeMs = nowMs;
+            return true;
+        }
+
+        if (this.lastRenderTimeMs <= 0) {
+            this.lastRenderTimeMs = nowMs;
+            return true;
+        }
+
+        const minFrameIntervalMs = 1000 / targetFrameRate;
+        if ((nowMs - this.lastRenderTimeMs) < minFrameIntervalMs) {
+            return false;
+        }
+
+        this.lastRenderTimeMs = nowMs;
+        return true;
     }
 
     public resize(): void {
