@@ -11,7 +11,29 @@ import {
     type SceneOption,
     type SceneSlicerDefaults,
 } from './core/shader-pipeline';
-import { Slicer, type ToolpathPoint, type VaseSlicerSettings } from './core/slicer';
+import {
+    Slicer,
+    type ToolpathPoint,
+    type VaseSliceBenchmarkRun,
+    type VaseSlicerSettings,
+} from './core/slicer';
+
+interface SlicerBenchmarkSummary {
+    totalRuns: number;
+    measuredRuns: number;
+    warmupRuns: number;
+    averageMs: number;
+    medianMs: number;
+    minMs: number;
+    maxMs: number;
+    spreadMs: number;
+    averageContourSamplingMs: number;
+    averageToolpathBuildMs: number;
+    averageGcodeBuildMs: number;
+    points: number;
+    layers: number;
+    bytes: number;
+}
 
 class ImplicitSurfaceStudio {
     private renderer: Renderer;
@@ -126,6 +148,13 @@ class ImplicitSurfaceStudio {
                     bytes: result.gcode.length,
                     points: result.toolpath.points.length,
                 };
+            },
+            (iterations, warmupRuns) => {
+                const benchmark = this.slicer.benchmarkVaseGcode(this.slicerSettings, iterations, warmupRuns);
+                this.preview.setToolpathOverlayWorldPoints(
+                    this.convertToolpathToScenePoints(benchmark.lastResult.toolpath.points, benchmark.settings)
+                );
+                return this.summarizeBenchmarkRuns(benchmark.runs, benchmark.warmupRuns, benchmark.measuredRuns);
             }
         );
         this.renderer.init(this.preview.getCanvas());
@@ -207,6 +236,59 @@ class ImplicitSurfaceStudio {
         anchor.click();
         document.body.removeChild(anchor);
         URL.revokeObjectURL(url);
+    }
+
+    private summarizeBenchmarkRuns(runs: VaseSliceBenchmarkRun[], warmupRuns: number, measuredRuns: number): SlicerBenchmarkSummary {
+        if (runs.length === 0) {
+            throw new Error('Benchmark completed without any runs.');
+        }
+
+        const measured = runs.filter((run) => !run.isWarmup);
+        if (measured.length === 0) {
+            throw new Error('Benchmark completed without any measured runs.');
+        }
+
+        let totalMs = 0;
+        let totalContourSamplingMs = 0;
+        let totalToolpathBuildMs = 0;
+        let totalGcodeBuildMs = 0;
+        let minMs = Number.POSITIVE_INFINITY;
+        let maxMs = 0;
+
+        for (const run of measured) {
+            totalMs += run.timings.totalMs;
+            totalContourSamplingMs += run.timings.contourSamplingMs;
+            totalToolpathBuildMs += run.timings.toolpathBuildMs;
+            totalGcodeBuildMs += run.timings.gcodeBuildMs;
+            minMs = Math.min(minMs, run.timings.totalMs);
+            maxMs = Math.max(maxMs, run.timings.totalMs);
+        }
+
+        const lastRun = runs[runs.length - 1];
+        const sortedTotals = measured
+            .map((run) => run.timings.totalMs)
+            .sort((a, b) => a - b);
+        const middleIndex = Math.floor(sortedTotals.length / 2);
+        const medianMs = sortedTotals.length % 2 === 0
+            ? (sortedTotals[middleIndex - 1] + sortedTotals[middleIndex]) * 0.5
+            : sortedTotals[middleIndex];
+
+        return {
+            totalRuns: runs.length,
+            measuredRuns,
+            warmupRuns,
+            averageMs: totalMs / measured.length,
+            medianMs,
+            minMs,
+            maxMs,
+            spreadMs: maxMs - minMs,
+            averageContourSamplingMs: totalContourSamplingMs / measured.length,
+            averageToolpathBuildMs: totalToolpathBuildMs / measured.length,
+            averageGcodeBuildMs: totalGcodeBuildMs / measured.length,
+            points: lastRun.pointCount,
+            layers: lastRun.layerCount,
+            bytes: lastRun.gcodeBytes,
+        };
     }
 
 }

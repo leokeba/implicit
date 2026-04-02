@@ -24,7 +24,23 @@ export class Controls {
         onFilamentProfileChange: (filamentProfileId: string) => VaseSlicerSettings,
         initialSlicerParams: VaseSlicerSettings,
         onSlicerParamsChange: (next: Partial<VaseSlicerSettings>) => void,
-        onGenerateVaseGcode: () => { filename: string; bytes: number; points: number }
+        onGenerateVaseGcode: () => { filename: string; bytes: number; points: number },
+        onBenchmarkVaseGcode: (iterations: number, warmupRuns: number) => {
+            totalRuns: number;
+            measuredRuns: number;
+            warmupRuns: number;
+            averageMs: number;
+            medianMs: number;
+            minMs: number;
+            maxMs: number;
+            spreadMs: number;
+            averageContourSamplingMs: number;
+            averageToolpathBuildMs: number;
+            averageGcodeBuildMs: number;
+            points: number;
+            layers: number;
+            bytes: number;
+        }
     ): void {
         const controlsHost = document.getElementById('controls');
         if (!controlsHost) {
@@ -513,9 +529,9 @@ export class Controls {
         addSlicerField('nozzleDiameter', 'slicer-nozzle-diameter', 'Nozzle dia', initialSlicerParams.nozzleDiameter, '0.01', '0.2', '1.2', (value) => onSlicerParamsChange({ nozzleDiameter: value }));
         addSlicerField('layerHeight', 'slicer-layer-height', 'Layer height', initialSlicerParams.layerHeight, '0.01', '0.05', '1.0', (value) => onSlicerParamsChange({ layerHeight: value }));
         addSlicerField('pointsPerLayer', 'slicer-points', 'Points/layer', initialSlicerParams.pointsPerLayer, '1', '48', '2048', (value) => onSlicerParamsChange({ pointsPerLayer: value }));
-        addSlicerField('maxRadius', 'slicer-max-radius', 'Max radius', initialSlicerParams.maxRadius, '0.01', '0.1', '3.0', (value) => onSlicerParamsChange({ maxRadius: value }));
-        addSlicerField('radialSteps', 'slicer-radial-steps', 'Radial steps', initialSlicerParams.radialSteps, '1', '32', '512', (value) => onSlicerParamsChange({ radialSteps: value }));
-        addSlicerField('hitEpsilon', 'slicer-hit-eps', 'Hit epsilon', initialSlicerParams.hitEpsilon, '0.0001', '0.0001', '0.02', (value) => onSlicerParamsChange({ hitEpsilon: value }));
+        addSlicerField('maxRadius', 'slicer-max-radius', 'Slice half-extent', initialSlicerParams.maxRadius, '0.01', '0.1', '3.0', (value) => onSlicerParamsChange({ maxRadius: value }));
+        addSlicerField('radialSteps', 'slicer-radial-steps', 'Slice grid', initialSlicerParams.radialSteps, '1', '32', '512', (value) => onSlicerParamsChange({ radialSteps: value }));
+        addSlicerField('hitEpsilon', 'slicer-hit-eps', 'Iso epsilon', initialSlicerParams.hitEpsilon, '0.0001', '0.0001', '0.02', (value) => onSlicerParamsChange({ hitEpsilon: value }));
         addSlicerField('centerX', 'slicer-center-x', 'Bed center X', initialSlicerParams.centerX, '0.1', '0', '400', (value) => onSlicerParamsChange({ centerX: value }));
         addSlicerField('centerZ', 'slicer-center-z', 'Bed center Y', initialSlicerParams.centerZ, '0.1', '0', '400', (value) => onSlicerParamsChange({ centerZ: value }));
         addSlicerField('lineWidth', 'slicer-line-width', 'Line width', initialSlicerParams.lineWidth, '0.01', '0.2', '1.2', (value) => onSlicerParamsChange({ lineWidth: value }));
@@ -539,7 +555,7 @@ export class Controls {
 
         const slicerHint = document.createElement('p');
         slicerHint.className = 'section-caption';
-        slicerHint.textContent = 'Generates a spiral vase contour using GPU radius sampling and exports .gcode. Merge controls tune move simplification aggressiveness. Start/end templates support {nozzleTempC}, {bedTempC}, and {fanPwm}.';
+        slicerHint.textContent = 'Generates a strict spiral vase path from GPU-sampled planar contours. Slice half-extent defines the XZ sampling bounds in scene units, Slice grid controls planar field resolution, and the slicer now rejects layers that are not single closed loops. Merge controls tune move simplification aggressiveness. Start/end templates support {nozzleTempC}, {bedTempC}, and {fanPwm}.';
 
         syncSlicerUiFromSettings(initialSlicerParams);
 
@@ -551,21 +567,77 @@ export class Controls {
         generateButton.className = 'action-button';
         generateButton.textContent = 'Generate Vase G-code';
 
+        const benchmarkIterations = document.createElement('input');
+        benchmarkIterations.type = 'number';
+        benchmarkIterations.className = 'action-input';
+        benchmarkIterations.min = '1';
+        benchmarkIterations.max = '20';
+        benchmarkIterations.step = '1';
+        benchmarkIterations.value = '3';
+        benchmarkIterations.setAttribute('aria-label', 'Benchmark iterations');
+
+        const benchmarkWarmups = document.createElement('input');
+        benchmarkWarmups.type = 'number';
+        benchmarkWarmups.className = 'action-input';
+        benchmarkWarmups.min = '0';
+        benchmarkWarmups.max = '10';
+        benchmarkWarmups.step = '1';
+        benchmarkWarmups.value = '1';
+        benchmarkWarmups.setAttribute('aria-label', 'Benchmark warmup runs');
+
+        const benchmarkButton = document.createElement('button');
+        benchmarkButton.type = 'button';
+        benchmarkButton.className = 'action-button action-button-secondary';
+        benchmarkButton.textContent = 'Benchmark';
+
         const slicerStatus = document.createElement('p');
         slicerStatus.className = 'section-caption action-status';
         slicerStatus.textContent = 'Ready.';
 
+        const setActionsEnabled = (enabled: boolean): void => {
+            generateButton.disabled = !enabled;
+            benchmarkButton.disabled = !enabled;
+            benchmarkIterations.disabled = !enabled;
+            benchmarkWarmups.disabled = !enabled;
+        };
+
+        const runSlicerAction = (pendingLabel: string, action: () => string): void => {
+            setActionsEnabled(false);
+            slicerStatus.textContent = pendingLabel;
+            window.setTimeout(() => {
+                try {
+                    slicerStatus.textContent = action();
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'Unknown slicer error';
+                    slicerStatus.textContent = `Slicer error: ${message}`;
+                } finally {
+                    setActionsEnabled(true);
+                }
+            }, 0);
+        };
+
         generateButton.addEventListener('click', () => {
-            try {
+            runSlicerAction('Generating G-code...', () => {
                 const result = onGenerateVaseGcode();
-                slicerStatus.textContent = `Exported ${result.filename} (${(result.bytes / 1024).toFixed(1)} KB, ${result.points} points).`;
-            } catch (error) {
-                const message = error instanceof Error ? error.message : 'Unknown slicer error';
-                slicerStatus.textContent = `Slicer error: ${message}`;
-            }
+                return `Exported ${result.filename} (${(result.bytes / 1024).toFixed(1)} KB, ${result.points} points).`;
+            });
+        });
+
+        benchmarkButton.addEventListener('click', () => {
+            const iterations = Number(benchmarkIterations.value);
+            const warmupRuns = Number(benchmarkWarmups.value);
+            const measuredLabel = `${benchmarkIterations.value} measured run${benchmarkIterations.value === '1' ? '' : 's'}`;
+            const warmupLabel = `${benchmarkWarmups.value} warmup run${benchmarkWarmups.value === '1' ? '' : 's'}`;
+            runSlicerAction(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, () => {
+                const summary = onBenchmarkVaseGcode(iterations, warmupRuns);
+                return `Benchmark settled on ${summary.measuredRuns} measured run${summary.measuredRuns === 1 ? '' : 's'} after ${summary.warmupRuns} warmup run${summary.warmupRuns === 1 ? '' : 's'}: avg ${summary.averageMs.toFixed(1)} ms, median ${summary.medianMs.toFixed(1)} ms, min ${summary.minMs.toFixed(1)} ms, max ${summary.maxMs.toFixed(1)} ms, spread ${summary.spreadMs.toFixed(1)} ms. Phase avg: sample ${summary.averageContourSamplingMs.toFixed(1)} ms, toolpath ${summary.averageToolpathBuildMs.toFixed(1)} ms, gcode ${summary.averageGcodeBuildMs.toFixed(1)} ms. Last output: ${(summary.bytes / 1024).toFixed(1)} KB, ${summary.points} points, ${summary.layers} layers.`;
+            });
         });
 
         slicerActions.appendChild(generateButton);
+        slicerActions.appendChild(benchmarkIterations);
+        slicerActions.appendChild(benchmarkWarmups);
+        slicerActions.appendChild(benchmarkButton);
 
         slicerCard.appendChild(slicerTitle);
         slicerCard.appendChild(slicerGrid);

@@ -320,8 +320,17 @@ textarea:focus {
 .action-row {
   margin-top: 10px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.action-input {
+  width: 84px;
+}
+
+.action-input[aria-label="Benchmark warmup runs"] {
+  width: 96px;
 }
 
 .action-button {
@@ -338,13 +347,31 @@ textarea:focus {
   transition: transform 120ms ease, box-shadow 120ms ease, filter 120ms ease;
 }
 
+.action-button-secondary {
+  border-color: #6f7f63;
+  background: linear-gradient(180deg, #eef3e6, #dde7d2);
+  color: #2f4524;
+  box-shadow: 0 6px 14px rgba(79, 99, 70, 0.14);
+}
+
 .action-button:hover {
   filter: brightness(1.03);
   box-shadow: 0 8px 16px rgba(46, 78, 39, 0.25);
 }
 
+.action-button-secondary:hover {
+  box-shadow: 0 8px 16px rgba(79, 99, 70, 0.18);
+}
+
 .action-button:active {
   transform: translateY(1px);
+}
+
+.action-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+  transform: none;
+  box-shadow: none;
 }
 
 .action-status {
