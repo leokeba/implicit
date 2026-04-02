@@ -7,6 +7,7 @@ import rendererVertexSource from '../shaders/renderer.vert.glsl?raw';
 import sdfPrimitivesSource from '../shaders/lib/sdf-primitives.glsl?raw';
 import slicerFragmentTemplateSource from '../shaders/slicer.frag.glsl?raw';
 import slicerVertexSource from '../shaders/slicer.vert.glsl?raw';
+import utilsSource from '../shaders/lib/utils.glsl?raw';
 
 const sceneSourceModules = import.meta.glob('../shaders/scenes/*.glsl', {
     eager: true,
@@ -33,6 +34,7 @@ export interface ShaderSourceUpdates {
     sdfPrimitives?: string;
     environment?: string;
     materials?: string;
+    utils?: string;
 }
 
 interface ShaderSources {
@@ -45,6 +47,7 @@ interface ShaderSources {
     sdfPrimitives: string;
     environment: string;
     materials: string;
+    utils: string;
 }
 
 export interface SceneSlicerDefaults {
@@ -97,6 +100,7 @@ let activeSources: ShaderSources = {
     sdfPrimitives: sdfPrimitivesSource,
     environment: environmentSource,
     materials: materialsSource,
+    utils: utilsSource,
 };
 
 export function getImportedShaderSources(): ShaderSourceUpdates {
@@ -110,6 +114,7 @@ export function getImportedShaderSources(): ShaderSourceUpdates {
         sdfPrimitives: sdfPrimitivesSource,
         environment: environmentSource,
         materials: materialsSource,
+        utils: utilsSource,
     };
 }
 
@@ -170,6 +175,7 @@ export function applyShaderSourceUpdates(updates: ShaderSourceUpdates): void {
         sdfPrimitives: updates.sdfPrimitives ?? activeSources.sdfPrimitives,
         environment: updates.environment ?? activeSources.environment,
         materials: updates.materials ?? activeSources.materials,
+        utils: updates.utils ?? activeSources.utils,
     };
 }
 
@@ -179,7 +185,8 @@ export function getRendererVertexSource(): string {
 
 export function composeRendererFragmentSource(): string {
     return activeSources.rendererFragmentTemplate
-    .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
+        .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
+        .replace('__UTILS_GLSL__', activeSources.utils)
         .replace('__SCENE_GLSL__', activeSources.scene)
         .replace('__RAYMARCH_GLSL__', activeSources.raymarch)
         .replace('__ENVIRONMENT_GLSL__', activeSources.environment)
@@ -193,6 +200,7 @@ export function getSlicerVertexSource(): string {
 export function composeSlicerFragmentSource(): string {
     return activeSources.slicerFragmentTemplate
         .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
+        .replace('__UTILS_GLSL__', activeSources.utils)
         .replace('__SCENE_GLSL__', activeSources.scene);
 }
 

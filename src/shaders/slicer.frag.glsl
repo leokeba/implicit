@@ -16,6 +16,8 @@ const int MAX_BISECT_STEPS = 12;
 
 __SDF_PRIMITIVES_GLSL__
 
+__UTILS_GLSL__
+
 __SCENE_GLSL__
 
 vec4 encodeRadius(float radius, float maxRadius) {

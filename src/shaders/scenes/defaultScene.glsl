@@ -12,16 +12,6 @@ float wrapPi(float a) {
     return mod(a + 3.14159265, 6.2831853) - 3.14159265;
 }
 
-float angleUnit(vec2 p) {
-    return atan(p.y, p.x) / 6.28318530718;
-}
-
-float spiralPosition(vec3 p) {
-    float angle = fract(angleUnit(p.xz));
-    float layer = fract(p.y * uScale / uLayerHeight +angle);
-    return layer;
-}
-
 float mapScene(vec3 p) {
     return sdCappedCylinder(p, 1., 1.);
 }

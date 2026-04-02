@@ -25,6 +25,8 @@ uniform float uLayerHeight;
 
 __SDF_PRIMITIVES_GLSL__
 
+__UTILS_GLSL__
+
 __SCENE_GLSL__
 
 __RAYMARCH_GLSL__
