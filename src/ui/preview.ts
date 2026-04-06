@@ -12,6 +12,7 @@ export class Preview {
     private overlayContext: CanvasRenderingContext2D | null;
     private previewHost: HTMLElement | null;
     private overlayWorldPoints: WorldPoint[];
+    private renderingActive: boolean;
 
     constructor() {
         this.canvas = null;
@@ -19,6 +20,7 @@ export class Preview {
         this.overlayContext = null;
         this.previewHost = null;
         this.overlayWorldPoints = [];
+        this.renderingActive = true;
     }
 
     public init(): void {
@@ -70,8 +72,30 @@ export class Preview {
         this.overlayWorldPoints = points;
     }
 
+    public setRenderingActive(active: boolean): void {
+        this.renderingActive = active;
+
+        if (this.canvas) {
+            this.canvas.style.visibility = active ? 'visible' : 'hidden';
+            if (!active) {
+                this.canvas.width = 1;
+                this.canvas.height = 1;
+            }
+        }
+
+        if (this.overlayCanvas) {
+            this.overlayCanvas.style.visibility = active ? 'visible' : 'hidden';
+            if (!active) {
+                this.overlayCanvas.width = 1;
+                this.overlayCanvas.height = 1;
+            } else {
+                this.syncOverlaySize();
+            }
+        }
+    }
+
     private syncOverlaySize(): void {
-        if (!this.previewHost || !this.overlayCanvas) {
+        if (!this.previewHost || !this.overlayCanvas || !this.renderingActive) {
             return;
         }
 

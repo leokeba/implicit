@@ -89,6 +89,9 @@ class Renderer {
     private startTimeMs: number;
     private lastRenderTimeMs: number;
     private renderedFrameCount: number;
+    private pausedDurationMs: number;
+    private pauseStartedAtMs: number;
+    private isPaused: boolean;
     private orbitYaw: number;
     private orbitPitch: number;
     private orbitDistance: number;
@@ -136,6 +139,9 @@ class Renderer {
         this.startTimeMs = 0;
         this.lastRenderTimeMs = 0;
         this.renderedFrameCount = 0;
+        this.pausedDurationMs = 0;
+        this.pauseStartedAtMs = 0;
+        this.isPaused = false;
         const savedState = this.readStoredCameraState();
         this.orbitYaw = savedState.yaw;
         this.orbitPitch = savedState.pitch;
@@ -217,6 +223,27 @@ class Renderer {
         this.startTimeMs = performance.now();
         this.lastRenderTimeMs = 0;
         this.renderedFrameCount = 0;
+        this.pausedDurationMs = 0;
+        this.pauseStartedAtMs = 0;
+        this.isPaused = false;
+    }
+
+    public setPaused(paused: boolean, nowMs: number = performance.now()): void {
+        if (this.isPaused === paused) {
+            return;
+        }
+
+        this.isPaused = paused;
+        if (paused) {
+            this.pauseStartedAtMs = nowMs;
+            return;
+        }
+
+        if (this.pauseStartedAtMs > 0) {
+            this.pausedDurationMs += Math.max(0, nowMs - this.pauseStartedAtMs);
+        }
+        this.pauseStartedAtMs = 0;
+        this.lastRenderTimeMs = 0;
     }
 
     public hotReloadShaders(updates: ShaderSourceUpdates): ShaderReloadResult {
@@ -256,6 +283,10 @@ class Renderer {
             return false;
         }
 
+        if (this.isPaused) {
+            return false;
+        }
+
         if (!this.shouldRenderAt(nowMs)) {
             return false;
         }
@@ -276,7 +307,7 @@ class Renderer {
         const frameModulo = this.renderedFrameCount % framePeriod;
 
         if (this.timeLocation) {
-            gl.uniform1f(this.timeLocation, (nowMs - this.startTimeMs) * 0.001);
+            gl.uniform1f(this.timeLocation, (nowMs - this.startTimeMs - this.pausedDurationMs) * 0.001);
         }
 
         if (this.frameModuloLocation) {

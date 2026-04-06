@@ -3,3 +3,4 @@ dist
 .DS_Store
 src/shaders/scenes/*.glsl
 !src/shaders/scenes/defaultScene.glsl
+.tmp

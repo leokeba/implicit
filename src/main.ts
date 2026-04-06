@@ -44,6 +44,8 @@ class ImplicitSurfaceStudio {
     private printerModels: PrinterModel[];
     private filamentProfiles: FilamentProfile[];
     private sceneOptions: SceneOption[];
+    private isSlicing: boolean;
+    private renderFrameHandle: number | null;
 
     constructor() {
         this.renderer = new Renderer();
@@ -54,6 +56,8 @@ class ImplicitSurfaceStudio {
         this.printerModels = loadPrinterModels();
         this.filamentProfiles = loadFilamentProfiles();
         this.sceneOptions = getAvailableScenes();
+        this.isSlicing = false;
+        this.renderFrameHandle = null;
 
         if (this.filamentProfiles.length > 0) {
             this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
@@ -141,39 +145,115 @@ class ImplicitSurfaceStudio {
                 this.syncSceneSlicerUniforms();
             },
             () => {
-                const result = this.slicer.generateVaseGcode(this.slicerSettings);
-                this.preview.setToolpathOverlayWorldPoints(
-                    this.convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
-                );
-                const filename = this.buildSlicerFilename();
-                this.downloadTextFile(filename, result.gcode);
-                return {
-                    filename,
-                    bytes: result.gcode.length,
-                    points: result.toolpath.points.length,
-                };
+                return this.runWhilePreviewPaused(() => {
+                    const result = this.slicer.generateVaseGcode(this.slicerSettings);
+                    this.preview.setToolpathOverlayWorldPoints(
+                        this.convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
+                    );
+                    const filename = this.buildSlicerFilename();
+                    this.downloadTextFile(filename, result.gcode);
+                    return {
+                        filename,
+                        bytes: result.gcode.length,
+                        points: result.toolpath.points.length,
+                    };
+                });
             },
             (iterations, warmupRuns) => {
-                const benchmark = this.slicer.benchmarkVaseGcode(this.slicerSettings, iterations, warmupRuns);
-                this.preview.setToolpathOverlayWorldPoints(
-                    this.convertToolpathToScenePoints(benchmark.lastResult.toolpath.points, benchmark.settings)
-                );
-                return this.summarizeBenchmarkRuns(benchmark.runs, benchmark.warmupRuns, benchmark.measuredRuns);
+                return this.runWhilePreviewPaused(() => {
+                    const benchmark = this.slicer.benchmarkVaseGcode(this.slicerSettings, iterations, warmupRuns);
+                    this.preview.setToolpathOverlayWorldPoints(
+                        this.convertToolpathToScenePoints(benchmark.lastResult.toolpath.points, benchmark.settings)
+                    );
+                    return this.summarizeBenchmarkRuns(benchmark.runs, benchmark.warmupRuns, benchmark.measuredRuns);
+                });
             }
         );
         this.renderer.init(this.preview.getCanvas());
         this.syncSceneSlicerUniforms();
-        this.startRenderingLoop();
+        this.attachRenderLifecycleHandlers();
+        this.updatePreviewRenderState();
     }
 
     private startRenderingLoop(): void {
+        if (this.renderFrameHandle !== null) {
+            return;
+        }
+
         const render = (nowMs: number) => {
+            if (!this.shouldRenderPreview()) {
+                this.renderFrameHandle = null;
+                return;
+            }
+
+            this.renderFrameHandle = requestAnimationFrame(render);
             if (this.renderer.render(nowMs)) {
                 this.preview.renderOverlayInScene(this.renderer.getCameraState());
             }
-            requestAnimationFrame(render);
         };
-        requestAnimationFrame(render);
+        this.renderFrameHandle = requestAnimationFrame(render);
+    }
+
+    private stopRenderingLoop(): void {
+        if (this.renderFrameHandle === null) {
+            return;
+        }
+
+        cancelAnimationFrame(this.renderFrameHandle);
+        this.renderFrameHandle = null;
+    }
+
+    private attachRenderLifecycleHandlers(): void {
+        const refresh = () => {
+            this.updatePreviewRenderState();
+        };
+
+        document.addEventListener('visibilitychange', refresh);
+        document.addEventListener('freeze', refresh as EventListener);
+        document.addEventListener('resume', refresh as EventListener);
+        window.addEventListener('focus', refresh);
+        window.addEventListener('blur', refresh);
+        window.addEventListener('pageshow', refresh);
+        window.addEventListener('pagehide', refresh);
+    }
+
+    private shouldRenderPreview(): boolean {
+        if (this.isSlicing) {
+            return false;
+        }
+
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+            return false;
+        }
+
+        if (typeof document !== 'undefined' && !document.hasFocus()) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private updatePreviewRenderState(): void {
+        const shouldRender = this.shouldRenderPreview();
+        this.renderer.setPaused(!shouldRender);
+        this.preview.setRenderingActive(shouldRender);
+        if (shouldRender) {
+            this.startRenderingLoop();
+            return;
+        }
+
+        this.stopRenderingLoop();
+    }
+
+    private runWhilePreviewPaused<T>(action: () => T): T {
+        this.isSlicing = true;
+        this.updatePreviewRenderState();
+        try {
+            return action();
+        } finally {
+            this.isSlicing = false;
+            this.updatePreviewRenderState();
+        }
     }
 
     private convertToolpathToScenePoints(
