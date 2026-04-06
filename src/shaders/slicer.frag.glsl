@@ -1,6 +1,8 @@
 precision highp float;
 
 uniform vec2 uTextureSize;
+uniform float uFrameModulo;
+uniform float uFramePeriod;
 uniform float uMinY;
 uniform float uMaxY;
 uniform float uScale;

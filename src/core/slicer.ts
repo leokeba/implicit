@@ -390,6 +390,8 @@ export class Slicer {
         gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
 
         this.setUniform2f('uTextureSize', width, height);
+        this.setUniform1f('uFrameModulo', 0.0);
+        this.setUniform1f('uFramePeriod', 120.0);
         this.setUniform1f('uMinY', settings.minY);
         this.setUniform1f('uMaxY', settings.maxY);
         this.setUniform1f('uScale', settings.modelScale);
