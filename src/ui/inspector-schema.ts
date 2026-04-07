@@ -1,0 +1,492 @@
+import type { AnimationParams, RaymarchParams, ViewportParams } from '../core/renderer';
+
+import type { FilamentProfile } from '../core/filament-profiles';
+import type { PrinterModel } from '../core/printer-models';
+import type { SceneOption } from '../core/shader-pipeline';
+import type { VaseSlicerSettings } from '../core/slicer';
+
+export type ControlTabId = 'scene' | 'camera' | 'render' | 'print' | 'machine' | 'material' | 'output';
+
+export type NumericSlicerKey =
+    | 'minY'
+    | 'maxY'
+    | 'modelScale'
+    | 'layerHeight'
+    | 'nozzleDiameter'
+    | 'lineWidth'
+    | 'firstLayerLineWidth'
+    | 'pointsPerLayer'
+    | 'maxRadius'
+    | 'radialSteps'
+    | 'hitEpsilon'
+    | 'brimWidthMm'
+    | 'brimGapMm'
+    | 'moveMergeMinMoveMm'
+    | 'moveMergeMaxDeviationMm'
+    | 'moveMergeMaxTurnDeg'
+    | 'moveMergeKeepStride'
+    | 'bedWidthMm'
+    | 'bedDepthMm'
+    | 'maxPrintHeightMm'
+    | 'centerX'
+    | 'centerZ'
+    | 'travelSpeedMmPerSec'
+    | 'filamentDiameter'
+    | 'nozzleTempC'
+    | 'bedTempC'
+    | 'fanPercent'
+    | 'flowRate'
+    | 'printSpeedMmPerSec'
+    | 'firstLayerPrintSpeedMmPerSec';
+
+export interface InspectorSchemaState {
+    sceneOptions: SceneOption[];
+    printerModels: PrinterModel[];
+    filamentProfiles: FilamentProfile[];
+    sceneId: string;
+    viewMode: number;
+    raymarchParams: RaymarchParams;
+    viewportParams: ViewportParams;
+    animationParams: AnimationParams;
+    slicerSettings: VaseSlicerSettings;
+    benchmarkIterations: number;
+    benchmarkWarmups: number;
+    actionPending: boolean;
+    outputStatus: string;
+}
+
+export interface InspectorSchemaHandlers {
+    commitViewMode: (viewMode: number) => void;
+    commitScene: (sceneId: string) => void;
+    updateViewportField: (key: keyof ViewportParams, value: number) => void;
+    resetView: () => void;
+    updateRaymarchField: (key: keyof RaymarchParams, value: number) => void;
+    updateAnimationField: (key: keyof AnimationParams, value: number) => void;
+    updateSlicerMode: (value: string) => void;
+    updateSlicerNumber: (key: NumericSlicerKey, value: number) => void;
+    commitPrinterModel: (printerModelId: string) => void;
+    updateSlicerString: (key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'>, value: string) => void;
+    commitFilamentProfile: (filamentProfileId: string) => void;
+    setBenchmarkIterations: (value: number) => void;
+    setBenchmarkWarmups: (value: number) => void;
+    generateVaseGcode: () => void | Promise<void>;
+    benchmarkVaseGcode: () => void | Promise<void>;
+}
+
+export interface InspectorFieldOption {
+    value: string;
+    label: string;
+}
+
+interface FieldBase {
+    id: string;
+    label: string;
+    disabledWhenPending?: boolean;
+}
+
+interface NumberFieldBase extends FieldBase {
+    kind: 'number';
+    step: string;
+    min: string;
+    max: string;
+}
+
+interface SelectFieldBase extends FieldBase {
+    kind: 'select';
+}
+
+interface TextareaFieldBase extends FieldBase {
+    kind: 'textarea';
+    rows: number;
+}
+
+export type InspectorFieldSchema =
+    | (NumberFieldBase & { target: 'raymarch'; key: keyof RaymarchParams })
+    | (NumberFieldBase & { target: 'viewport'; key: keyof ViewportParams })
+    | (NumberFieldBase & { target: 'animation'; key: keyof AnimationParams })
+    | (NumberFieldBase & { target: 'slicer'; key: NumericSlicerKey })
+    | (NumberFieldBase & { target: 'command'; key: 'benchmarkIterations' | 'benchmarkWarmups' })
+    | (SelectFieldBase & { target: 'scene'; optionsSource: 'sceneOptions' })
+    | (SelectFieldBase & { target: 'viewMode'; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'slicerMode'; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'printerModel'; optionsSource: 'printerModels' })
+    | (SelectFieldBase & { target: 'filamentProfile'; optionsSource: 'filamentProfiles' })
+    | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> });
+
+export interface InspectorSummaryItemSchema {
+    label: string;
+    read: (state: InspectorSchemaState) => string;
+}
+
+export interface InspectorSectionSchema {
+    id: string;
+    title: string;
+    caption: string;
+    fields: InspectorFieldSchema[];
+}
+
+export interface InspectorActionSchema {
+    id: 'resetView' | 'generateVaseGcode' | 'benchmarkVaseGcode';
+    label: string;
+    tone?: 'secondary';
+    disabledWhenPending?: boolean;
+}
+
+export interface InspectorTabSchema {
+    id: ControlTabId;
+    label: string;
+    summary: InspectorSummaryItemSchema[];
+    sections: InspectorSectionSchema[];
+    note?: string;
+    actions?: InspectorActionSchema[];
+    consoleSource?: 'outputStatus';
+}
+
+const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
+    { value: '0', label: 'Shaded' },
+    { value: '1', label: 'RGB Normals' },
+    { value: '2', label: 'Glass' },
+];
+
+const SLICER_MODE_OPTIONS: InspectorFieldOption[] = [
+    { value: 'planar', label: 'Planar contour (strict)' },
+    { value: 'cylindrical', label: 'Cylindrical radial (legacy)' },
+];
+
+function findSceneLabel(state: InspectorSchemaState): string {
+    return state.sceneOptions.find((scene) => scene.id === state.sceneId)?.name ?? state.sceneId;
+}
+
+function getViewModeLabel(viewMode: number): string {
+    return VIEW_MODE_OPTIONS.find((option) => Number(option.value) === viewMode)?.label ?? 'Shaded';
+}
+
+function formatFixed(value: number, digits = 2): string {
+    return Number.isFinite(value) ? value.toFixed(digits) : '0.00';
+}
+
+function formatBedSize(settings: VaseSlicerSettings): string {
+    return `${Math.round(settings.bedWidthMm)} x ${Math.round(settings.bedDepthMm)} mm`;
+}
+
+export const INSPECTOR_TABS: InspectorTabSchema[] = [
+    {
+        id: 'scene',
+        label: 'Scene',
+        summary: [
+            { label: 'Scene', read: findSceneLabel },
+            { label: 'View', read: (state) => getViewModeLabel(state.viewMode) },
+        ],
+        sections: [
+            {
+                id: 'scene-controls',
+                title: 'Scene Controls',
+                caption: 'Scene choice and surface visualization stay close to the viewport workflow.',
+                fields: [
+                    { kind: 'select', target: 'viewMode', id: 'view-mode-select', label: 'View mode', options: VIEW_MODE_OPTIONS },
+                    { kind: 'select', target: 'scene', id: 'scene-select', label: 'Scene preset', optionsSource: 'sceneOptions' },
+                ],
+            },
+        ],
+    },
+    {
+        id: 'camera',
+        label: 'Camera',
+        summary: [
+            { label: 'Orbit', read: (state) => formatFixed(state.viewportParams.orbitSensitivity, 3) },
+            { label: 'Dolly', read: (state) => formatFixed(state.viewportParams.dollySensitivity, 3) },
+        ],
+        sections: [
+            {
+                id: 'navigation-tuning',
+                title: 'Navigation Tuning',
+                caption: 'These controls tune how the orbit camera behaves in the workspace.',
+                fields: [
+                    { kind: 'number', target: 'viewport', key: 'orbitSensitivity', id: 'viewport-orbit-sensitivity', label: 'Orbit speed', step: '0.001', min: '0.001', max: '0.06' },
+                    { kind: 'number', target: 'viewport', key: 'panSensitivity', id: 'viewport-pan-sensitivity', label: 'Pan speed', step: '0.1', min: '0.2', max: '5.0' },
+                    { kind: 'number', target: 'viewport', key: 'zoomSensitivity', id: 'viewport-zoom-sensitivity', label: 'Wheel zoom speed', step: '0.0001', min: '0.0002', max: '0.02' },
+                    { kind: 'number', target: 'viewport', key: 'dollySensitivity', id: 'viewport-dolly-sensitivity', label: 'Dolly speed', step: '0.0005', min: '0.0005', max: '0.04' },
+                ],
+            },
+        ],
+        actions: [{ id: 'resetView', label: 'Reset View', tone: 'secondary' }],
+    },
+    {
+        id: 'render',
+        label: 'Render',
+        summary: [
+            { label: 'Max steps', read: (state) => String(state.raymarchParams.maxSteps) },
+            { label: 'Target FPS', read: (state) => String(state.animationParams.targetFrameRate) },
+        ],
+        sections: [
+            {
+                id: 'raymarch',
+                title: 'Raymarch',
+                caption: 'Quality knobs that shape the viewport render cost and surface accuracy.',
+                fields: [
+                    { kind: 'number', target: 'raymarch', key: 'maxSteps', id: 'raymarch-max-steps', label: 'Max steps', step: '1', min: '8', max: '512' },
+                    { kind: 'number', target: 'raymarch', key: 'hitEpsilon', id: 'raymarch-hit-epsilon', label: 'Hit epsilon', step: '0.0001', min: '0.0001', max: '0.02' },
+                    { kind: 'number', target: 'raymarch', key: 'maxDistance', id: 'raymarch-max-distance', label: 'Max distance', step: '0.1', min: '1', max: '200' },
+                    { kind: 'number', target: 'raymarch', key: 'focalLength', id: 'raymarch-focal-length', label: 'Focal length', step: '0.01', min: '0.2', max: '5.0' },
+                    { kind: 'number', target: 'raymarch', key: 'stepScale', id: 'raymarch-step-scale', label: 'Step scale', step: '0.01', min: '0.1', max: '1.0' },
+                    { kind: 'number', target: 'raymarch', key: 'minStep', id: 'raymarch-min-step', label: 'Min step', step: '0.0001', min: '0.00001', max: '0.05' },
+                    { kind: 'number', target: 'raymarch', key: 'normalEpsilon', id: 'raymarch-normal-epsilon', label: 'Normal epsilon', step: '0.0001', min: '0.00005', max: '0.05' },
+                    { kind: 'number', target: 'raymarch', key: 'refineSteps', id: 'raymarch-refine-steps', label: 'Refine steps', step: '1', min: '0', max: '12' },
+                ],
+            },
+            {
+                id: 'animation',
+                title: 'Animation',
+                caption: 'Redraw throttling and frame periodicity for animated scenes.',
+                fields: [
+                    { kind: 'number', target: 'animation', key: 'targetFrameRate', id: 'animation-target-frame-rate', label: 'Target FPS', step: '1', min: '0', max: '120' },
+                    { kind: 'number', target: 'animation', key: 'framePeriod', id: 'animation-frame-period', label: 'Frame periodicity', step: '1', min: '1', max: '4096' },
+                ],
+            },
+        ],
+    },
+    {
+        id: 'print',
+        label: 'Print',
+        summary: [
+            { label: 'Mode', read: (state) => state.slicerSettings.slicerMode },
+            { label: 'Layer', read: (state) => `${formatFixed(state.slicerSettings.layerHeight, 2)} mm` },
+            { label: 'Line', read: (state) => `${formatFixed(state.slicerSettings.lineWidth, 2)} mm` },
+        ],
+        sections: [
+            {
+                id: 'print-geometry',
+                title: 'Print Geometry',
+                caption: 'Shape and sampling parameters that affect the generated contour.',
+                fields: [
+                    { kind: 'select', target: 'slicerMode', id: 'slicer-mode', label: 'Slicer mode', options: SLICER_MODE_OPTIONS },
+                    { kind: 'number', target: 'slicer', key: 'minY', id: 'slicer-min-y', label: 'Min Y (SDF)', step: '0.01', min: '-5.0', max: '5.0' },
+                    { kind: 'number', target: 'slicer', key: 'maxY', id: 'slicer-max-y', label: 'Max Y (SDF)', step: '0.01', min: '-5.0', max: '5.0' },
+                    { kind: 'number', target: 'slicer', key: 'modelScale', id: 'slicer-model-scale', label: 'Scale (mm/unit)', step: '1', min: '1', max: '400' },
+                    { kind: 'number', target: 'slicer', key: 'layerHeight', id: 'slicer-layer-height', label: 'Layer height', step: '0.01', min: '0.05', max: '1.0' },
+                    { kind: 'number', target: 'slicer', key: 'nozzleDiameter', id: 'slicer-nozzle-diameter', label: 'Nozzle diameter', step: '0.01', min: '0.2', max: '1.2' },
+                    { kind: 'number', target: 'slicer', key: 'lineWidth', id: 'slicer-line-width', label: 'Line width', step: '0.01', min: '0.2', max: '1.2' },
+                    { kind: 'number', target: 'slicer', key: 'firstLayerLineWidth', id: 'slicer-first-layer-line-width', label: 'First layer line width', step: '0.01', min: '0.2', max: '1.2' },
+                    { kind: 'number', target: 'slicer', key: 'pointsPerLayer', id: 'slicer-points', label: 'Points per layer', step: '1', min: '48', max: '2048' },
+                    { kind: 'number', target: 'slicer', key: 'maxRadius', id: 'slicer-max-radius', label: 'Slice half-extent', step: '0.01', min: '0.1', max: '3.0' },
+                    { kind: 'number', target: 'slicer', key: 'radialSteps', id: 'slicer-radial-steps', label: 'Slice grid', step: '1', min: '32', max: '512' },
+                    { kind: 'number', target: 'slicer', key: 'hitEpsilon', id: 'slicer-hit-eps', label: 'Iso epsilon', step: '0.0001', min: '0.0001', max: '0.02' },
+                ],
+            },
+            {
+                id: 'print-adhesion',
+                title: 'Adhesion And Merge',
+                caption: 'Brim and simplification controls stay together in the print workflow.',
+                fields: [
+                    { kind: 'number', target: 'slicer', key: 'brimWidthMm', id: 'slicer-brim-width', label: 'Brim width (mm)', step: '0.1', min: '0', max: '30' },
+                    { kind: 'number', target: 'slicer', key: 'brimGapMm', id: 'slicer-brim-gap', label: 'Brim gap (mm)', step: '0.05', min: '0', max: '5' },
+                    { kind: 'number', target: 'slicer', key: 'moveMergeMinMoveMm', id: 'slicer-merge-min-move', label: 'Merge min move (mm)', step: '0.005', min: '0.005', max: '1.0' },
+                    { kind: 'number', target: 'slicer', key: 'moveMergeMaxDeviationMm', id: 'slicer-merge-max-deviation', label: 'Merge max deviation (mm)', step: '0.001', min: '0.001', max: '0.5' },
+                    { kind: 'number', target: 'slicer', key: 'moveMergeMaxTurnDeg', id: 'slicer-merge-max-turn', label: 'Merge max turn (deg)', step: '0.1', min: '0.5', max: '45' },
+                    { kind: 'number', target: 'slicer', key: 'moveMergeKeepStride', id: 'slicer-merge-keep-stride', label: 'Merge keep stride', step: '1', min: '1', max: '200' },
+                ],
+            },
+        ],
+    },
+    {
+        id: 'machine',
+        label: 'Machine',
+        summary: [
+            { label: 'Printer', read: (state) => state.slicerSettings.printerModelName },
+            { label: 'Bed', read: (state) => formatBedSize(state.slicerSettings) },
+        ],
+        sections: [
+            {
+                id: 'machine-setup',
+                title: 'Machine Setup',
+                caption: 'Machine geometry, preset selection, and bed placement belong here.',
+                fields: [
+                    { kind: 'select', target: 'printerModel', id: 'slicer-printer-model', label: 'Printer model', optionsSource: 'printerModels' },
+                    { kind: 'number', target: 'slicer', key: 'bedWidthMm', id: 'slicer-bed-width', label: 'Bed width (mm)', step: '1', min: '50', max: '1000' },
+                    { kind: 'number', target: 'slicer', key: 'bedDepthMm', id: 'slicer-bed-depth', label: 'Bed depth (mm)', step: '1', min: '50', max: '1000' },
+                    { kind: 'number', target: 'slicer', key: 'maxPrintHeightMm', id: 'slicer-max-print-height', label: 'Max height (mm)', step: '1', min: '10', max: '1000' },
+                    { kind: 'number', target: 'slicer', key: 'centerX', id: 'slicer-center-x', label: 'Bed center X', step: '0.1', min: '0', max: '400' },
+                    { kind: 'number', target: 'slicer', key: 'centerZ', id: 'slicer-center-z', label: 'Bed center Y', step: '0.1', min: '0', max: '400' },
+                    { kind: 'number', target: 'slicer', key: 'travelSpeedMmPerSec', id: 'slicer-travel-speed', label: 'Travel speed (mm/s)', step: '1', min: '10', max: '300' },
+                ],
+            },
+            {
+                id: 'machine-gcode',
+                title: 'Machine G-code',
+                caption: 'Templates support placeholders like {nozzleTempC}, {bedTempC}, and {fanPwm}.',
+                fields: [
+                    { kind: 'textarea', target: 'slicerText', key: 'startGcode', id: 'slicer-start-gcode', label: 'Start G-code', rows: 5 },
+                    { kind: 'textarea', target: 'slicerText', key: 'endGcode', id: 'slicer-end-gcode', label: 'End G-code', rows: 5 },
+                ],
+            },
+        ],
+    },
+    {
+        id: 'material',
+        label: 'Material',
+        summary: [
+            { label: 'Profile', read: (state) => state.slicerSettings.filamentProfileName },
+            { label: 'Temps', read: (state) => `${Math.round(state.slicerSettings.nozzleTempC)} / ${Math.round(state.slicerSettings.bedTempC)} C` },
+        ],
+        sections: [
+            {
+                id: 'material-setup',
+                title: 'Material Setup',
+                caption: 'Thermals and extrusion settings are grouped under the filament profile.',
+                fields: [
+                    { kind: 'select', target: 'filamentProfile', id: 'slicer-filament-profile', label: 'Filament profile', optionsSource: 'filamentProfiles' },
+                    { kind: 'number', target: 'slicer', key: 'filamentDiameter', id: 'slicer-filament', label: 'Filament diameter', step: '0.01', min: '1.0', max: '3.0' },
+                    { kind: 'number', target: 'slicer', key: 'nozzleTempC', id: 'slicer-nozzle', label: 'Nozzle temp', step: '1', min: '150', max: '300' },
+                    { kind: 'number', target: 'slicer', key: 'bedTempC', id: 'slicer-bed', label: 'Bed temp', step: '1', min: '0', max: '130' },
+                    { kind: 'number', target: 'slicer', key: 'fanPercent', id: 'slicer-fan', label: 'Fan %', step: '1', min: '0', max: '100' },
+                    { kind: 'number', target: 'slicer', key: 'flowRate', id: 'slicer-flow', label: 'Flow rate', step: '0.01', min: '0.01', max: '5.0' },
+                    { kind: 'number', target: 'slicer', key: 'printSpeedMmPerSec', id: 'slicer-print-speed', label: 'Print speed (mm/s)', step: '1', min: '5', max: '200' },
+                    { kind: 'number', target: 'slicer', key: 'firstLayerPrintSpeedMmPerSec', id: 'slicer-first-layer-speed', label: 'First layer speed (mm/s)', step: '1', min: '5', max: '200' },
+                ],
+            },
+        ],
+    },
+    {
+        id: 'output',
+        label: 'Output',
+        summary: [
+            { label: 'Measured', read: (state) => `${state.benchmarkIterations} run${state.benchmarkIterations === 1 ? '' : 's'}` },
+            { label: 'Warmups', read: (state) => `${state.benchmarkWarmups}` },
+        ],
+        sections: [
+            {
+                id: 'export-benchmark',
+                title: 'Export And Benchmark',
+                caption: 'Run the slicer and inspect results without leaving the workspace.',
+                fields: [
+                    { kind: 'number', target: 'command', key: 'benchmarkIterations', id: 'benchmark-iterations', label: 'Measured runs', step: '1', min: '1', max: '20', disabledWhenPending: true },
+                    { kind: 'number', target: 'command', key: 'benchmarkWarmups', id: 'benchmark-warmups', label: 'Warmup runs', step: '1', min: '0', max: '10', disabledWhenPending: true },
+                ],
+            },
+        ],
+        note: 'Planar contour mode is the strict algorithm. Cylindrical radial mode remains useful for star-convex profiles.',
+        actions: [
+            { id: 'generateVaseGcode', label: 'Generate Vase G-code', disabledWhenPending: true },
+            { id: 'benchmarkVaseGcode', label: 'Benchmark', tone: 'secondary', disabledWhenPending: true },
+        ],
+        consoleSource: 'outputStatus',
+    },
+];
+
+export function getInspectorTabSchema(tabId: ControlTabId): InspectorTabSchema {
+    return INSPECTOR_TABS.find((tab) => tab.id === tabId) ?? INSPECTOR_TABS[0];
+}
+
+export function readFieldValue(field: InspectorFieldSchema, state: InspectorSchemaState): string | number {
+    switch (field.target) {
+        case 'scene':
+            return state.sceneId;
+        case 'viewMode':
+            return String(state.viewMode);
+        case 'slicerMode':
+            return state.slicerSettings.slicerMode;
+        case 'printerModel':
+            return state.slicerSettings.printerModelId;
+        case 'filamentProfile':
+            return state.slicerSettings.filamentProfileId;
+        case 'raymarch':
+            return state.raymarchParams[field.key];
+        case 'viewport':
+            return state.viewportParams[field.key];
+        case 'animation':
+            return state.animationParams[field.key];
+        case 'slicer':
+            return state.slicerSettings[field.key];
+        case 'command':
+            return state[field.key];
+        case 'slicerText':
+            return state.slicerSettings[field.key];
+    }
+}
+
+export function readFieldOptions(field: InspectorFieldSchema, state: InspectorSchemaState): InspectorFieldOption[] {
+    if (field.kind !== 'select') {
+        return [];
+    }
+
+    if (field.target === 'viewMode' || field.target === 'slicerMode') {
+        return field.options;
+    }
+
+    if (field.target === 'scene') {
+        return state.sceneOptions.map((scene) => ({ value: scene.id, label: scene.name }));
+    }
+
+    if (field.target === 'printerModel') {
+        return state.printerModels.map((printer) => ({ value: printer.id, label: printer.name }));
+    }
+
+    if (field.target === 'filamentProfile') {
+        return state.filamentProfiles.map((profile) => ({ value: profile.id, label: profile.name }));
+    }
+
+    return [];
+}
+
+export function isFieldDisabled(field: InspectorFieldSchema, state: InspectorSchemaState): boolean {
+    return Boolean(field.disabledWhenPending && state.actionPending);
+}
+
+function coerceNumber(rawValue: string): number {
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, handlers: InspectorSchemaHandlers): void {
+    switch (field.target) {
+        case 'scene':
+            handlers.commitScene(rawValue);
+            return;
+        case 'viewMode':
+            handlers.commitViewMode(Number(rawValue));
+            return;
+        case 'slicerMode':
+            handlers.updateSlicerMode(rawValue);
+            return;
+        case 'printerModel':
+            handlers.commitPrinterModel(rawValue);
+            return;
+        case 'filamentProfile':
+            handlers.commitFilamentProfile(rawValue);
+            return;
+        case 'viewport':
+            handlers.updateViewportField(field.key, coerceNumber(rawValue));
+            return;
+        case 'raymarch':
+            handlers.updateRaymarchField(field.key, coerceNumber(rawValue));
+            return;
+        case 'animation':
+            handlers.updateAnimationField(field.key, coerceNumber(rawValue));
+            return;
+        case 'slicer':
+            handlers.updateSlicerNumber(field.key, coerceNumber(rawValue));
+            return;
+        case 'command':
+            if (field.key === 'benchmarkIterations') {
+                handlers.setBenchmarkIterations(coerceNumber(rawValue));
+                return;
+            }
+
+            handlers.setBenchmarkWarmups(coerceNumber(rawValue));
+            return;
+        case 'slicerText':
+            handlers.updateSlicerString(field.key, rawValue);
+            return;
+    }
+}
+
+export function triggerInspectorAction(action: InspectorActionSchema, handlers: InspectorSchemaHandlers): void | Promise<void> {
+    switch (action.id) {
+        case 'resetView':
+            return handlers.resetView();
+        case 'generateVaseGcode':
+            return handlers.generateVaseGcode();
+        case 'benchmarkVaseGcode':
+            return handlers.benchmarkVaseGcode();
+    }
+}

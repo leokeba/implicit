@@ -7,7 +7,7 @@
     export let shaderStatusMode: ShaderStatusMode;
     export let shaderStatusText: string;
     export let onResetView: () => void;
-    export let onToggleInspector: () => void;
+    export let onToggleInspector: () => void | Promise<void>;
 </script>
 
 <header class="app-topbar">

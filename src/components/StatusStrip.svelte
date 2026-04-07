@@ -1,5 +1,7 @@
 <script lang="ts">
     export let workspaceStatus: string;
+    export let outputStatus: string;
+    export let actionPending: boolean;
     export let shaderStatusDetail: string;
 </script>
 
@@ -7,6 +9,10 @@
     <section class="status-panel">
         <span class="status-label">Workspace</span>
         <p class="status-copy">{workspaceStatus}</p>
+    </section>
+    <section class="status-panel">
+        <span class="status-label">Commands</span>
+        <p class="status-copy">{actionPending ? 'Running command...' : outputStatus}</p>
     </section>
     <section class="status-panel">
         <span class="status-label">Navigation</span>

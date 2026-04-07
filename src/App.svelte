@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount, tick } from 'svelte';
+    import { onDestroy, onMount, tick } from 'svelte';
 
     import type { AnimationParams, RaymarchParams, ViewportParams } from './core/renderer';
     import type { VaseSlicerSettings } from './core/slicer';
@@ -7,36 +7,19 @@
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
     import ViewportPanel from './components/ViewportPanel.svelte';
+    import { type ShaderStatusMode, type StudioController } from './studio-controller';
     import {
-        compactShaderStatusMessage,
-        normalizeShaderStatusMessage,
-        type ShaderStatusMode,
-        type StudioController,
-    } from './studio-controller';
-    import type { ControlTabId, NumericSlicerKey } from './ui/inspector-config';
+        type ControlTabId,
+        type InspectorSchemaHandlers,
+        type InspectorSchemaState,
+        type NumericSlicerKey,
+    } from './ui/inspector-schema';
+    import { createStatusModel } from './ui/status-model';
+    import { createWorkspaceStore } from './ui/workspace-store';
 
     export let studio: StudioController;
 
-    const CONTROL_TAB_STORAGE_KEY = 'implicit-ui-active-tab';
-
-    function readStoredTab(): ControlTabId {
-        try {
-            const stored = localStorage.getItem(CONTROL_TAB_STORAGE_KEY) as ControlTabId | null;
-            if (stored) {
-                return stored;
-            }
-        } catch {
-            // Ignore storage errors.
-        }
-
-        return 'scene';
-    }
-
     const snapshot = studio.getSnapshot();
-
-    let activeTab: ControlTabId = readStoredTab();
-    let inspectorCollapsed = false;
-    let actionPending = false;
 
     let sceneOptions = snapshot.sceneOptions;
     let printerModels = snapshot.printerModels;
@@ -48,67 +31,57 @@
     let animationParams = snapshot.animationParams;
     let slicerSettings = snapshot.slicerSettings;
 
-    let benchmarkIterations = 3;
-    let benchmarkWarmups = 1;
-    let outputStatus = 'Ready.';
-    let workspaceStatus = 'Ready. Viewport and inspector are active.';
+    const workspace = createWorkspaceStore({
+        activeSceneLabel: studio.getSceneLabel(sceneId),
+        activeViewModeLabel: studio.getViewModeLabel(viewMode),
+    });
+    const status = createStatusModel();
 
-    let shaderStatusMode: ShaderStatusMode = 'ready';
-    let shaderStatusText = 'Shader: Ready';
-    let shaderStatusDetail = 'No shader diagnostics.';
+    let resizeCleanup: (() => void) | null = null;
 
-    $: activeSceneLabel = studio.getSceneLabel(sceneId);
-    $: activeViewModeLabel = studio.getViewModeLabel(viewMode);
-    $: persistActiveTab(activeTab);
+    $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
+    $: inspectorState = {
+        sceneOptions,
+        printerModels,
+        filamentProfiles,
+        sceneId,
+        viewMode,
+        raymarchParams,
+        viewportParams,
+        animationParams,
+        slicerSettings,
+        benchmarkIterations: $status.benchmarkIterations,
+        benchmarkWarmups: $status.benchmarkWarmups,
+        actionPending: $status.actionPending,
+        outputStatus: $status.outputStatus,
+    } satisfies InspectorSchemaState;
 
-    function persistActiveTab(tabId: ControlTabId): void {
-        try {
-            localStorage.setItem(CONTROL_TAB_STORAGE_KEY, tabId);
-        } catch {
-            // Ignore storage errors.
-        }
-    }
-
-    function setShaderStatus(mode: ShaderStatusMode, message: string): void {
-        const normalized = normalizeShaderStatusMessage(message);
-        shaderStatusMode = mode;
-        shaderStatusText = `Shader: ${compactShaderStatusMessage(normalized)}`;
-        if (mode === 'error') {
-            shaderStatusDetail = normalized;
-            return;
-        }
-
-        if (mode === 'compiling') {
-            shaderStatusDetail = 'Compiling active scene shaders...';
-            return;
-        }
-
-        shaderStatusDetail = 'No shader diagnostics.';
-    }
-
-    function selectTab(tabId: ControlTabId): void {
-        activeTab = tabId;
-        inspectorCollapsed = false;
+    async function resizeViewportAfterLayout(): Promise<void> {
+        await tick();
         studio.resizeViewport();
     }
 
-    function toggleInspector(): void {
-        inspectorCollapsed = !inspectorCollapsed;
-        studio.resizeViewport();
+    async function selectTab(tabId: ControlTabId): Promise<void> {
+        workspace.selectTab(tabId);
+        await resizeViewportAfterLayout();
+    }
+
+    async function toggleInspector(): Promise<void> {
+        workspace.toggleInspector();
+        await resizeViewportAfterLayout();
     }
 
     function commitViewMode(nextViewMode: number): void {
         viewMode = nextViewMode;
-        workspaceStatus = studio.setViewMode(nextViewMode);
+        status.setWorkspaceStatus(studio.setViewMode(nextViewMode));
     }
 
     function commitScene(nextSceneId: string): void {
-        setShaderStatus('compiling', 'Compiling...');
+        status.setShaderStatus('compiling', 'Compiling...');
         const result = studio.changeScene(nextSceneId);
         sceneId = result.sceneId;
         slicerSettings = result.settings;
-        workspaceStatus = result.workspaceStatus;
-        setShaderStatus(result.ok ? 'ok' : 'error', result.shaderMessage);
+        status.applySceneChange(result);
     }
 
     function updateRaymarchField(key: keyof RaymarchParams, value: number): void {
@@ -127,19 +100,19 @@
     }
 
     function resetView(): void {
-        workspaceStatus = studio.resetView();
+        status.setWorkspaceStatus(studio.resetView());
     }
 
     function commitPrinterModel(printerModelId: string): void {
         const result = studio.changePrinterModel(printerModelId);
         slicerSettings = result.settings;
-        workspaceStatus = result.workspaceStatus;
+        status.applyPresetChange(result);
     }
 
     function commitFilamentProfile(filamentProfileId: string): void {
         const result = studio.changeFilamentProfile(filamentProfileId);
         slicerSettings = result.settings;
-        workspaceStatus = result.workspaceStatus;
+        status.applyPresetChange(result);
     }
 
     function updateSlicerNumber(key: NumericSlicerKey, value: number): void {
@@ -158,41 +131,116 @@
         studio.updateSlicerParams({ slicerMode: nextMode });
     }
 
-    async function runSlicerAction(pendingLabel: string, action: () => string): Promise<void> {
-        actionPending = true;
-        outputStatus = pendingLabel;
-        workspaceStatus = pendingLabel;
-        await tick();
-        try {
-            const message = action();
-            outputStatus = message;
-            workspaceStatus = message;
-        } catch (error) {
-            const message = error instanceof Error ? `Slicer error: ${error.message}` : 'Slicer error: Unknown slicer error';
-            outputStatus = message;
-            workspaceStatus = message;
-        } finally {
-            actionPending = false;
-        }
-    }
-
     async function generateVaseGcode(): Promise<void> {
-        await runSlicerAction('Generating G-code...', () => {
+        await status.runCommand('Generating G-code...', () => {
             const result = studio.generateVaseGcode();
             return `Exported ${result.filename} (${(result.bytes / 1024).toFixed(1)} KB, ${result.points} points).`;
         });
     }
 
     async function benchmarkVaseGcode(): Promise<void> {
-        const iterations = Math.max(1, benchmarkIterations || 1);
-        const warmups = Math.max(0, benchmarkWarmups || 0);
+        const iterations = Math.max(1, $status.benchmarkIterations || 1);
+        const warmups = Math.max(0, $status.benchmarkWarmups || 0);
         const measuredLabel = `${iterations} measured run${iterations === 1 ? '' : 's'}`;
         const warmupLabel = `${warmups} warmup run${warmups === 1 ? '' : 's'}`;
-        await runSlicerAction(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, () => {
+        await status.runCommand(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, () => {
             const summary = studio.benchmarkVaseGcode(iterations, warmups);
             return `Benchmark settled on ${summary.measuredRuns} measured run${summary.measuredRuns === 1 ? '' : 's'} after ${summary.warmupRuns} warmup run${summary.warmupRuns === 1 ? '' : 's'}: avg ${summary.averageMs.toFixed(1)} ms, median ${summary.medianMs.toFixed(1)} ms, min ${summary.minMs.toFixed(1)} ms, max ${summary.maxMs.toFixed(1)} ms, spread ${summary.spreadMs.toFixed(1)} ms. Phase avg: sample ${summary.averageContourSamplingMs.toFixed(1)} ms, toolpath ${summary.averageToolpathBuildMs.toFixed(1)} ms, gcode ${summary.averageGcodeBuildMs.toFixed(1)} ms. Last output: ${(summary.bytes / 1024).toFixed(1)} KB, ${summary.points} points, ${summary.layers} layers.`;
         });
     }
+
+    function resetInspectorWidth(): void {
+        workspace.resetInspectorWidth();
+        void resizeViewportAfterLayout();
+    }
+
+    function cleanupInspectorResize(): void {
+        if (resizeCleanup) {
+            resizeCleanup();
+            resizeCleanup = null;
+        }
+        workspace.setInspectorResizing(false);
+    }
+
+    function startInspectorResize(event: PointerEvent): void {
+        if ($workspace.inspectorCollapsed || window.innerWidth <= 980) {
+            return;
+        }
+
+        event.preventDefault();
+        cleanupInspectorResize();
+
+        const startX = event.clientX;
+        const startWidth = $workspace.inspectorWidth;
+        workspace.setInspectorResizing(true);
+
+        const handlePointerMove = (moveEvent: PointerEvent) => {
+            const delta = startX - moveEvent.clientX;
+            workspace.setInspectorWidth(startWidth + delta);
+            studio.resizeViewport();
+        };
+
+        const handlePointerUp = () => {
+            cleanupInspectorResize();
+            void resizeViewportAfterLayout();
+        };
+
+        window.addEventListener('pointermove', handlePointerMove);
+        window.addEventListener('pointerup', handlePointerUp, { once: true });
+        window.addEventListener('pointercancel', handlePointerUp, { once: true });
+
+        resizeCleanup = () => {
+            window.removeEventListener('pointermove', handlePointerMove);
+            window.removeEventListener('pointerup', handlePointerUp);
+            window.removeEventListener('pointercancel', handlePointerUp);
+        };
+    }
+
+    function nudgeInspectorWidth(delta: number): void {
+        if ($workspace.inspectorCollapsed) {
+            return;
+        }
+
+        workspace.setInspectorWidth($workspace.inspectorWidth + delta);
+        void resizeViewportAfterLayout();
+    }
+
+    function handleDockKeydown(event: KeyboardEvent): void {
+        if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            nudgeInspectorWidth(16);
+            return;
+        }
+
+        if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            nudgeInspectorWidth(-16);
+            return;
+        }
+
+        if (event.key === 'Home') {
+            event.preventDefault();
+            resetInspectorWidth();
+        }
+    }
+
+    const inspectorHandlers: InspectorSchemaHandlers = {
+        commitViewMode,
+        commitScene,
+        updateViewportField,
+        resetView,
+        updateRaymarchField,
+        updateAnimationField,
+        updateSlicerMode,
+        updateSlicerNumber,
+        commitPrinterModel,
+        updateSlicerString,
+        commitFilamentProfile,
+        setBenchmarkIterations: (value) => status.setBenchmarkIterations(value),
+        setBenchmarkWarmups: (value) => status.setBenchmarkWarmups(value),
+        generateVaseGcode,
+        benchmarkVaseGcode,
+    };
 
     onMount(() => {
         const handleShaderStatus = (event: Event) => {
@@ -203,18 +251,18 @@
                 return;
             }
 
-            setShaderStatus(mode, message);
+            status.setShaderStatus(mode, message);
         };
 
         window.addEventListener('shader-hmr-status', handleShaderStatus);
 
         try {
             studio.init();
-            setShaderStatus('ready', 'Ready');
+            status.setShaderStatus('ready', 'Ready');
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to initialize renderer';
-            setShaderStatus('error', message);
-            workspaceStatus = 'Renderer initialization failed.';
+            status.setShaderStatus('error', message);
+            status.setWorkspaceStatus('Renderer initialization failed.');
             console.error('[Startup] Renderer initialization failed.', error);
         }
 
@@ -222,59 +270,50 @@
             window.removeEventListener('shader-hmr-status', handleShaderStatus);
         };
     });
+
+    onDestroy(() => {
+        cleanupInspectorResize();
+    });
 </script>
 
-<div class="app-root" class:inspector-collapsed={inspectorCollapsed}>
+<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing}>
     <TopBar
-        activeSceneLabel={activeSceneLabel}
-        activeViewModeLabel={activeViewModeLabel}
-        inspectorCollapsed={inspectorCollapsed}
-        shaderStatusMode={shaderStatusMode}
-        shaderStatusText={shaderStatusText}
+        activeSceneLabel={$workspace.activeSceneLabel}
+        activeViewModeLabel={$workspace.activeViewModeLabel}
+        inspectorCollapsed={$workspace.inspectorCollapsed}
+        shaderStatusMode={$status.shaderStatusMode}
+        shaderStatusText={$status.shaderStatusText}
         onResetView={resetView}
         onToggleInspector={toggleInspector}
     />
 
-    <div class="workspace-shell">
+    <div class="workspace-shell" style={`--inspector-width: ${$workspace.inspectorWidth}px;`}>
         <ViewportPanel
-            inspectorCollapsed={inspectorCollapsed}
+            activeSceneLabel={$workspace.activeSceneLabel}
+            activeViewModeLabel={$workspace.activeViewModeLabel}
+            inspectorCollapsed={$workspace.inspectorCollapsed}
             onResetView={resetView}
             onToggleInspector={toggleInspector}
         />
 
-        <InspectorPanel
-            activeTab={activeTab}
-            sceneOptions={sceneOptions}
-            printerModels={printerModels}
-            filamentProfiles={filamentProfiles}
-            sceneId={sceneId}
-            viewMode={viewMode}
-            raymarchParams={raymarchParams}
-            viewportParams={viewportParams}
-            animationParams={animationParams}
-            slicerSettings={slicerSettings}
-            benchmarkIterations={benchmarkIterations}
-            benchmarkWarmups={benchmarkWarmups}
-            actionPending={actionPending}
-            outputStatus={outputStatus}
-            onSelectTab={selectTab}
-            onCommitViewMode={commitViewMode}
-            onCommitScene={commitScene}
-            onUpdateViewportField={updateViewportField}
-            onResetView={resetView}
-            onUpdateRaymarchField={updateRaymarchField}
-            onUpdateAnimationField={updateAnimationField}
-            onUpdateSlicerMode={updateSlicerMode}
-            onUpdateSlicerNumber={updateSlicerNumber}
-            onCommitPrinterModel={commitPrinterModel}
-            onUpdateSlicerString={updateSlicerString}
-            onCommitFilamentProfile={commitFilamentProfile}
-            onSetBenchmarkIterations={(value) => benchmarkIterations = value}
-            onSetBenchmarkWarmups={(value) => benchmarkWarmups = value}
-            onGenerateVaseGcode={generateVaseGcode}
-            onBenchmarkVaseGcode={benchmarkVaseGcode}
-        />
+        {#if !$workspace.inspectorCollapsed}
+            <button
+                class="dock-resizer"
+                type="button"
+                aria-label="Resize inspector"
+                on:pointerdown={startInspectorResize}
+                on:dblclick={resetInspectorWidth}
+                on:keydown={handleDockKeydown}
+            ></button>
+
+            <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
+        {/if}
     </div>
 
-    <StatusStrip workspaceStatus={workspaceStatus} shaderStatusDetail={shaderStatusDetail} />
+    <StatusStrip
+        workspaceStatus={$status.workspaceStatus}
+        outputStatus={$status.outputStatus}
+        actionPending={$status.actionPending}
+        shaderStatusDetail={$status.shaderStatusDetail}
+    />
 </div>

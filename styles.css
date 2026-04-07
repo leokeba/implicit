@@ -210,9 +210,41 @@ h1 {
 
 .workspace-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 396px);
+  grid-template-columns: minmax(0, 1fr) 12px minmax(340px, var(--inspector-width, 388px));
   gap: 0;
   min-height: 0;
+}
+
+.dock-resizer {
+  position: relative;
+  min-width: 12px;
+  padding: 0;
+  border: 0;
+  cursor: col-resize;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0));
+}
+
+.dock-resizer::before {
+  content: "";
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: background-color 140ms ease;
+}
+
+.dock-resizer:hover::before,
+.dock-resizer:focus-visible::before,
+.app-root.is-dock-resizing .dock-resizer::before {
+  background: rgba(99, 165, 255, 0.65);
+}
+
+.dock-resizer:focus-visible {
+  outline: none;
 }
 
 .workspace-main {
@@ -244,6 +276,13 @@ h1 {
   pointer-events: none;
 }
 
+.viewport-toolbar-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  pointer-events: auto;
+}
+
 .viewport-toolbar-actions,
 .viewport-badge {
   pointer-events: auto;
@@ -262,6 +301,11 @@ h1 {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.viewport-badge-muted {
+  background: rgba(18, 24, 34, 0.9);
+  color: var(--ink-muted);
 }
 
 .viewport-toolbar-actions {
@@ -353,6 +397,38 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.inspector-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.summary-chip {
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  background: rgba(9, 13, 19, 0.36);
+}
+
+.summary-chip-label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.summary-chip-value {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
 }
 
 .tab-panel[hidden] {
@@ -490,7 +566,7 @@ textarea:focus {
 
 .status-strip {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(300px, 1.35fr);
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) minmax(220px, 1fr) minmax(300px, 1.35fr);
   gap: 10px;
   padding: 10px;
   border-top: 1px solid var(--line);
@@ -541,10 +617,6 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.app-root.inspector-collapsed #controls {
-  display: none;
-}
-
 @media (max-width: 1180px) {
   .app-topbar {
     grid-template-columns: 1fr;
@@ -558,7 +630,7 @@ textarea:focus {
   }
 
   .workspace-shell {
-    grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+    grid-template-columns: minmax(0, 1fr) 12px minmax(320px, min(var(--inspector-width, 360px), 360px));
   }
 
   .app-root.inspector-collapsed .workspace-shell {
@@ -575,6 +647,10 @@ textarea:focus {
   .workspace-shell {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(420px, 68vh) auto;
+  }
+
+  .dock-resizer {
+    display: none;
   }
 
   #controls {
@@ -602,6 +678,10 @@ textarea:focus {
   .viewport-toolbar {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .viewport-toolbar-group {
+    width: 100%;
   }
 
   .viewport-toolbar-actions {

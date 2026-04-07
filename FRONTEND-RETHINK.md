@@ -8,7 +8,7 @@ The first major rewrite is now in place.
 - The UI now runs on Svelte while the renderer, preview, shader pipeline, and slicer remain plain TypeScript modules.
 - The inspector is split into focused Svelte components under `src/components/` and `src/components/inspector/`.
 - The duplicated left-side tab rail has been removed. The inspector now owns the only tab model.
-- Shared inspector tab and field definitions live in `src/ui/inspector-config.ts`.
+- Shared inspector tab, section, summary, and field definitions now live in `src/ui/inspector-schema.ts`.
 
 That means this document should now be read as a record of direction plus the next frontier, not as a proposal for the first rewrite.
 
@@ -150,7 +150,7 @@ Right now, `src/App.svelte` coordinates the whole shell and dispatches state to 
 
 - App shell layout lives in `src/components/TopBar.svelte`, `src/components/ViewportPanel.svelte`, `src/components/InspectorPanel.svelte`, and `src/components/StatusStrip.svelte`.
 - Inspector tabs live in `src/components/inspector/`.
-- Shared field metadata lives in `src/ui/inspector-config.ts`.
+- Shared inspector schema metadata lives in `src/ui/inspector-schema.ts`.
 - Rendering, preview, and slicing remain outside Svelte in plain TypeScript modules.
 
 ### Next Refactor
