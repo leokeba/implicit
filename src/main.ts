@@ -35,6 +35,28 @@ interface SlicerBenchmarkSummary {
     bytes: number;
 }
 
+const SCENE_DEFAULT_PARAM_ALIASES: Partial<Record<string, keyof VaseSlicerSettings>> = {
+    nozzleDiameterMm: 'nozzleDiameter',
+    layerHeightMm: 'layerHeight',
+};
+
+function resolveSceneDefaultTargetKey(
+    paramName: string,
+    numericSlicerSettingKeys: Set<keyof VaseSlicerSettings>
+): keyof VaseSlicerSettings | null {
+    const alias = SCENE_DEFAULT_PARAM_ALIASES[paramName];
+    if (alias) {
+        return alias;
+    }
+
+    const candidate = paramName as keyof VaseSlicerSettings;
+    if (numericSlicerSettingKeys.has(candidate)) {
+        return candidate;
+    }
+
+    return null;
+}
+
 class ImplicitSurfaceStudio {
     private renderer: Renderer;
     private slicer: Slicer;
@@ -294,7 +316,7 @@ class ImplicitSurfaceStudio {
                 continue;
             }
 
-            (this.slicerSettings as Record<string, unknown>)[targetKey] = value;
+            ((this.slicerSettings as unknown) as Record<string, unknown>)[targetKey] = value;
         }
 
         if (this.slicerSettings.maxY <= this.slicerSettings.minY) {
@@ -470,26 +492,4 @@ function slugifyForFilename(value: string, fallback: string): string {
         .replace(/^-+|-+$/g, '')
         .toLowerCase();
     return normalized.length > 0 ? normalized : fallback;
-}
-
-const SCENE_DEFAULT_PARAM_ALIASES: Partial<Record<string, keyof VaseSlicerSettings>> = {
-    nozzleDiameterMm: 'nozzleDiameter',
-    layerHeightMm: 'layerHeight',
-};
-
-function resolveSceneDefaultTargetKey(
-    paramName: string,
-    numericSlicerSettingKeys: Set<keyof VaseSlicerSettings>
-): keyof VaseSlicerSettings | null {
-    const alias = SCENE_DEFAULT_PARAM_ALIASES[paramName];
-    if (alias) {
-        return alias;
-    }
-
-    const candidate = paramName as keyof VaseSlicerSettings;
-    if (numericSlicerSettingKeys.has(candidate)) {
-        return candidate;
-    }
-
-    return null;
 }
