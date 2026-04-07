@@ -6,10 +6,14 @@ import {
     getActiveSceneId,
     getAvailableScenes,
     getSceneControlDefinitions,
+    getSceneDocuments,
     getSceneDefaultParams,
+    replaceSceneDocuments,
     setActiveSceneById,
+    upsertSceneDocument,
     type SceneControlDefinition,
     type SceneControlValueMap,
+    type SceneDocument,
     type SceneOption,
     type SceneParamMap,
 } from './core/shader-pipeline';
@@ -67,6 +71,20 @@ export interface SceneChangeResult {
 export interface PresetChangeResult {
     settings: VaseSlicerSettings;
     workspaceStatus: string;
+}
+
+export interface SceneRegistrySyncResult {
+    ok: boolean;
+    sceneId: string;
+    sceneOptions: SceneOption[];
+    sceneControlDefinitions: SceneControlDefinition[];
+    sceneControlValues: SceneControlValueMap;
+    settings: VaseSlicerSettings;
+    shaderMessage: string;
+}
+
+export interface SceneSourceUpdateResult extends SceneRegistrySyncResult {
+    sceneDocument: SceneDocument | null;
 }
 
 const SCENE_DEFAULT_PARAM_ALIASES: Partial<Record<string, keyof VaseSlicerSettings>> = {
@@ -197,6 +215,10 @@ export class StudioController {
         return this.sceneOptions.find((scene) => scene.id === sceneId)?.name ?? sceneId;
     }
 
+    public getSceneDocuments(): SceneDocument[] {
+        return getSceneDocuments();
+    }
+
     public getViewModeLabel(viewMode: number): string {
         if (viewMode === 1) {
             return 'RGB Normals';
@@ -267,6 +289,58 @@ export class StudioController {
             sceneControlValues: { ...this.sceneControlValues },
             shaderMessage: `Loaded scene: ${sceneId}`,
             workspaceStatus: `Scene loaded: ${this.getSceneLabel(sceneId)}.`,
+        };
+    }
+
+    public syncSceneDocuments(documents: SceneDocument[]): SceneRegistrySyncResult {
+        replaceSceneDocuments(documents);
+        this.sceneOptions = getAvailableScenes();
+        this.refreshActiveSceneControls();
+        this.syncSceneControlState();
+
+        const result = this.reloadRendererShaders();
+        return {
+            ok: result.ok,
+            sceneId: getActiveSceneId(),
+            sceneOptions: [...this.sceneOptions],
+            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
+            sceneControlValues: { ...this.sceneControlValues },
+            settings: { ...this.slicerSettings },
+            shaderMessage: result.message,
+        };
+    }
+
+    public updateSceneDocumentSource(sceneId: string, source: string): SceneSourceUpdateResult {
+        const sceneDocument = upsertSceneDocument({
+            ...(getSceneDocuments().find((candidate) => candidate.id === sceneId) ?? {
+                id: sceneId,
+                name: this.getSceneLabel(sceneId),
+                fileName: `${sceneId}.glsl`,
+                source,
+            }),
+            source,
+        });
+
+        this.sceneOptions = getAvailableScenes();
+
+        if (sceneDocument.id === getActiveSceneId()) {
+            this.refreshActiveSceneControls(true);
+            this.syncSceneControlState();
+        }
+
+        const result = sceneDocument.id === getActiveSceneId()
+            ? this.reloadRendererShaders()
+            : { ok: true, message: 'Scene document updated.' };
+
+        return {
+            ok: result.ok,
+            sceneId: getActiveSceneId(),
+            sceneOptions: [...this.sceneOptions],
+            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
+            sceneControlValues: { ...this.sceneControlValues },
+            settings: { ...this.slicerSettings },
+            shaderMessage: result.message,
+            sceneDocument,
         };
     }
 
@@ -504,14 +578,30 @@ export class StudioController {
         });
     }
 
-    private refreshActiveSceneControls(): void {
-        this.sceneControlDefinitions = getSceneControlDefinitions();
-        this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions);
+    private refreshActiveSceneControls(preserveValues: boolean = false): void {
+        const nextDefinitions = getSceneControlDefinitions();
+        this.sceneControlDefinitions = nextDefinitions;
+        this.sceneControlValues = buildSceneControlValueMap(
+            nextDefinitions,
+            preserveValues ? this.sceneControlValues : undefined
+        );
     }
 
     private syncSceneControlState(): void {
         this.renderer.setSceneControlState(this.sceneControlDefinitions, this.sceneControlValues);
         this.slicer.setSceneControlState(this.sceneControlDefinitions, this.sceneControlValues);
+    }
+
+    private reloadRendererShaders(): { ok: boolean; message: string } {
+        const result = this.renderer.hotReloadShaders({});
+        if (!result.ok && result.message !== 'Renderer not initialized') {
+            return result;
+        }
+
+        return {
+            ok: true,
+            message: result.ok ? result.message : 'Ready',
+        };
     }
 
     private downloadTextFile(filename: string, text: string): void {
@@ -589,11 +679,14 @@ function slugifyForFilename(value: string, fallback: string): string {
     return normalized.length > 0 ? normalized : fallback;
 }
 
-function buildSceneControlValueMap(definitions: SceneControlDefinition[]): SceneControlValueMap {
+function buildSceneControlValueMap(
+    definitions: SceneControlDefinition[],
+    previousValues: SceneControlValueMap = {}
+): SceneControlValueMap {
     const values: SceneControlValueMap = {};
 
     for (const definition of definitions) {
-        values[definition.key] = clampSceneControlValue(definition.defaultValue, definition);
+        values[definition.key] = clampSceneControlValue(previousValues[definition.key] ?? definition.defaultValue, definition);
     }
 
     return values;

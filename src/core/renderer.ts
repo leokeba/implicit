@@ -935,6 +935,12 @@ const shaderHotDependencyPaths = Object.keys(
 
 let scenePollingStarted = false;
 
+interface SceneApiDocumentResponse {
+    document?: {
+        source?: unknown;
+    };
+}
+
 function startScenePollingFallback(): void {
     if (scenePollingStarted || typeof window === 'undefined' || !import.meta.env.DEV) {
         return;
@@ -952,14 +958,10 @@ function startScenePollingFallback(): void {
                 return;
             }
 
-            const response = await fetch(`/src/shaders/scenes/${encodeURIComponent(fileName)}?t=${Date.now()}`, {
-                cache: 'no-store',
-            });
-            if (!response.ok) {
+            const source = await fetchScenePollingSource(fileName);
+            if (!source) {
                 return;
             }
-
-            const source = await response.text();
             const sceneChanged = sceneId !== lastSceneId;
             const sourceChanged = source !== lastSceneSource;
             if (!sceneChanged && !sourceChanged) {
@@ -980,6 +982,43 @@ function startScenePollingFallback(): void {
     window.setInterval(() => {
         void poll();
     }, 600);
+}
+
+async function fetchScenePollingSource(fileName: string): Promise<string | null> {
+    const fromApi = await fetchSceneSourceFromApi(fileName);
+    if (fromApi) {
+        return fromApi;
+    }
+
+    const response = await fetch(`/src/shaders/scenes/${encodeURIComponent(fileName)}?t=${Date.now()}`, {
+        cache: 'no-store',
+    });
+    if (!response.ok) {
+        return null;
+    }
+
+    const source = await response.text();
+    return isLikelyHtmlDocument(source) ? null : source;
+}
+
+async function fetchSceneSourceFromApi(fileName: string): Promise<string | null> {
+    try {
+        const response = await fetch(`/__implicit_api/scenes/${encodeURIComponent(fileName)}?t=${Date.now()}`, {
+            cache: 'no-store',
+        });
+        if (!response.ok) {
+            return null;
+        }
+
+        const payload = (await response.json()) as SceneApiDocumentResponse;
+        return typeof payload.document?.source === 'string' ? payload.document.source : null;
+    } catch {
+        return null;
+    }
+}
+
+function isLikelyHtmlDocument(source: string): boolean {
+    return /^\s*<!doctype html>/i.test(source) || /^\s*<html[\s>]/i.test(source);
 }
 
 if (import.meta.hot) {

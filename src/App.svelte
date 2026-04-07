@@ -2,18 +2,28 @@
     import { onDestroy, onMount, tick } from 'svelte';
 
     import type { AnimationParams, RaymarchParams, ViewportParams } from './core/renderer';
+    import type { SceneDocument } from './core/shader-pipeline';
     import type { VaseSlicerSettings } from './core/slicer';
     import InspectorPanel from './components/InspectorPanel.svelte';
+    import SceneEditorPanel from './components/SceneEditorPanel.svelte';
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
     import ViewportPanel from './components/ViewportPanel.svelte';
-    import { type ShaderStatusMode, type StudioController } from './studio-controller';
+    import { type SceneRegistrySyncResult, type ShaderStatusMode, type StudioController } from './studio-controller';
     import {
         type ControlTabId,
         type InspectorSchemaHandlers,
         type InspectorSchemaState,
         type NumericSlicerKey,
     } from './ui/inspector-schema';
+    import {
+        createSceneDocument,
+        hasDirtySceneDocuments,
+        loadSceneRepository,
+        reloadFilesystemSceneDocuments,
+        saveSceneDocuments,
+        type SceneDocumentStorageMode,
+    } from './ui/scene-documents';
     import { createStatusModel } from './ui/status-model';
     import { createWorkspaceStore } from './ui/workspace-store';
 
@@ -32,6 +42,16 @@
     let viewportParams = snapshot.viewportParams;
     let animationParams = snapshot.animationParams;
     let slicerSettings = snapshot.slicerSettings;
+    const bundledSceneDocuments = studio.getSceneDocuments();
+    let sceneDocuments = bundledSceneDocuments;
+    let persistedSceneDocuments = bundledSceneDocuments;
+    let sceneEditorMode: SceneDocumentStorageMode = 'browser';
+    let sceneEditorStatus = 'Scene editor ready.';
+    let sceneEditorSavePending = false;
+    let activeSceneDocument: SceneDocument | null = sceneDocuments[0] ?? null;
+    let persistedActiveSceneDocument: SceneDocument | null = persistedSceneDocuments[0] ?? null;
+    let sceneEditorDirty = false;
+    let sceneEditorModeLabel = 'Browser Drafts';
 
     const workspace = createWorkspaceStore({
         activeSceneLabel: studio.getSceneLabel(sceneId),
@@ -40,9 +60,18 @@
     const status = createStatusModel();
 
     let resizeCleanup: (() => void) | null = null;
+    let editorResizeCleanup: (() => void) | null = null;
+    let sceneRepositoryPollHandle: number | null = null;
 
     $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
     $: studio.setToolpathOverlayVisible($workspace.overlayVisible);
+    $: activeSceneDocument = sceneDocuments.find((document) => document.id === sceneId) ?? null;
+    $: persistedActiveSceneDocument = persistedSceneDocuments.find((document) => document.id === sceneId) ?? null;
+    $: sceneEditorDirty = Boolean(
+        activeSceneDocument &&
+            (!persistedActiveSceneDocument || activeSceneDocument.source !== persistedActiveSceneDocument.source)
+    );
+    $: sceneEditorModeLabel = sceneEditorMode === 'filesystem' ? 'Folder Sync' : 'Browser Drafts';
     $: inspectorState = {
         sceneOptions,
         sceneControlDefinitions,
@@ -76,6 +105,11 @@
         await resizeViewportAfterLayout();
     }
 
+    async function toggleEditor(): Promise<void> {
+        workspace.toggleEditor();
+        await resizeViewportAfterLayout();
+    }
+
     function commitViewMode(nextViewMode: number): void {
         viewMode = nextViewMode;
         status.setWorkspaceStatus(studio.setViewMode(nextViewMode));
@@ -89,6 +123,31 @@
         sceneControlDefinitions = result.sceneControlDefinitions;
         sceneControlValues = result.sceneControlValues;
         status.applySceneChange(result);
+    }
+
+    function applySceneRegistryResult(result: SceneRegistrySyncResult): void {
+        sceneOptions = result.sceneOptions;
+        sceneId = result.sceneId;
+        slicerSettings = result.settings;
+        sceneControlDefinitions = result.sceneControlDefinitions;
+        sceneControlValues = result.sceneControlValues;
+        status.setShaderStatus(result.ok ? 'ok' : 'error', result.shaderMessage);
+    }
+
+    function updateSceneDocumentSource(value: string): void {
+        if (!activeSceneDocument) {
+            return;
+        }
+
+        sceneDocuments = sceneDocuments.map((document) =>
+            document.id === activeSceneDocument.id
+                ? { ...document, source: value }
+                : document
+        );
+
+        const result = studio.updateSceneDocumentSource(activeSceneDocument.id, value);
+        applySceneRegistryResult(result);
+        sceneEditorStatus = result.ok ? 'Live preview updated.' : 'Shader compile failed. Fix the scene and save again.';
     }
 
     function updateSceneControlValue(controlKey: string, value: number): void {
@@ -170,6 +229,102 @@
         status.setWorkspaceStatus(nextVisible ? 'Toolpath overlay enabled.' : 'Toolpath overlay hidden.');
     }
 
+    function mergePersistedSceneDocument(nextDocument: SceneDocument): void {
+        const nextPersisted = persistedSceneDocuments.some((document) => document.id === nextDocument.id)
+            ? persistedSceneDocuments.map((document) => (document.id === nextDocument.id ? nextDocument : document))
+            : [...persistedSceneDocuments, nextDocument];
+        persistedSceneDocuments = nextPersisted.sort((left, right) => left.name.localeCompare(right.name));
+    }
+
+    async function saveActiveSceneDocument(): Promise<void> {
+        if (!activeSceneDocument || !sceneEditorDirty || sceneEditorSavePending) {
+            return;
+        }
+
+        sceneEditorSavePending = true;
+        sceneEditorStatus = sceneEditorMode === 'filesystem' ? 'Saving scene to folder...' : 'Saving scene to browser storage...';
+
+        try {
+            const nextDocuments = await saveSceneDocuments(
+                sceneEditorMode,
+                activeSceneDocument,
+                bundledSceneDocuments,
+                sceneDocuments
+            );
+
+            sceneDocuments = nextDocuments;
+            if (sceneEditorMode === 'filesystem') {
+                const savedDocument = nextDocuments.find((document) => document.id === activeSceneDocument.id);
+                if (savedDocument) {
+                    mergePersistedSceneDocument(savedDocument);
+                }
+            } else {
+                persistedSceneDocuments = nextDocuments;
+            }
+
+            applySceneRegistryResult(studio.syncSceneDocuments(sceneDocuments));
+            sceneEditorStatus = sceneEditorMode === 'filesystem'
+                ? `Saved ${activeSceneDocument.fileName} to src/shaders/scenes.`
+                : `Saved ${activeSceneDocument.name} to browser storage.`;
+            status.setWorkspaceStatus(sceneEditorStatus);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Scene save failed.';
+            sceneEditorStatus = message;
+            status.setWorkspaceStatus(message);
+        } finally {
+            sceneEditorSavePending = false;
+        }
+    }
+
+    function revertActiveSceneDocument(): void {
+        if (!activeSceneDocument) {
+            return;
+        }
+
+        const persisted = persistedSceneDocuments.find((document) => document.id === activeSceneDocument.id);
+        if (!persisted) {
+            return;
+        }
+
+        sceneDocuments = sceneDocuments.map((document) =>
+            document.id === activeSceneDocument.id
+                ? { ...document, source: persisted.source }
+                : document
+        );
+
+        const result = studio.updateSceneDocumentSource(activeSceneDocument.id, persisted.source);
+        applySceneRegistryResult(result);
+        sceneEditorStatus = `Reverted ${persisted.fileName} to the last saved version.`;
+        status.setWorkspaceStatus(sceneEditorStatus);
+    }
+
+    async function createAndActivateScene(): Promise<void> {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        const requestedName = window.prompt('Scene name', activeSceneDocument ? `${activeSceneDocument.name} Variant` : 'New Scene');
+        if (requestedName === null) {
+            return;
+        }
+
+        const nextDocument = createSceneDocument(
+            sceneDocuments,
+            activeSceneDocument?.source ?? buildSceneTemplate(requestedName),
+            requestedName
+        );
+
+        sceneDocuments = [...sceneDocuments, nextDocument].sort((left, right) => left.name.localeCompare(right.name));
+        applySceneRegistryResult(studio.syncSceneDocuments(sceneDocuments));
+        workspace.setEditorVisible(true);
+        commitScene(nextDocument.id);
+        sceneEditorStatus = `Created ${nextDocument.fileName}. Save it to persist the new scene.`;
+        status.setWorkspaceStatus(sceneEditorStatus);
+        await resizeViewportAfterLayout();
+
+        await saveActiveSceneDocument();
+    }
+
     function resetInspectorWidth(): void {
         workspace.resetInspectorWidth();
         void resizeViewportAfterLayout();
@@ -181,6 +336,14 @@
             resizeCleanup = null;
         }
         workspace.setInspectorResizing(false);
+    }
+
+    function cleanupEditorResize(): void {
+        if (editorResizeCleanup) {
+            editorResizeCleanup();
+            editorResizeCleanup = null;
+        }
+        workspace.setEditorResizing(false);
     }
 
     function startInspectorResize(event: PointerEvent): void {
@@ -211,6 +374,36 @@
         window.addEventListener('pointercancel', handlePointerUp, { once: true });
 
         resizeCleanup = () => {
+            window.removeEventListener('pointermove', handlePointerMove);
+            window.removeEventListener('pointerup', handlePointerUp);
+            window.removeEventListener('pointercancel', handlePointerUp);
+        };
+    }
+
+    function startEditorResize(event: PointerEvent): void {
+        event.preventDefault();
+        cleanupEditorResize();
+
+        const startY = event.clientY;
+        const startHeight = $workspace.editorHeight;
+        workspace.setEditorResizing(true);
+
+        const handlePointerMove = (moveEvent: PointerEvent) => {
+            const delta = startY - moveEvent.clientY;
+            workspace.setEditorHeight(startHeight + delta);
+            studio.resizeViewport();
+        };
+
+        const handlePointerUp = () => {
+            cleanupEditorResize();
+            void resizeViewportAfterLayout();
+        };
+
+        window.addEventListener('pointermove', handlePointerMove);
+        window.addEventListener('pointerup', handlePointerUp, { once: true });
+        window.addEventListener('pointercancel', handlePointerUp, { once: true });
+
+        editorResizeCleanup = () => {
             window.removeEventListener('pointermove', handlePointerMove);
             window.removeEventListener('pointerup', handlePointerUp);
             window.removeEventListener('pointercancel', handlePointerUp);
@@ -278,27 +471,97 @@
 
         window.addEventListener('shader-hmr-status', handleShaderStatus);
 
-        try {
-            studio.init();
-            status.setShaderStatus('ready', 'Ready');
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'Failed to initialize renderer';
-            status.setShaderStatus('error', message);
-            status.setWorkspaceStatus('Renderer initialization failed.');
-            console.error('[Startup] Renderer initialization failed.', error);
-        }
+        let disposed = false;
+
+        const refreshFilesystemScenes = async (silent: boolean = false): Promise<void> => {
+            if (sceneEditorMode !== 'filesystem' || hasDirtySceneDocuments(sceneDocuments, persistedSceneDocuments)) {
+                return;
+            }
+
+            const nextDocuments = await reloadFilesystemSceneDocuments();
+            if (!nextDocuments || areSceneCollectionsEqual(nextDocuments, persistedSceneDocuments)) {
+                return;
+            }
+
+            persistedSceneDocuments = nextDocuments;
+            sceneDocuments = nextDocuments;
+            applySceneRegistryResult(studio.syncSceneDocuments(nextDocuments));
+            if (!silent) {
+                sceneEditorStatus = 'Scene folder updated from disk.';
+                status.setWorkspaceStatus(sceneEditorStatus);
+            }
+        };
+
+        void (async () => {
+            try {
+                const repository = await loadSceneRepository(bundledSceneDocuments);
+                if (disposed) {
+                    return;
+                }
+
+                sceneEditorMode = repository.mode;
+                persistedSceneDocuments = repository.documents;
+                sceneDocuments = repository.documents;
+                applySceneRegistryResult(studio.syncSceneDocuments(repository.documents));
+
+                studio.init();
+                status.setShaderStatus('ready', 'Ready');
+                sceneEditorStatus = repository.mode === 'filesystem'
+                    ? 'Editing scene files directly from src/shaders/scenes.'
+                    : 'Editing bundled defaults with browser-backed drafts.';
+                status.setWorkspaceStatus(sceneEditorStatus);
+
+                if (repository.mode === 'filesystem') {
+                    sceneRepositoryPollHandle = window.setInterval(() => {
+                        void refreshFilesystemScenes(true);
+                    }, 1200);
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Failed to initialize renderer';
+                status.setShaderStatus('error', message);
+                status.setWorkspaceStatus('Renderer initialization failed.');
+                console.error('[Startup] Renderer initialization failed.', error);
+            }
+        })();
 
         return () => {
+            disposed = true;
             window.removeEventListener('shader-hmr-status', handleShaderStatus);
+            if (sceneRepositoryPollHandle !== null) {
+                window.clearInterval(sceneRepositoryPollHandle);
+                sceneRepositoryPollHandle = null;
+            }
         };
     });
 
     onDestroy(() => {
         cleanupInspectorResize();
+        cleanupEditorResize();
     });
+
+    function buildSceneTemplate(sceneName: string): string {
+        const label = sceneName.trim() || 'New Scene';
+        return `// ${label}\n// @control {"key":"radius","label":"Radius","uniform":"uSceneRadius","min":0.2,"max":2.0,"step":0.01,"default":0.8,"section":"Scene Parameters"}\n\nuniform float uSceneRadius;\n\nfloat sceneSdf(vec3 p) {\n    return length(p) - uSceneRadius;\n}\n`;
+    }
+
+    function areSceneCollectionsEqual(left: SceneDocument[], right: SceneDocument[]): boolean {
+        if (left.length !== right.length) {
+            return false;
+        }
+
+        return left.every((document, index) => {
+            const candidate = right[index];
+            return Boolean(
+                candidate &&
+                    candidate.id === document.id &&
+                    candidate.fileName === document.fileName &&
+                    candidate.source === document.source
+            );
+        });
+    }
 </script>
 
-<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing}>
+<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:editor-visible={$workspace.editorVisible}>
     <TopBar
         activeSceneLabel={$workspace.activeSceneLabel}
         activeViewModeLabel={$workspace.activeViewModeLabel}
@@ -309,39 +572,62 @@
         onToggleInspector={toggleInspector}
     />
 
-    <div class="workspace-shell" style={`--inspector-width: ${$workspace.inspectorWidth}px;`}>
-        <ViewportPanel
-            activeSceneLabel={$workspace.activeSceneLabel}
-            activeViewModeLabel={$workspace.activeViewModeLabel}
-            {sceneOptions}
-            {sceneId}
-            {viewMode}
-            printerLabel={slicerSettings.printerModelName}
-            materialLabel={slicerSettings.filamentProfileName}
-            overlayVisible={$workspace.overlayVisible}
-            actionPending={$status.actionPending}
-            commandStatus={$status.outputStatus}
-            inspectorCollapsed={$workspace.inspectorCollapsed}
-            onResetView={resetView}
-            onToggleInspector={toggleInspector}
-            onCommitScene={commitScene}
-            onCommitViewMode={commitViewMode}
-            onToggleOverlay={toggleOverlay}
-            onGenerateVaseGcode={generateVaseGcode}
-            onBenchmarkVaseGcode={benchmarkVaseGcode}
-        />
+    <div class="workspace-stack" style={`--editor-height: ${$workspace.editorHeight}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
+        <div class="workspace-shell">
+            <ViewportPanel
+                activeSceneLabel={$workspace.activeSceneLabel}
+                activeViewModeLabel={$workspace.activeViewModeLabel}
+                {sceneOptions}
+                {sceneId}
+                {viewMode}
+                printerLabel={slicerSettings.printerModelName}
+                materialLabel={slicerSettings.filamentProfileName}
+                overlayVisible={$workspace.overlayVisible}
+                actionPending={$status.actionPending}
+                commandStatus={$status.outputStatus}
+                inspectorCollapsed={$workspace.inspectorCollapsed}
+                editorVisible={$workspace.editorVisible}
+                editorModeLabel={sceneEditorModeLabel}
+                editorDirty={sceneEditorDirty}
+                onResetView={resetView}
+                onToggleInspector={toggleInspector}
+                onToggleEditor={toggleEditor}
+                onCreateScene={createAndActivateScene}
+                onCommitScene={commitScene}
+                onCommitViewMode={commitViewMode}
+                onToggleOverlay={toggleOverlay}
+                onGenerateVaseGcode={generateVaseGcode}
+                onBenchmarkVaseGcode={benchmarkVaseGcode}
+            />
 
-        {#if !$workspace.inspectorCollapsed}
-            <button
-                class="dock-resizer"
-                type="button"
-                aria-label="Resize inspector"
-                on:pointerdown={startInspectorResize}
-                on:dblclick={resetInspectorWidth}
-                on:keydown={handleDockKeydown}
-            ></button>
+            {#if !$workspace.inspectorCollapsed}
+                <button
+                    class="dock-resizer"
+                    type="button"
+                    aria-label="Resize inspector"
+                    on:pointerdown={startInspectorResize}
+                    on:dblclick={resetInspectorWidth}
+                    on:keydown={handleDockKeydown}
+                ></button>
 
-            <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
+                <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
+            {/if}
+        </div>
+
+        {#if $workspace.editorVisible}
+            <SceneEditorPanel
+                sceneDocument={activeSceneDocument}
+                storageMode={sceneEditorMode}
+                dirty={sceneEditorDirty}
+                savePending={sceneEditorSavePending}
+                statusText={sceneEditorStatus}
+                onChangeSource={updateSceneDocumentSource}
+                onCreateScene={createAndActivateScene}
+                onSaveScene={saveActiveSceneDocument}
+                onRevertScene={revertActiveSceneDocument}
+                onClose={toggleEditor}
+                onStartResize={startEditorResize}
+            />
         {/if}
     </div>
 

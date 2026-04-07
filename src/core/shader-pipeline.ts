@@ -79,9 +79,12 @@ export interface SceneOption {
     name: string;
 }
 
-interface SceneEntry extends SceneOption {
+export interface SceneDocument extends SceneOption {
     fileName: string;
     source: string;
+}
+
+interface SceneEntry extends SceneDocument {
     controls: SceneControlDefinition[];
 }
 
@@ -142,6 +145,15 @@ export function getAvailableScenes(): SceneOption[] {
     return sceneEntries.map((scene) => ({ id: scene.id, name: scene.name }));
 }
 
+export function getSceneDocuments(): SceneDocument[] {
+    return sceneEntries.map((scene) => ({
+        id: scene.id,
+        name: scene.name,
+        fileName: scene.fileName,
+        source: scene.source,
+    }));
+}
+
 export function getActiveSceneId(): string {
     return activeSceneId;
 }
@@ -154,6 +166,66 @@ export function getActiveSceneFileName(): string | null {
 export function getSceneControlDefinitions(sceneId: string = activeSceneId): SceneControlDefinition[] {
     const entry = resolveSceneEntryById(sceneId);
     return entry?.controls.map((control) => ({ ...control })) ?? [];
+}
+
+export function replaceSceneDocuments(documents: SceneDocument[]): SceneDocument[] {
+    const nextEntries = buildSceneEntries(
+        Object.fromEntries(
+            documents.map((document) => [document.fileName, document.source])
+        )
+    );
+
+    if (nextEntries.length === 0) {
+        return getSceneDocuments();
+    }
+
+    sceneEntries.length = 0;
+    sceneEntries.push(...nextEntries);
+
+    const resolvedActive = resolveSceneEntryById(activeSceneId) ?? sceneEntries[0];
+    activeSceneId = resolvedActive?.id ?? activeSceneId;
+    runtimeState.activeSceneId = activeSceneId;
+    activeSources = {
+        ...activeSources,
+        scene: getSceneSourceById(activeSceneId),
+    };
+
+    return getSceneDocuments();
+}
+
+export function upsertSceneDocument(document: SceneDocument): SceneDocument {
+    const normalized = normalizeSceneDocument(document);
+    const existing = resolveSceneEntryById(normalized.id);
+
+    if (existing) {
+        existing.id = normalized.id;
+        existing.name = normalized.name;
+        existing.fileName = normalized.fileName;
+        existing.source = normalized.source;
+        existing.controls = parseSceneControlDefinitions(normalized.source);
+    } else {
+        sceneEntries.push({
+            ...normalized,
+            controls: parseSceneControlDefinitions(normalized.source),
+        });
+        sceneEntries.sort((left, right) => left.name.localeCompare(right.name));
+    }
+
+    if (normalizeSceneId(activeSceneId) === normalizeSceneId(normalized.id)) {
+        activeSceneId = normalized.id;
+        runtimeState.activeSceneId = normalized.id;
+        activeSources = {
+            ...activeSources,
+            scene: normalized.source,
+        };
+    }
+
+    return {
+        id: normalized.id,
+        name: normalized.name,
+        fileName: normalized.fileName,
+        source: normalized.source,
+    };
 }
 
 export function updateSceneSourceById(sceneId: string, source: string): boolean {
@@ -376,6 +448,32 @@ function buildSceneEntries(modules: Record<string, string | { default: string }>
         });
 
     return Array.from(deduped.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function normalizeSceneDocument(document: SceneDocument): SceneDocument {
+    const fileName = normalizeSceneFileName(document.fileName || document.id);
+    const fallbackId = fileName.replace(/\.glsl$/i, '');
+    const id = document.id.trim().length > 0 ? document.id.trim() : fallbackId;
+
+    return {
+        id,
+        name: document.name.trim().length > 0 ? document.name.trim() : toSceneLabel(id),
+        fileName,
+        source: document.source,
+    };
+}
+
+function normalizeSceneFileName(value: string): string {
+    const sanitized = value
+        .trim()
+        .replace(/[\\/]+/g, '_')
+        .replace(/^\.+/, '')
+        .replace(/\s+/g, ' ');
+    if (sanitized.toLowerCase().endsWith('.glsl')) {
+        return sanitized;
+    }
+
+    return `${sanitized || 'scene'}.glsl`;
 }
 
 interface SceneControlConfigFile {

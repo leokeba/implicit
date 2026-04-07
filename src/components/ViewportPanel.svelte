@@ -13,8 +13,13 @@
     export let actionPending: boolean;
     export let commandStatus: string;
     export let inspectorCollapsed: boolean;
+    export let editorVisible: boolean;
+    export let editorModeLabel: string;
+    export let editorDirty: boolean;
     export let onResetView: () => void;
     export let onToggleInspector: () => void | Promise<void>;
+    export let onToggleEditor: () => void | Promise<void>;
+    export let onCreateScene: () => void | Promise<void>;
     export let onCommitScene: (sceneId: string) => void;
     export let onCommitViewMode: (viewMode: number) => void;
     export let onToggleOverlay: () => void;
@@ -28,6 +33,10 @@
             <div class="viewport-command-surface">
                 <div class="viewport-toolbar-group viewport-toolbar-group-strong">
                     <span class="viewport-badge">Live Viewport</span>
+                    <span class="viewport-badge viewport-badge-muted">{editorModeLabel}</span>
+                    {#if editorDirty}
+                        <span class="viewport-badge scene-editor-dirty-badge">Unsaved Scene</span>
+                    {/if}
                     <label class="viewport-field">
                         <span class="viewport-field-label">Scene</span>
                         <select class="viewport-select" value={sceneId} on:change={(event) => onCommitScene((event.currentTarget as HTMLSelectElement).value)}>
@@ -53,6 +62,10 @@
                 <div class="viewport-toolbar-actions">
                     <button class:chrome-button-secondary={!overlayVisible} class="chrome-button chrome-button-ghost" type="button" aria-pressed={overlayVisible} on:click={onToggleOverlay}>
                         {overlayVisible ? 'Overlay On' : 'Overlay Off'}
+                    </button>
+                    <button class="chrome-button chrome-button-ghost" type="button" on:click={onCreateScene}>New Scene</button>
+                    <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={editorVisible} on:click={onToggleEditor}>
+                        {editorVisible ? 'Hide Editor' : 'Show Editor'}
                     </button>
                     <button class="chrome-button chrome-button-ghost" type="button" disabled={actionPending} on:click={onGenerateVaseGcode}>Generate</button>
                     <button class="chrome-button chrome-button-ghost" type="button" disabled={actionPending} on:click={onBenchmarkVaseGcode}>Benchmark</button>
