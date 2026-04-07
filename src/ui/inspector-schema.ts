@@ -1,8 +1,8 @@
 import type { AnimationParams, RaymarchParams, ViewportParams } from '../core/renderer';
+import type { SceneControlDefinition, SceneControlValueMap, SceneOption } from '../core/shader-pipeline';
 
 import type { FilamentProfile } from '../core/filament-profiles';
 import type { PrinterModel } from '../core/printer-models';
-import type { SceneOption } from '../core/shader-pipeline';
 import type { VaseSlicerSettings } from '../core/slicer';
 
 export type ControlTabId = 'scene' | 'camera' | 'render' | 'print' | 'machine' | 'material' | 'output';
@@ -41,6 +41,8 @@ export type NumericSlicerKey =
 
 export interface InspectorSchemaState {
     sceneOptions: SceneOption[];
+    sceneControlDefinitions: SceneControlDefinition[];
+    sceneControlValues: SceneControlValueMap;
     printerModels: PrinterModel[];
     filamentProfiles: FilamentProfile[];
     sceneId: string;
@@ -58,6 +60,7 @@ export interface InspectorSchemaState {
 export interface InspectorSchemaHandlers {
     commitViewMode: (viewMode: number) => void;
     commitScene: (sceneId: string) => void;
+    updateSceneControlValue: (controlKey: string, value: number) => void;
     updateViewportField: (key: keyof ViewportParams, value: number) => void;
     resetView: () => void;
     updateRaymarchField: (key: keyof RaymarchParams, value: number) => void;
@@ -105,6 +108,7 @@ export type InspectorFieldSchema =
     | (NumberFieldBase & { target: 'viewport'; key: keyof ViewportParams })
     | (NumberFieldBase & { target: 'animation'; key: keyof AnimationParams })
     | (NumberFieldBase & { target: 'slicer'; key: NumericSlicerKey })
+    | (NumberFieldBase & { target: 'sceneControl'; key: string })
     | (NumberFieldBase & { target: 'command'; key: 'benchmarkIterations' | 'benchmarkWarmups' })
     | (SelectFieldBase & { target: 'scene'; optionsSource: 'sceneOptions' })
     | (SelectFieldBase & { target: 'viewMode'; options: InspectorFieldOption[] })
@@ -142,7 +146,7 @@ export interface InspectorTabSchema {
     consoleSource?: 'outputStatus';
 }
 
-const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
+export const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
     { value: '0', label: 'Shaded' },
     { value: '1', label: 'RGB Normals' },
     { value: '2', label: 'Glass' },
@@ -377,6 +381,27 @@ export function getInspectorTabSchema(tabId: ControlTabId): InspectorTabSchema {
     return INSPECTOR_TABS.find((tab) => tab.id === tabId) ?? INSPECTOR_TABS[0];
 }
 
+export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSchemaState): InspectorTabSchema {
+    const baseTab = getInspectorTabSchema(tabId);
+    if (tabId !== 'scene') {
+        return baseTab;
+    }
+
+    const sceneControlSections = buildSceneControlSections(state.sceneControlDefinitions);
+    if (sceneControlSections.length === 0) {
+        return baseTab;
+    }
+
+    return {
+        ...baseTab,
+        summary: [
+            ...baseTab.summary,
+            { label: 'Custom', read: () => `${state.sceneControlDefinitions.length} control${state.sceneControlDefinitions.length === 1 ? '' : 's'}` },
+        ],
+        sections: [...baseTab.sections, ...sceneControlSections],
+    };
+}
+
 export function readFieldValue(field: InspectorFieldSchema, state: InspectorSchemaState): string | number {
     switch (field.target) {
         case 'scene':
@@ -389,6 +414,8 @@ export function readFieldValue(field: InspectorFieldSchema, state: InspectorSche
             return state.slicerSettings.printerModelId;
         case 'filamentProfile':
             return state.slicerSettings.filamentProfileId;
+        case 'sceneControl':
+            return state.sceneControlValues[field.key] ?? 0;
         case 'raymarch':
             return state.raymarchParams[field.key];
         case 'viewport':
@@ -454,6 +481,9 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
         case 'filamentProfile':
             handlers.commitFilamentProfile(rawValue);
             return;
+        case 'sceneControl':
+            handlers.updateSceneControlValue(field.key, coerceNumber(rawValue));
+            return;
         case 'viewport':
             handlers.updateViewportField(field.key, coerceNumber(rawValue));
             return;
@@ -489,4 +519,41 @@ export function triggerInspectorAction(action: InspectorActionSchema, handlers: 
         case 'benchmarkVaseGcode':
             return handlers.benchmarkVaseGcode();
     }
+}
+
+function buildSceneControlSections(definitions: SceneControlDefinition[]): InspectorSectionSchema[] {
+    const bySection = new Map<string, SceneControlDefinition[]>();
+
+    for (const definition of definitions) {
+        const sectionKey = definition.section || 'Scene Parameters';
+        const existing = bySection.get(sectionKey) ?? [];
+        existing.push(definition);
+        bySection.set(sectionKey, existing);
+    }
+
+    return Array.from(bySection.entries()).map(([sectionTitle, sectionDefinitions]) => ({
+        id: `scene-${slugifySection(sectionTitle)}`,
+        title: sectionTitle,
+        caption: sectionDefinitions.some((definition) => definition.description)
+            ? sectionDefinitions.map((definition) => definition.description).filter(Boolean).join(' ')
+            : 'Controls declared by the active scene shader.',
+        fields: sectionDefinitions.map((definition) => ({
+            kind: 'number' as const,
+            target: 'sceneControl' as const,
+            key: definition.key,
+            id: `scene-control-${definition.key}`,
+            label: definition.label,
+            step: String(definition.step),
+            min: String(definition.min),
+            max: String(definition.max),
+        })),
+    }));
+}
+
+function slugifySection(value: string): string {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'scene-controls';
 }

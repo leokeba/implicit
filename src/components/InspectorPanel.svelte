@@ -1,8 +1,8 @@
 <script lang="ts">
     import InspectorSchemaTab from './inspector/InspectorSchemaTab.svelte';
     import {
+        buildInspectorTabSchema,
         INSPECTOR_TABS,
-        getInspectorTabSchema,
         type ControlTabId,
         type InspectorSchemaHandlers,
         type InspectorSchemaState,
@@ -13,7 +13,7 @@
     export let handlers: InspectorSchemaHandlers;
     export let onSelectTab: (tabId: ControlTabId) => void | Promise<void>;
 
-    $: activeSchema = getInspectorTabSchema(activeTab);
+    $: activeSchema = buildInspectorTabSchema(activeTab, state);
 </script>
 
 <aside id="controls" aria-label="Inspector">

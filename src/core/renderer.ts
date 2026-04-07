@@ -6,6 +6,8 @@ import {
     getImportedShaderSources,
     getRendererVertexSource,
     updateSceneSourceById,
+    type SceneControlDefinition,
+    type SceneControlValueMap,
     type ShaderSourceUpdates,
 } from './shader-pipeline';
 
@@ -107,6 +109,9 @@ class Renderer {
     private raymarchParams: RaymarchParams;
     private viewportParams: ViewportParams;
     private animationParams: AnimationParams;
+    private sceneControlDefinitions: SceneControlDefinition[];
+    private sceneControlValues: SceneControlValueMap;
+    private sceneUniformLocations: Map<string, WebGLUniformLocation | null>;
 
     constructor() {
         activeRenderers.add(this);
@@ -183,6 +188,9 @@ class Renderer {
             targetFrameRate: 0,
             framePeriod: 120,
         };
+        this.sceneControlDefinitions = [];
+        this.sceneControlValues = {};
+        this.sceneUniformLocations = new Map();
     }
 
     public init(canvas: HTMLCanvasElement): void {
@@ -264,6 +272,7 @@ class Renderer {
             if (previousProgram) {
                 this.gl.deleteProgram(previousProgram);
             }
+            this.sceneUniformLocations.clear();
             console.info('[HMR] Shader program reloaded successfully.');
             return {
                 ok: true,
@@ -395,6 +404,15 @@ class Renderer {
             gl.uniform1f(this.flowRateLocation, this.slicerUniformState.flowRate);
         }
 
+        for (const control of this.sceneControlDefinitions) {
+            const location = this.getSceneUniformLocation(control.uniform);
+            if (!location) {
+                continue;
+            }
+
+            gl.uniform1f(location, this.sceneControlValues[control.key] ?? control.defaultValue);
+        }
+
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         this.renderedFrameCount += 1;
         return true;
@@ -426,6 +444,18 @@ class Renderer {
 
         if (this.slicerUniformState.maxY <= this.slicerUniformState.minY) {
             this.slicerUniformState.maxY = this.slicerUniformState.minY + this.slicerUniformState.layerHeight;
+        }
+    }
+
+    public setSceneControlState(definitions: SceneControlDefinition[], values: SceneControlValueMap): void {
+        const shouldResetLocations = definitions.length !== this.sceneControlDefinitions.length
+            || definitions.some((definition, index) => definition.uniform !== this.sceneControlDefinitions[index]?.uniform);
+
+        this.sceneControlDefinitions = definitions.map((definition) => ({ ...definition }));
+        this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions, values);
+
+        if (shouldResetLocations) {
+            this.sceneUniformLocations.clear();
         }
     }
 
@@ -786,6 +816,21 @@ class Renderer {
         this.maxRadiusLocation = this.gl.getUniformLocation(this.program, 'uMaxRadius');
         this.nozzleDiameterLocation = this.gl.getUniformLocation(this.program, 'uNozzleDiameter');
         this.flowRateLocation = this.gl.getUniformLocation(this.program, 'uFlowRate');
+        this.sceneUniformLocations.clear();
+    }
+
+    private getSceneUniformLocation(name: string): WebGLUniformLocation | null {
+        if (!this.gl || !this.program) {
+            return null;
+        }
+
+        if (this.sceneUniformLocations.has(name)) {
+            return this.sceneUniformLocations.get(name) ?? null;
+        }
+
+        const location = this.gl.getUniformLocation(this.program, name);
+        this.sceneUniformLocations.set(name, location);
+        return location;
     }
 
     private shouldRenderAt(nowMs: number): boolean {
@@ -830,6 +875,17 @@ class Renderer {
 export default Renderer;
 const activeRenderers: Set<Renderer> = ((globalThis as any).__implicitActiveRenderers as Set<Renderer> | undefined) ?? new Set<Renderer>();
 (globalThis as any).__implicitActiveRenderers = activeRenderers;
+
+function buildSceneControlValueMap(definitions: SceneControlDefinition[], values: SceneControlValueMap): SceneControlValueMap {
+    const next: SceneControlValueMap = {};
+
+    for (const definition of definitions) {
+        const rawValue = values[definition.key] ?? definition.defaultValue;
+        next[definition.key] = Math.min(definition.max, Math.max(definition.min, rawValue));
+    }
+
+    return next;
+}
 
 function emitShaderStatus(mode: ShaderStatusMode, message: string): void {
     if (typeof window === 'undefined') {

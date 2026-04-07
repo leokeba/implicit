@@ -50,6 +50,19 @@ interface ShaderSources {
 
 export type SceneParamValue = number | boolean | string;
 export type SceneParamMap = Record<string, SceneParamValue>;
+export type SceneControlValueMap = Record<string, number>;
+
+export interface SceneControlDefinition {
+    key: string;
+    label: string;
+    uniform: string;
+    min: number;
+    max: number;
+    step: number;
+    defaultValue: number;
+    section: string;
+    description?: string;
+}
 
 export interface SceneSlicerDefaults {
     minY?: number;
@@ -69,6 +82,7 @@ export interface SceneOption {
 interface SceneEntry extends SceneOption {
     fileName: string;
     source: string;
+    controls: SceneControlDefinition[];
 }
 
 interface ShaderPipelineRuntimeState {
@@ -81,7 +95,13 @@ const sceneEntries: SceneEntry[] = buildSceneEntries({
     ...sceneSourceModules,
 });
 if (sceneEntries.length === 0) {
-    sceneEntries.push({ id: 'defaultScene', name: 'Default Scene', fileName: 'defaultScene.glsl', source: defaultSceneSource });
+    sceneEntries.push({
+        id: 'defaultScene',
+        name: 'Default Scene',
+        fileName: 'defaultScene.glsl',
+        source: defaultSceneSource,
+        controls: parseSceneControlDefinitions(defaultSceneSource),
+    });
 }
 
 const runtimeState: ShaderPipelineRuntimeState = ((globalThis as any).__implicitShaderPipelineState as ShaderPipelineRuntimeState | undefined) ?? {};
@@ -131,6 +151,11 @@ export function getActiveSceneFileName(): string | null {
     return entry?.fileName ?? null;
 }
 
+export function getSceneControlDefinitions(sceneId: string = activeSceneId): SceneControlDefinition[] {
+    const entry = resolveSceneEntryById(sceneId);
+    return entry?.controls.map((control) => ({ ...control })) ?? [];
+}
+
 export function updateSceneSourceById(sceneId: string, source: string): boolean {
     const entry = resolveSceneEntryById(sceneId);
     if (!entry) {
@@ -138,6 +163,7 @@ export function updateSceneSourceById(sceneId: string, source: string): boolean 
     }
 
     entry.source = source;
+    entry.controls = parseSceneControlDefinitions(source);
     if (entry.id === activeSceneId) {
         activeSources = {
             ...activeSources,
@@ -333,7 +359,13 @@ function buildSceneEntries(modules: Record<string, string | { default: string }>
                 : typeof module.default === 'string'
                     ? module.default
                     : '';
-            return { id, name, fileName: filename, source };
+            return {
+                id,
+                name,
+                fileName: filename,
+                source,
+                controls: parseSceneControlDefinitions(source),
+            };
         })
         .filter((entry) => entry.id.length > 0)
         .forEach((entry) => {
@@ -344,6 +376,94 @@ function buildSceneEntries(modules: Record<string, string | { default: string }>
         });
 
     return Array.from(deduped.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+interface SceneControlConfigFile {
+    key?: unknown;
+    label?: unknown;
+    uniform?: unknown;
+    min?: unknown;
+    max?: unknown;
+    step?: unknown;
+    default?: unknown;
+    section?: unknown;
+    description?: unknown;
+}
+
+function parseSceneControlDefinitions(sceneSource: string): SceneControlDefinition[] {
+    const pattern = /^\s*\/\/\s*@control\s+(\{.+\})\s*$/gm;
+    const controls: SceneControlDefinition[] = [];
+    const seenKeys = new Set<string>();
+
+    let match: RegExpExecArray | null = pattern.exec(sceneSource);
+    while (match) {
+        const parsed = safeParseSceneControlConfig(match[1] ?? '');
+        if (!parsed || seenKeys.has(parsed.key)) {
+            match = pattern.exec(sceneSource);
+            continue;
+        }
+
+        seenKeys.add(parsed.key);
+        controls.push(parsed);
+        match = pattern.exec(sceneSource);
+    }
+
+    return controls;
+}
+
+function safeParseSceneControlConfig(rawPayload: string): SceneControlDefinition | null {
+    try {
+        const parsed = JSON.parse(rawPayload) as SceneControlConfigFile;
+        const key = typeof parsed.key === 'string' ? normalizeSceneControlKey(parsed.key) : '';
+        if (!key) {
+            return null;
+        }
+
+        const min = readFiniteNumber(parsed.min);
+        const max = readFiniteNumber(parsed.max);
+        const step = readFiniteNumber(parsed.step);
+        if (min === null || max === null || step === null || max <= min || step <= 0) {
+            return null;
+        }
+
+        const fallbackDefault = min + (max - min) * 0.5;
+        const defaultValue = clampSceneControlValue(readFiniteNumber(parsed.default) ?? fallbackDefault, min, max);
+        const uniform = typeof parsed.uniform === 'string' && parsed.uniform.trim().length > 0
+            ? parsed.uniform.trim()
+            : `uScene${key.charAt(0).toUpperCase()}${key.slice(1)}`;
+
+        return {
+            key,
+            label: typeof parsed.label === 'string' && parsed.label.trim().length > 0 ? parsed.label.trim() : toSceneLabel(key),
+            uniform,
+            min,
+            max,
+            step,
+            defaultValue,
+            section: typeof parsed.section === 'string' && parsed.section.trim().length > 0 ? parsed.section.trim() : 'Scene Parameters',
+            description: typeof parsed.description === 'string' && parsed.description.trim().length > 0 ? parsed.description.trim() : undefined,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function normalizeSceneControlKey(value: string): string {
+    return value
+        .trim()
+        .replace(/[^a-zA-Z0-9]+/g, ' ')
+        .trim()
+        .replace(/\s+(.)/g, (_, letter: string) => letter.toUpperCase())
+        .replace(/\s/g, '')
+        .replace(/^[A-Z]/, (letter) => letter.toLowerCase());
+}
+
+function readFiniteNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function clampSceneControlValue(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
 }
 
 function getSceneSourceById(sceneId: string): string {
@@ -451,8 +571,15 @@ if (import.meta.hot && sceneHotDependencyPaths.length > 0) {
                 existing.fileName = filename;
                 existing.source = source;
                 existing.name = toSceneLabel(id);
+                existing.controls = parseSceneControlDefinitions(source);
             } else {
-                byId.set(id, { id, name: toSceneLabel(id), fileName: filename, source });
+                byId.set(id, {
+                    id,
+                    name: toSceneLabel(id),
+                    fileName: filename,
+                    source,
+                    controls: parseSceneControlDefinitions(source),
+                });
             }
         }
 

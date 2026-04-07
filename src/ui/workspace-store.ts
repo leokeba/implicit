@@ -12,6 +12,7 @@ interface WorkspacePreferences {
     activeTab: ControlTabId;
     inspectorCollapsed: boolean;
     inspectorWidth: number;
+    overlayVisible: boolean;
 }
 
 export interface WorkspaceState extends WorkspacePreferences {
@@ -29,6 +30,7 @@ function getDefaultPreferences(): WorkspacePreferences {
         activeTab: 'scene',
         inspectorCollapsed: false,
         inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
+        overlayVisible: true,
     };
 }
 
@@ -65,6 +67,7 @@ function readStoredPreferences(): WorkspacePreferences {
             activeTab: parsed.activeTab ?? readLegacyTabPreference() ?? 'scene',
             inspectorCollapsed: parsed.inspectorCollapsed ?? false,
             inspectorWidth: clampInspectorWidth(parsed.inspectorWidth ?? DEFAULT_INSPECTOR_WIDTH),
+            overlayVisible: parsed.overlayVisible ?? true,
         };
     } catch {
         return getDefaultPreferences();
@@ -80,6 +83,7 @@ function persistPreferences(state: WorkspaceState): void {
         activeTab: state.activeTab,
         inspectorCollapsed: state.inspectorCollapsed,
         inspectorWidth: state.inspectorWidth,
+        overlayVisible: state.overlayVisible,
     };
 
     try {
@@ -155,6 +159,18 @@ export function createWorkspaceStore(initialLabels: Pick<WorkspaceState, 'active
                 ...state,
                 activeSceneLabel,
                 activeViewModeLabel,
+            }));
+        },
+        toggleOverlay(): void {
+            mutate((state) => ({
+                ...state,
+                overlayVisible: !state.overlayVisible,
+            }));
+        },
+        setOverlayVisible(overlayVisible: boolean): void {
+            mutate((state) => ({
+                ...state,
+                overlayVisible,
             }));
         },
     };

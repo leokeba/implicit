@@ -5,8 +5,11 @@ import type { AnimationParams, RaymarchParams, ViewportParams } from './core/ren
 import {
     getActiveSceneId,
     getAvailableScenes,
+    getSceneControlDefinitions,
     getSceneDefaultParams,
     setActiveSceneById,
+    type SceneControlDefinition,
+    type SceneControlValueMap,
     type SceneOption,
     type SceneParamMap,
 } from './core/shader-pipeline';
@@ -47,12 +50,16 @@ export interface StudioSnapshot {
     slicerSettings: VaseSlicerSettings;
     printerModels: PrinterModel[];
     filamentProfiles: FilamentProfile[];
+    sceneControlDefinitions: SceneControlDefinition[];
+    sceneControlValues: SceneControlValueMap;
 }
 
 export interface SceneChangeResult {
     ok: boolean;
     sceneId: string;
     settings: VaseSlicerSettings;
+    sceneControlDefinitions: SceneControlDefinition[];
+    sceneControlValues: SceneControlValueMap;
     shaderMessage: string;
     workspaceStatus: string;
 }
@@ -121,6 +128,8 @@ export class StudioController {
     private renderFrameHandle: number | null;
     private numericSlicerSettingKeys: Set<keyof VaseSlicerSettings>;
     private initialized: boolean;
+    private sceneControlDefinitions: SceneControlDefinition[];
+    private sceneControlValues: SceneControlValueMap;
 
     constructor() {
         this.renderer = new Renderer();
@@ -134,6 +143,8 @@ export class StudioController {
         this.renderFrameHandle = null;
         this.numericSlicerSettingKeys = new Set();
         this.initialized = false;
+        this.sceneControlDefinitions = getSceneControlDefinitions();
+        this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions);
 
         if (this.filamentProfiles.length > 0) {
             this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
@@ -149,6 +160,7 @@ export class StudioController {
         );
 
         this.applySceneDefaultParams(getSceneDefaultParams());
+        this.syncSceneControlState();
     }
 
     public init(): void {
@@ -159,6 +171,7 @@ export class StudioController {
         this.preview.init();
         this.renderer.init(this.preview.getCanvas());
         this.syncSceneSlicerUniforms();
+        this.syncSceneControlState();
         this.attachRenderLifecycleHandlers();
         this.updatePreviewRenderState();
         this.initialized = true;
@@ -175,6 +188,8 @@ export class StudioController {
             slicerSettings: { ...this.slicerSettings },
             printerModels: [...this.printerModels],
             filamentProfiles: [...this.filamentProfiles],
+            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
+            sceneControlValues: { ...this.sceneControlValues },
         };
     }
 
@@ -206,6 +221,8 @@ export class StudioController {
                 ok: true,
                 sceneId,
                 settings: { ...this.slicerSettings },
+                sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
+                sceneControlValues: { ...this.sceneControlValues },
                 shaderMessage: 'Ready',
                 workspaceStatus: `Scene already loaded: ${this.getSceneLabel(sceneId)}.`,
             };
@@ -216,6 +233,8 @@ export class StudioController {
                 ok: false,
                 sceneId: previousSceneId,
                 settings: { ...this.slicerSettings },
+                sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
+                sceneControlValues: { ...this.sceneControlValues },
                 shaderMessage: `Scene '${sceneId}' was not found.`,
                 workspaceStatus: `Scene load failed: ${sceneId}.`,
             };
@@ -229,17 +248,23 @@ export class StudioController {
                 ok: false,
                 sceneId: previousSceneId,
                 settings: { ...this.slicerSettings },
+                sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
+                sceneControlValues: { ...this.sceneControlValues },
                 shaderMessage: result.message,
                 workspaceStatus: `Scene load failed: ${this.getSceneLabel(sceneId)}.`,
             };
         }
 
+        this.refreshActiveSceneControls();
         this.applySceneDefaultParams(getSceneDefaultParams());
         this.syncSceneSlicerUniforms();
+        this.syncSceneControlState();
         return {
             ok: true,
             sceneId,
             settings: { ...this.slicerSettings },
+            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
+            sceneControlValues: { ...this.sceneControlValues },
             shaderMessage: `Loaded scene: ${sceneId}`,
             workspaceStatus: `Scene loaded: ${this.getSceneLabel(sceneId)}.`,
         };
@@ -257,9 +282,26 @@ export class StudioController {
         this.renderer.updateAnimationParams(next);
     }
 
+    public updateSceneControlValue(controlKey: string, value: number): void {
+        const definition = this.sceneControlDefinitions.find((candidate) => candidate.key === controlKey);
+        if (!definition) {
+            return;
+        }
+
+        this.sceneControlValues = {
+            ...this.sceneControlValues,
+            [definition.key]: clampSceneControlValue(value, definition),
+        };
+        this.syncSceneControlState();
+    }
+
     public resetView(): string {
         this.renderer.resetCameraView();
         return 'Viewport reset to default orbit.';
+    }
+
+    public setToolpathOverlayVisible(visible: boolean): void {
+        this.preview.setOverlayVisible(visible);
     }
 
     public changePrinterModel(printerModelId: string): PresetChangeResult {
@@ -462,6 +504,16 @@ export class StudioController {
         });
     }
 
+    private refreshActiveSceneControls(): void {
+        this.sceneControlDefinitions = getSceneControlDefinitions();
+        this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions);
+    }
+
+    private syncSceneControlState(): void {
+        this.renderer.setSceneControlState(this.sceneControlDefinitions, this.sceneControlValues);
+        this.slicer.setSceneControlState(this.sceneControlDefinitions, this.sceneControlValues);
+    }
+
     private downloadTextFile(filename: string, text: string): void {
         const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -535,4 +587,19 @@ function slugifyForFilename(value: string, fallback: string): string {
         .replace(/^-+|-+$/g, '')
         .toLowerCase();
     return normalized.length > 0 ? normalized : fallback;
+}
+
+function buildSceneControlValueMap(definitions: SceneControlDefinition[]): SceneControlValueMap {
+    const values: SceneControlValueMap = {};
+
+    for (const definition of definitions) {
+        values[definition.key] = clampSceneControlValue(definition.defaultValue, definition);
+    }
+
+    return values;
+}
+
+function clampSceneControlValue(value: number, definition: SceneControlDefinition): number {
+    const safe = Number.isFinite(value) ? value : definition.defaultValue;
+    return Math.min(definition.max, Math.max(definition.min, safe));
 }

@@ -22,6 +22,8 @@
     const snapshot = studio.getSnapshot();
 
     let sceneOptions = snapshot.sceneOptions;
+    let sceneControlDefinitions = snapshot.sceneControlDefinitions;
+    let sceneControlValues = snapshot.sceneControlValues;
     let printerModels = snapshot.printerModels;
     let filamentProfiles = snapshot.filamentProfiles;
     let sceneId = snapshot.sceneId;
@@ -40,8 +42,11 @@
     let resizeCleanup: (() => void) | null = null;
 
     $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
+    $: studio.setToolpathOverlayVisible($workspace.overlayVisible);
     $: inspectorState = {
         sceneOptions,
+        sceneControlDefinitions,
+        sceneControlValues,
         printerModels,
         filamentProfiles,
         sceneId,
@@ -81,7 +86,17 @@
         const result = studio.changeScene(nextSceneId);
         sceneId = result.sceneId;
         slicerSettings = result.settings;
+        sceneControlDefinitions = result.sceneControlDefinitions;
+        sceneControlValues = result.sceneControlValues;
         status.applySceneChange(result);
+    }
+
+    function updateSceneControlValue(controlKey: string, value: number): void {
+        sceneControlValues = {
+            ...sceneControlValues,
+            [controlKey]: value,
+        };
+        studio.updateSceneControlValue(controlKey, value);
     }
 
     function updateRaymarchField(key: keyof RaymarchParams, value: number): void {
@@ -147,6 +162,12 @@
             const summary = studio.benchmarkVaseGcode(iterations, warmups);
             return `Benchmark settled on ${summary.measuredRuns} measured run${summary.measuredRuns === 1 ? '' : 's'} after ${summary.warmupRuns} warmup run${summary.warmupRuns === 1 ? '' : 's'}: avg ${summary.averageMs.toFixed(1)} ms, median ${summary.medianMs.toFixed(1)} ms, min ${summary.minMs.toFixed(1)} ms, max ${summary.maxMs.toFixed(1)} ms, spread ${summary.spreadMs.toFixed(1)} ms. Phase avg: sample ${summary.averageContourSamplingMs.toFixed(1)} ms, toolpath ${summary.averageToolpathBuildMs.toFixed(1)} ms, gcode ${summary.averageGcodeBuildMs.toFixed(1)} ms. Last output: ${(summary.bytes / 1024).toFixed(1)} KB, ${summary.points} points, ${summary.layers} layers.`;
         });
+    }
+
+    function toggleOverlay(): void {
+        const nextVisible = !$workspace.overlayVisible;
+        workspace.setOverlayVisible(nextVisible);
+        status.setWorkspaceStatus(nextVisible ? 'Toolpath overlay enabled.' : 'Toolpath overlay hidden.');
     }
 
     function resetInspectorWidth(): void {
@@ -227,6 +248,7 @@
     const inspectorHandlers: InspectorSchemaHandlers = {
         commitViewMode,
         commitScene,
+        updateSceneControlValue,
         updateViewportField,
         resetView,
         updateRaymarchField,
@@ -291,9 +313,22 @@
         <ViewportPanel
             activeSceneLabel={$workspace.activeSceneLabel}
             activeViewModeLabel={$workspace.activeViewModeLabel}
+            {sceneOptions}
+            {sceneId}
+            {viewMode}
+            printerLabel={slicerSettings.printerModelName}
+            materialLabel={slicerSettings.filamentProfileName}
+            overlayVisible={$workspace.overlayVisible}
+            actionPending={$status.actionPending}
+            commandStatus={$status.outputStatus}
             inspectorCollapsed={$workspace.inspectorCollapsed}
             onResetView={resetView}
             onToggleInspector={toggleInspector}
+            onCommitScene={commitScene}
+            onCommitViewMode={commitViewMode}
+            onToggleOverlay={toggleOverlay}
+            onGenerateVaseGcode={generateVaseGcode}
+            onBenchmarkVaseGcode={benchmarkVaseGcode}
         />
 
         {#if !$workspace.inspectorCollapsed}

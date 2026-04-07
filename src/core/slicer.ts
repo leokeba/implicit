@@ -2,6 +2,8 @@ import {
     composeSlicerFragmentSource,
     getSlicerProgramSignature,
     getSlicerVertexSource,
+    type SceneControlDefinition,
+    type SceneControlValueMap,
 } from './shader-pipeline';
 
 export interface VaseSlicerSettings {
@@ -142,6 +144,8 @@ export class Slicer {
     private uniformLocations: Map<string, WebGLUniformLocation | null>;
     private positionLocation: number;
     private maxTextureSize: number;
+    private sceneControlDefinitions: SceneControlDefinition[];
+    private sceneControlValues: SceneControlValueMap;
 
     constructor() {
         this.gl = null;
@@ -154,6 +158,13 @@ export class Slicer {
         this.uniformLocations = new Map();
         this.positionLocation = -1;
         this.maxTextureSize = 0;
+        this.sceneControlDefinitions = [];
+        this.sceneControlValues = {};
+    }
+
+    public setSceneControlState(definitions: SceneControlDefinition[], values: SceneControlValueMap): void {
+        this.sceneControlDefinitions = definitions.map((definition) => ({ ...definition }));
+        this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions, values);
     }
 
     public getDefaultVaseSettings(): VaseSlicerSettings {
@@ -410,6 +421,10 @@ export class Slicer {
         this.setUniform1f('uSliceGridSize', gridSize);
         this.setUniform1f('uDistanceRange', distanceRange);
         this.setUniform1f('uHitEpsilon', settings.hitEpsilon);
+
+        for (const control of this.sceneControlDefinitions) {
+            this.setUniform1f(control.uniform, this.sceneControlValues[control.key] ?? control.defaultValue);
+        }
 
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
@@ -2084,4 +2099,15 @@ function clampInt(value: number, min: number, max: number): number {
         return min;
     }
     return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function buildSceneControlValueMap(definitions: SceneControlDefinition[], values: SceneControlValueMap): SceneControlValueMap {
+    const next: SceneControlValueMap = {};
+
+    for (const definition of definitions) {
+        const rawValue = values[definition.key] ?? definition.defaultValue;
+        next[definition.key] = clamp(rawValue, definition.min, definition.max);
+    }
+
+    return next;
 }

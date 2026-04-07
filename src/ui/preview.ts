@@ -13,6 +13,7 @@ export class Preview {
     private previewHost: HTMLElement | null;
     private overlayWorldPoints: WorldPoint[];
     private renderingActive: boolean;
+    private overlayVisible: boolean;
 
     constructor() {
         this.canvas = null;
@@ -21,6 +22,7 @@ export class Preview {
         this.previewHost = null;
         this.overlayWorldPoints = [];
         this.renderingActive = true;
+        this.overlayVisible = true;
     }
 
     public init(): void {
@@ -55,6 +57,7 @@ export class Preview {
         this.overlayContext = overlayCanvas.getContext('2d');
 
         this.syncOverlaySize();
+        this.syncOverlayVisibility();
         window.addEventListener('resize', () => {
             this.syncOverlaySize();
         });
@@ -72,6 +75,11 @@ export class Preview {
         this.overlayWorldPoints = points;
     }
 
+    public setOverlayVisible(visible: boolean): void {
+        this.overlayVisible = visible;
+        this.syncOverlayVisibility();
+    }
+
     public setRenderingActive(active: boolean): void {
         this.renderingActive = active;
 
@@ -84,7 +92,6 @@ export class Preview {
         }
 
         if (this.overlayCanvas) {
-            this.overlayCanvas.style.visibility = active ? 'visible' : 'hidden';
             if (!active) {
                 this.overlayCanvas.width = 1;
                 this.overlayCanvas.height = 1;
@@ -92,6 +99,8 @@ export class Preview {
                 this.syncOverlaySize();
             }
         }
+
+        this.syncOverlayVisibility();
     }
 
     private syncOverlaySize(): void {
@@ -117,6 +126,10 @@ export class Preview {
         const height = this.overlayCanvas.height;
 
         ctx.clearRect(0, 0, width, height);
+
+        if (!this.overlayVisible) {
+            return;
+        }
 
         if (!cameraState) {
             return;
@@ -196,6 +209,14 @@ export class Preview {
         ctx.fillStyle = 'rgba(20, 46, 38, 0.78)';
         ctx.font = '600 12px "IBM Plex Sans", sans-serif';
         ctx.fillText('Toolpath in scene', 14, height - 14);
+    }
+
+    private syncOverlayVisibility(): void {
+        if (!this.overlayCanvas) {
+            return;
+        }
+
+        this.overlayCanvas.style.visibility = this.renderingActive && this.overlayVisible ? 'visible' : 'hidden';
     }
 }
 
