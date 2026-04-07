@@ -5,12 +5,14 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "esModuleInterop": true,
+    "isolatedModules": true,
     "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
     "types": ["vite/client"],
     "forceConsistentCasingInFileNames": true,
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.svelte"],
   "exclude": ["node_modules", "dist"]
 }

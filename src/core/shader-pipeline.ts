@@ -11,16 +11,14 @@ import utilsSource from '../shaders/lib/utils.glsl?raw';
 
 const sceneSourceModules = import.meta.glob('../shaders/scenes/*.glsl', {
     eager: true,
-    as: 'raw',
-}) as Record<string, string | { default: string }>;
-
-const sceneSourceModulesWithQuery = import.meta.glob('../shaders/scenes/*.glsl?raw', {
-    eager: true,
-}) as Record<string, string | { default: string }>;
+    query: '?raw',
+    import: 'default',
+}) as Record<string, string>;
 
 const sceneHotDependencyPaths = Object.keys(
     import.meta.glob('../shaders/scenes/*.glsl', {
-        as: 'raw',
+        query: '?raw',
+        import: 'default',
     })
 );
 
@@ -81,7 +79,6 @@ const ACTIVE_SCENE_STORAGE_KEY = 'implicit.activeScene.v1';
 
 const sceneEntries: SceneEntry[] = buildSceneEntries({
     ...sceneSourceModules,
-    ...sceneSourceModulesWithQuery,
 });
 if (sceneEntries.length === 0) {
     sceneEntries.push({ id: 'defaultScene', name: 'Default Scene', fileName: 'defaultScene.glsl', source: defaultSceneSource });

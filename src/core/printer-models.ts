@@ -26,7 +26,10 @@ interface PrinterModelFile {
     endGcode?: unknown;
 }
 
-const printerModelModules = import.meta.globEager('../printers/models/*.json') as Record<string, unknown>;
+const printerModelModules = import.meta.glob('../printers/models/*.json', {
+    eager: true,
+    import: 'default',
+}) as Record<string, unknown>;
 
 export function loadPrinterModels(): PrinterModel[] {
     const models: PrinterModel[] = [];

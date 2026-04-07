@@ -8,70 +8,7 @@
 		<link rel="stylesheet" href="/styles.css">
 	</head>
 	<body>
-		<div id="app">
-			<header class="app-topbar">
-				<div class="app-brand">
-					<p class="app-eyebrow">Implicit Studio</p>
-					<div class="app-brand-row">
-						<h1>Implicit</h1>
-						<span class="app-build-tag">Workspace Preview</span>
-					</div>
-				</div>
-				<div class="topbar-meta" aria-label="Workspace metadata">
-					<div class="topbar-chip">
-						<span class="topbar-chip-label">Scene</span>
-						<strong id="active-scene-label">Default Scene</strong>
-					</div>
-					<div class="topbar-chip">
-						<span class="topbar-chip-label">View</span>
-						<strong id="active-view-mode-label">Shaded</strong>
-					</div>
-				</div>
-				<div class="topbar-actions">
-					<button id="reset-view-button" class="chrome-button chrome-button-secondary" type="button" data-reset-view>Reset View</button>
-					<button id="toggle-inspector-button" class="chrome-button" type="button" data-toggle-inspector aria-expanded="true">Hide Inspector</button>
-					<div id="shader-status" class="shader-status shader-status-ready" role="status" aria-live="polite">Shader: Ready</div>
-				</div>
-			</header>
-			<div class="workspace-shell">
-				<nav class="workspace-rail" aria-label="Inspector tabs">
-					<button class="rail-button is-active" type="button" data-tab-target="scene">Scene</button>
-					<button class="rail-button" type="button" data-tab-target="camera">Camera</button>
-					<button class="rail-button" type="button" data-tab-target="render">Render</button>
-					<button class="rail-button" type="button" data-tab-target="print">Print</button>
-					<button class="rail-button" type="button" data-tab-target="machine">Machine</button>
-					<button class="rail-button" type="button" data-tab-target="material">Material</button>
-					<button class="rail-button" type="button" data-tab-target="output">Output</button>
-				</nav>
-				<main class="workspace-main">
-					<section class="viewport-stage" aria-label="Viewport workspace">
-						<div class="viewport-toolbar">
-							<span class="viewport-badge">Live Viewport</span>
-							<div class="viewport-toolbar-actions">
-								<button class="chrome-button chrome-button-ghost" id="viewport-reset-button" type="button" data-reset-view>Reset</button>
-								<button class="chrome-button chrome-button-ghost" id="viewport-toggle-inspector-button" type="button" data-toggle-inspector aria-expanded="true">Hide Panel</button>
-							</div>
-						</div>
-						<section id="preview" aria-label="Surface preview"></section>
-					</section>
-				</main>
-				<aside id="controls" aria-label="Inspector"></aside>
-			</div>
-			<footer class="status-strip">
-				<section class="status-panel">
-					<span class="status-label">Workspace</span>
-					<p id="workspace-status" class="status-copy">Ready. Viewport and inspector are active.</p>
-				</section>
-				<section class="status-panel">
-					<span class="status-label">Navigation</span>
-					<p class="status-copy">Left-drag orbit, Shift or right-drag pan, middle-drag dolly, wheel zoom, press F to reset.</p>
-				</section>
-				<section class="status-panel status-panel-diagnostics">
-					<span class="status-label">Shader Diagnostics</span>
-					<pre id="shader-status-detail" class="shader-status-detail" aria-live="polite">No shader diagnostics.</pre>
-				</section>
-			</footer>
-		</div>
+		<div id="app"></div>
 		<script type="module" src="/src/main.ts"></script>
 	</body>
 </html>

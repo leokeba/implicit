@@ -24,7 +24,10 @@ interface FilamentProfileFile {
     travelSpeedMmPerSec?: unknown;
 }
 
-const filamentProfileModules = import.meta.globEager('../filaments/profiles/*.json') as Record<string, unknown>;
+const filamentProfileModules = import.meta.glob('../filaments/profiles/*.json', {
+    eager: true,
+    import: 'default',
+}) as Record<string, unknown>;
 
 export function loadFilamentProfiles(): FilamentProfile[] {
     const profiles: FilamentProfile[] = [];

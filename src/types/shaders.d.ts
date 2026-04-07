@@ -5,5 +5,4 @@ declare module '*.glsl?raw' {
 
 interface ImportMeta {
     glob(pattern: string, options?: Record<string, unknown>): Record<string, unknown>;
-    globEager(pattern: string): Record<string, unknown>;
 }

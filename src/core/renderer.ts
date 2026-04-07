@@ -872,7 +872,8 @@ function reloadRenderersFromUpdates(updates: ShaderSourceUpdates): void {
 
 const shaderHotDependencyPaths = Object.keys(
     import.meta.glob('../shaders/**/*.glsl', {
-        as: 'raw',
+        query: '?raw',
+        import: 'default',
     })
 );
 

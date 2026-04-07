@@ -1,19 +1,31 @@
 # Frontend Rethink
 
+## Status Update
+
+The first major rewrite is now in place.
+
+- The app shell is full-height and viewport-dominant.
+- The UI now runs on Svelte while the renderer, preview, shader pipeline, and slicer remain plain TypeScript modules.
+- The inspector is split into focused Svelte components under `src/components/` and `src/components/inspector/`.
+- The duplicated left-side tab rail has been removed. The inspector now owns the only tab model.
+- Shared inspector tab and field definitions live in `src/ui/inspector-config.ts`.
+
+That means this document should now be read as a record of direction plus the next frontier, not as a proposal for the first rewrite.
+
 ## Current Problems
 
-The current UI reads like a small demo page instead of a production tool.
+The app is no longer a marketing-style demo shell, but it still has several structural gaps before it feels like a polished production tool.
 
-- The page shell in [index.html](index.html) uses a marketing-style header and a centered content column, which makes the viewport feel secondary instead of primary.
-- The layout in [styles.css](styles.css) caps the experience inside a narrow canvas with generous decorative padding, gradients, and card chrome that consume space without improving workflow.
-- The inspector in [src/ui/controls.ts](src/ui/controls.ts) is a single long form with every control rendered in one pass. It is hard to scan, hard to extend, and does not match how slicers or CAD tools organize tasks.
-- The preview in [src/ui/preview.ts](src/ui/preview.ts) is already the strongest part of the app, but the surrounding shell does not give it enough room or enough status context.
-- Rendering controls, viewport tuning, animation knobs, machine setup, material setup, slicing setup, and export actions are mixed together without a workflow model.
+- The top-level state in `src/App.svelte` is still too broad. The shell is componentized, but state and action wiring are still centralized in one large container.
+- The inspector fields are grouped better, but the interaction model is still mostly raw forms rather than a tool workflow with presets, summaries, and contextual actions.
+- The right dock is static width. It should behave more like a real workstation panel.
+- The viewport still behaves mostly like a passive canvas region. It needs richer in-viewport tooling and overlay controls.
+- Benchmark, export, shader, and scene feedback are visible, but they are not yet modeled as a coherent command or status system.
 
 This creates two separate failures:
 
-1. Visually, the app feels like a landing page with a demo panel.
-2. Functionally, the control model does not map to how users think about modeling, slicing, and exporting.
+1. The UI now looks like a tool, but it does not yet behave like a tightly integrated one.
+2. The code is more maintainable, but the next layer of frontend architecture has not been extracted yet.
 
 ## Product Direction
 
@@ -37,12 +49,12 @@ Use a full-height application shell instead of a centered page.
 +----------------------------------------------------------------------------------+
 | Top bar: project name | scene preset | view mode | quick actions | shader state |
 +-----+-------------------------------------------------------------+--------------+
-| Nav |                                                             | Inspector    |
-| rail|                         Main viewport                        | tabs         |
-|     |                                                             |              |
-|     |                                                             | active tab   |
-|     |                                                             | content      |
-+-----+-------------------------------------------------------------+--------------+
+|                                                             | Inspector        |
+|                         Main viewport                        | tabs             |
+|                                                             |                  |
+|                                                             | active tab       |
+|                                                             | content          |
++-------------------------------------------------------------+------------------+
 | Bottom strip: messages | benchmark results | export stats | camera hints        |
 +----------------------------------------------------------------------------------+
 ```
@@ -53,7 +65,7 @@ Use a full-height application shell instead of a centered page.
 - The app should use the full browser height with minimal outer margins.
 - The inspector should be a docked panel on the right, around 360 to 420 px wide.
 - The bottom strip should be collapsible. Use it for slicer/export status, benchmark output, and shader compiler messages.
-- A narrow left rail should hold mode switches and utility actions, not dense parameter controls.
+- Do not duplicate tab navigation outside the inspector. The active task model should live in one place.
 - On smaller screens, the right inspector should become an overlay drawer rather than pushing the viewport down.
 
 ## Information Architecture
@@ -128,42 +140,49 @@ The visual language should shift from soft promotional cards to neutral workstat
 - every section styled as an isolated card
 - decorative gradients competing with the canvas
 
-## Frontend Refactor Recommendation
+## Frontend Architecture Recommendation
 
-The main implementation problem is structural, not only visual.
+The first structural rewrite is done. The next implementation problem is state architecture rather than raw layout.
 
-Right now, [src/ui/controls.ts](src/ui/controls.ts) builds the entire inspector procedurally in one method. That makes tabbing, conditional sections, persistence, and per-tab rendering harder than they need to be.
+Right now, `src/App.svelte` coordinates the whole shell and dispatches state to inspector tab components through props. That is acceptable for the first Svelte pass, but it will get brittle once scene-specific controls, overlay toggles, dock resizing, and richer status systems are added.
 
-### Recommended Refactor
+### Current Structure
 
-Split the current UI into four concerns:
+- App shell layout lives in `src/components/TopBar.svelte`, `src/components/ViewportPanel.svelte`, `src/components/InspectorPanel.svelte`, and `src/components/StatusStrip.svelte`.
+- Inspector tabs live in `src/components/inspector/`.
+- Shared field metadata lives in `src/ui/inspector-config.ts`.
+- Rendering, preview, and slicing remain outside Svelte in plain TypeScript modules.
+
+### Next Refactor
+
+Split the current frontend into four explicit concerns:
 
 1. App shell
-   Handles top bar, left rail, viewport region, right inspector, and bottom status strip.
-2. Inspector state
-   Tracks active tab, collapsed groups, temporary field state, and persisted UI preferences.
-3. Control schema
-   Define each tab and field group as data, not as one long imperative block.
-4. Status model
-   Centralize shader status, export status, and benchmark results so they can be rendered in dedicated regions.
+   Handles layout, docking, responsive behavior, and viewport chrome.
+2. Workspace state
+   Tracks active tab, inspector open state, persisted UI preferences, active scene, view mode, and current tool status.
+3. Inspector schema
+   Defines tabs, sections, fields, presets, summaries, and scene-conditional controls as data.
+4. Command and status model
+   Centralizes shader status, export status, benchmark results, validation, and toast/log output.
 
 ### Suggested Modules
 
-- `src/ui/app-shell.ts`
-- `src/ui/inspector.ts`
-- `src/ui/control-schema.ts`
-- `src/ui/status-bar.ts`
-- `src/ui/viewport-toolbar.ts`
+- `src/ui/workspace-store.ts`
+- `src/ui/inspector-schema.ts`
+- `src/ui/status-model.ts`
+- `src/ui/commands.ts`
+- `src/components/viewport/` for toolbar and HUD pieces
 
-The existing [src/ui/preview.ts](src/ui/preview.ts) can remain mostly intact, but it should render inside a new viewport workspace shell.
+The existing preview and renderer modules should remain imperative islands. The goal is not to pull WebGL into Svelte. The goal is to give Svelte a cleaner, smaller state contract.
 
-## Framework Recommendation
+## Current Stack Recommendation
 
-For this app, the recommended medium-term stack is:
+The current stack is the right one:
 
 1. keep Vite as the build tool
 2. keep the renderer, shader pipeline, preview canvas, and slicer in plain TypeScript modules
-3. use Svelte for the application shell and inspector UI when the UI rewrite moves beyond the first pass
+3. use Svelte for the application shell, inspector, status chrome, and interaction workflows
 
 ### Why Svelte Over Solid Here
 
@@ -172,17 +191,16 @@ For this app, the recommended medium-term stack is:
 - Svelte will make it easier to build docked panels, tabs, collapsible groups, and persistent UI state without changing the rendering core.
 - Solid is still a valid option if learning Solid is a project goal, but it is the riskier choice for a tool UI rewrite where the main goal is shipping.
 
-### Immediate Implementation Strategy
+### Immediate Strategy From Here
 
-Do not block the redesign on a framework migration.
+Do not do another broad visual rewrite yet.
 
-The right near-term move is:
+The next wins should be interaction and architecture wins:
 
-1. implement the new shell and tabbed inspector in the current codebase now
-2. stabilize the information architecture and workspace behavior
-3. migrate the shell and inspector to Svelte later if the UI keeps growing
-
-That keeps momentum high while still pointing the codebase toward a better long-term frontend structure.
+1. reduce prop drilling with a small workspace store
+2. add dock resizing and persistent layout preferences
+3. improve viewport-local tooling and overlays
+4. evolve the inspector from field groups into a richer workflow surface
 
 ## Practical Control Grouping From Current Code
 
@@ -263,30 +281,120 @@ These would make the app feel materially closer to a slicer or CAD tool.
 - Persist active tab and inspector width in local storage.
 - Add keyboard shortcuts for fit view, toggle inspector, and toggle overlay.
 - Add resizable right dock with a drag handle.
-- Add a compact top command bar instead of a large title block.
+- Add a compact command/search surface for scene switching, export, benchmark, and view actions.
 - Add a scene info block in the viewport with current scene name and view mode.
 - Add a dedicated overlay toggle between rendered surface and generated toolpath.
 - Add preset reset actions inside each tab instead of one global mental model.
+- Add tab summaries so users can see current printer, material, and render quality at a glance without opening every tab.
+- Add field validation and affordances for invalid slicing ranges instead of silently accepting bad combinations.
+- Add scene-aware controls so a scene can declare optional UI beyond the generic field set.
+
+## What Comes Next
+
+The next phase should be less about repainting and more about tightening the tool.
+
+### 1. Workspace Store
+
+Move shell and inspector UI state out of `src/App.svelte` into a dedicated store.
+
+This store should own:
+
+- active inspector tab
+- inspector collapsed state
+- inspector width
+- active scene label and view label
+- benchmark and export activity state
+- shader status and diagnostic text
+- persisted UI preferences
+
+That will remove a large amount of prop wiring and make future dock and command interactions easier.
+
+### 2. Resizable Right Dock
+
+The inspector should feel like a workstation dock, not a fixed sidebar.
+
+Add:
+
+- a drag handle between viewport and inspector
+- min and max width constraints
+- local storage persistence
+- double-click reset to default width
+
+### 3. Viewport-Local Tools
+
+Important actions should live closer to the canvas.
+
+Add:
+
+- overlay toggle
+- camera HUD
+- current scene badge
+- current preset summary badge
+- fit or frame selected action
+
+The canvas should become the center of the workflow, not just the place where pixels happen.
+
+### 4. Inspector Summaries Instead Of Only Inputs
+
+Each tab should start with a compact summary row before the detailed fields.
+
+Examples:
+
+- Scene: active scene, shading mode
+- Render: max steps, quality profile
+- Print: layer height, line width, points per layer
+- Machine: active printer, bed size
+- Material: active filament, temperature tuple
+- Output: last export, last benchmark
+
+This is one of the key differences between a tool UI and a simple form UI.
+
+### 5. Scene-Declared UI Extensions
+
+Long term, scene presets should be able to declare extra UI metadata rather than relying only on the generic inspector fields.
+
+That likely means extending the shader pipeline metadata layer so a scene can advertise:
+
+- scene-specific parameter fields
+- display ranges and labels
+- parameter groups
+- optional advanced sections
+
+This is the bridge from "generic slicer shell" to "implicit modeling workstation".
 
 ## Phased Implementation Plan
 
-### Phase 1
+### Phase 1: Completed
 
 - Replace the page-centered shell with a full-screen workspace layout.
 - Move shader status to a top bar or bottom strip.
 - Give the viewport dominant space.
 
-### Phase 2
+### Phase 2: Completed
 
 - Replace stacked cards with right-docked tabbed inspector.
 - Re-group current controls into Scene, Camera, Render, Print, Machine, Material, and Output.
 
-### Phase 3
+### Phase 3: Completed In First Pass
+
+- Move the shell and inspector to Svelte.
+- Split the inspector into focused components.
+- Remove duplicated navigation models.
+
+### Phase 4: Next
+
+- Introduce a dedicated workspace store.
+- Add resizable inspector dock.
+- Persist dock width and shell preferences.
+- Move status and command behavior into a cleaner frontend state model.
+
+### Phase 5: After That
 
 - Extract control definitions into a schema-driven structure.
-- Add persistent UI state for tabs, collapses, and layout preferences.
+- Add scene-declared control metadata and richer tab summaries.
+- Add validation, presets, and workflow affordances.
 
-### Phase 4
+### Phase 6: Finish Pass
 
 - Add viewport toolbar, overlay toggles, status log, and resizable dock.
 - Tighten typography, spacing, and panel contrast to finish the workstation feel.
@@ -295,11 +403,11 @@ These would make the app feel materially closer to a slicer or CAD tool.
 
 Do not iterate on the current card stack. Replace the shell and inspector model outright.
 
-The fastest path to a better result is:
+The fastest path to a better result from the current state is:
 
-1. make the app full-height and viewport-dominant
-2. replace stacked sections with task tabs
-3. move status into dedicated chrome
-4. refactor controls into smaller UI modules before adding more features
+1. move shell state into a dedicated workspace store
+2. add dock resizing and viewport-local actions
+3. evolve the inspector from grouped inputs into task summaries plus controls
+4. add scene-aware metadata so the tool can grow without turning App state into a knot
 
-That will solve both of the current problems: the UI will look more like a real tool, and the frontend code will become maintainable enough to keep evolving.
+That will solve the next two problems: the app will feel more like a real desktop tool during use, and the frontend will stay maintainable as scene-specific UI and deeper workflows arrive.

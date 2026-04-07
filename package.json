@@ -5,6 +5,7 @@
   "main": "src/main.ts",
   "scripts": {
     "build": "vite build",
+    "check": "svelte-check --tsconfig tsconfig.json",
     "serve": "vite",
     "dev": "vite"
   },
@@ -16,9 +17,11 @@
   ],
   "author": "Your Name",
   "license": "MIT",
-  "dependencies": {},
   "devDependencies": {
-    "typescript": "^4.5.4",
-    "vite": "^2.6.4"
+    "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "svelte": "^5.55.2",
+    "svelte-check": "^4.4.6",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.7"
   }
 }
