@@ -50,6 +50,9 @@ interface ShaderSources {
     utils: string;
 }
 
+export type SceneParamValue = number | boolean | string;
+export type SceneParamMap = Record<string, SceneParamValue>;
+
 export interface SceneSlicerDefaults {
     minY?: number;
     maxY?: number;
@@ -208,27 +211,21 @@ export function getSlicerProgramSignature(): string {
     return `${activeSources.slicerVertex}::${composeSlicerFragmentSource()}`;
 }
 
-export function getSceneSlicerDefaults(): SceneSlicerDefaults {
-    return parseSceneSlicerDefaults(activeSources.scene);
+export function getSceneDefaultParams(): SceneParamMap {
+    return parseSceneDefaultParams(activeSources.scene);
 }
 
-function parseSceneSlicerDefaults(sceneSource: string): SceneSlicerDefaults {
+export function getSceneSlicerDefaults(): SceneSlicerDefaults {
+    const params = getSceneDefaultParams();
     const defaults: SceneSlicerDefaults = {};
-    const readPositive = (macroName: string): number | undefined => {
-        const parsed = readDefineNumber(sceneSource, macroName);
-        if (typeof parsed !== 'number' || parsed <= 0) {
-            return undefined;
-        }
-        return parsed;
-    };
 
-    const minY = readDefineNumber(sceneSource, 'SCENE_DEFAULT_MIN_Y');
-    const maxY = readDefineNumber(sceneSource, 'SCENE_DEFAULT_MAX_Y');
-    const modelScale = readPositive('SCENE_DEFAULT_MODEL_SCALE');
-    const maxRadius = readPositive('SCENE_DEFAULT_MAX_RADIUS');
-    const nozzleDiameterMm = readPositive('SCENE_DEFAULT_NOZZLE_DIAMETER_MM');
-    const flowRate = readPositive('SCENE_DEFAULT_FLOW_RATE');
-    const layerHeightMm = readPositive('SCENE_DEFAULT_LAYER_HEIGHT_MM');
+    const minY = readSceneNumberParam(params, ['minY']);
+    const maxY = readSceneNumberParam(params, ['maxY']);
+    const modelScale = readSceneNumberParam(params, ['modelScale'], true);
+    const maxRadius = readSceneNumberParam(params, ['maxRadius'], true);
+    const nozzleDiameterMm = readSceneNumberParam(params, ['nozzleDiameterMm', 'nozzleDiameter'], true);
+    const flowRate = readSceneNumberParam(params, ['flowRate'], true);
+    const layerHeightMm = readSceneNumberParam(params, ['layerHeightMm', 'layerHeight'], true);
 
     if (typeof minY === 'number') {
         defaults.minY = minY;
@@ -255,16 +252,73 @@ function parseSceneSlicerDefaults(sceneSource: string): SceneSlicerDefaults {
     return defaults;
 }
 
-function readDefineNumber(source: string, macroName: string): number | undefined {
-    const escapedName = macroName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const match = source.match(new RegExp(`#define\\s+${escapedName}\\s+([-+]?\\d*\\.?\\d+(?:[eE][-+]?\\d+)?)`));
-    if (!match?.[1]) {
+function parseSceneDefaultParams(sceneSource: string): SceneParamMap {
+    const params: SceneParamMap = {};
+    const definePattern = /^\s*#define\s+SCENE_DEFAULT_([A-Z0-9_]+)\s+(.+?)\s*$/gm;
+
+    let match: RegExpExecArray | null = definePattern.exec(sceneSource);
+    while (match) {
+        const macroSuffix = match[1] ?? '';
+        const rawExpression = match[2] ?? '';
+        const key = sceneParamKeyFromMacroSuffix(macroSuffix);
+        const value = parseSceneParamLiteral(rawExpression);
+
+        if (key.length > 0 && value !== undefined) {
+            params[key] = value;
+        }
+
+        match = definePattern.exec(sceneSource);
+    }
+
+    return params;
+}
+
+function readSceneNumberParam(params: SceneParamMap, keys: string[], positiveOnly = false): number | undefined {
+    for (const key of keys) {
+        const value = params[key];
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+            continue;
+        }
+
+        if (positiveOnly && value <= 0) {
+            continue;
+        }
+
+        return value;
+    }
+
+    return undefined;
+}
+
+function sceneParamKeyFromMacroSuffix(macroSuffix: string): string {
+    return macroSuffix
+        .trim()
+        .toLowerCase()
+        .replace(/_+([a-z0-9])/g, (_, letter: string) => letter.toUpperCase());
+}
+
+function parseSceneParamLiteral(rawExpression: string): SceneParamValue | undefined {
+    const inlineCommentOffset = rawExpression.indexOf('//');
+    const expression = (inlineCommentOffset >= 0 ? rawExpression.slice(0, inlineCommentOffset) : rawExpression).trim();
+    if (!expression) {
         return undefined;
     }
 
-    const parsed = Number(match[1]);
+    if ((expression.startsWith('"') && expression.endsWith('"')) || (expression.startsWith("'") && expression.endsWith("'"))) {
+        return expression.slice(1, -1);
+    }
+
+    const normalized = expression.toLowerCase();
+    if (normalized === 'true') {
+        return true;
+    }
+    if (normalized === 'false') {
+        return false;
+    }
+
+    const parsed = Number(expression);
     if (!Number.isFinite(parsed)) {
-        return undefined;
+        return expression;
     }
     return parsed;
 }

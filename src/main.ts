@@ -6,10 +6,10 @@ import Renderer from './core/renderer';
 import {
     getActiveSceneId,
     getAvailableScenes,
-    getSceneSlicerDefaults,
+    getSceneDefaultParams,
     setActiveSceneById,
     type SceneOption,
-    type SceneSlicerDefaults,
+    type SceneParamMap,
 } from './core/shader-pipeline';
 import {
     Slicer,
@@ -46,6 +46,7 @@ class ImplicitSurfaceStudio {
     private sceneOptions: SceneOption[];
     private isSlicing: boolean;
     private renderFrameHandle: number | null;
+    private numericSlicerSettingKeys: Set<keyof VaseSlicerSettings>;
 
     constructor() {
         this.renderer = new Renderer();
@@ -58,6 +59,7 @@ class ImplicitSurfaceStudio {
         this.sceneOptions = getAvailableScenes();
         this.isSlicing = false;
         this.renderFrameHandle = null;
+        this.numericSlicerSettingKeys = new Set();
 
         if (this.filamentProfiles.length > 0) {
             this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
@@ -66,7 +68,13 @@ class ImplicitSurfaceStudio {
             this.slicerSettings = applyPrinterModel(this.slicerSettings, this.printerModels[0]);
         }
 
-        this.applySceneSlicerDefaults(getSceneSlicerDefaults());
+        this.numericSlicerSettingKeys = new Set(
+            Object.entries(this.slicerSettings)
+                .filter((entry): entry is [keyof VaseSlicerSettings, number] => typeof entry[1] === 'number')
+                .map(([key]) => key)
+        );
+
+        this.applySceneDefaultParams(getSceneDefaultParams());
     }
 
     public init(): void {
@@ -98,7 +106,7 @@ class ImplicitSurfaceStudio {
                     return this.slicerSettings;
                 }
 
-                this.applySceneSlicerDefaults(getSceneSlicerDefaults());
+                this.applySceneDefaultParams(getSceneDefaultParams());
                 this.syncSceneSlicerUniforms();
                 setShaderStatus('ok', `Loaded scene: ${sceneId}`);
                 return this.slicerSettings;
@@ -275,27 +283,22 @@ class ImplicitSurfaceStudio {
         return `${modelSlug}-${printerSlug}-${stamp}.gcode`;
     }
 
-    private applySceneSlicerDefaults(defaults: SceneSlicerDefaults): void {
-        if (typeof defaults.minY === 'number') {
-            this.slicerSettings.minY = defaults.minY;
+    private applySceneDefaultParams(params: SceneParamMap): void {
+        for (const [paramName, value] of Object.entries(params)) {
+            if (typeof value !== 'number') {
+                continue;
+            }
+
+            const targetKey = resolveSceneDefaultTargetKey(paramName, this.numericSlicerSettingKeys);
+            if (!targetKey) {
+                continue;
+            }
+
+            (this.slicerSettings as Record<string, unknown>)[targetKey] = value;
         }
-        if (typeof defaults.maxY === 'number') {
-            this.slicerSettings.maxY = defaults.maxY;
-        }
-        if (typeof defaults.modelScale === 'number') {
-            this.slicerSettings.modelScale = defaults.modelScale;
-        }
-        if (typeof defaults.maxRadius === 'number') {
-            this.slicerSettings.maxRadius = defaults.maxRadius;
-        }
-        if (typeof defaults.nozzleDiameterMm === 'number') {
-            this.slicerSettings.nozzleDiameter = defaults.nozzleDiameterMm;
-        }
-        if (typeof defaults.flowRate === 'number') {
-            this.slicerSettings.flowRate = defaults.flowRate;
-        }
-        if (typeof defaults.layerHeightMm === 'number') {
-            this.slicerSettings.layerHeight = defaults.layerHeightMm;
+
+        if (this.slicerSettings.maxY <= this.slicerSettings.minY) {
+            this.slicerSettings.maxY = this.slicerSettings.minY + Math.max(0.001, this.slicerSettings.layerHeight);
         }
     }
 
@@ -467,4 +470,26 @@ function slugifyForFilename(value: string, fallback: string): string {
         .replace(/^-+|-+$/g, '')
         .toLowerCase();
     return normalized.length > 0 ? normalized : fallback;
+}
+
+const SCENE_DEFAULT_PARAM_ALIASES: Partial<Record<string, keyof VaseSlicerSettings>> = {
+    nozzleDiameterMm: 'nozzleDiameter',
+    layerHeightMm: 'layerHeight',
+};
+
+function resolveSceneDefaultTargetKey(
+    paramName: string,
+    numericSlicerSettingKeys: Set<keyof VaseSlicerSettings>
+): keyof VaseSlicerSettings | null {
+    const alias = SCENE_DEFAULT_PARAM_ALIASES[paramName];
+    if (alias) {
+        return alias;
+    }
+
+    const candidate = paramName as keyof VaseSlicerSettings;
+    if (numericSlicerSettingKeys.has(candidate)) {
+        return candidate;
+    }
+
+    return null;
 }
