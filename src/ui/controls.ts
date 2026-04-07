@@ -439,6 +439,32 @@ export class Controls {
         const slicerNumericInputs: Partial<Record<keyof VaseSlicerSettings, HTMLInputElement>> = {};
         const slicerTextInputs: Partial<Record<keyof VaseSlicerSettings, HTMLTextAreaElement>> = {};
 
+        const slicerModeFieldLabel = document.createElement('label');
+        slicerModeFieldLabel.htmlFor = 'slicer-mode';
+        slicerModeFieldLabel.textContent = 'Slicer mode';
+
+        const slicerModeFieldRow = document.createElement('div');
+        slicerModeFieldRow.className = 'field-row';
+
+        const slicerModeSelect = document.createElement('select');
+        slicerModeSelect.id = 'slicer-mode';
+
+        const planarOption = document.createElement('option');
+        planarOption.value = 'planar';
+        planarOption.text = 'Planar contour (strict)';
+        slicerModeSelect.appendChild(planarOption);
+
+        const cylindricalOption = document.createElement('option');
+        cylindricalOption.value = 'cylindrical';
+        cylindricalOption.text = 'Cylindrical radial (legacy)';
+        slicerModeSelect.appendChild(cylindricalOption);
+
+        slicerModeSelect.value = initialSlicerParams.slicerMode;
+
+        slicerModeFieldRow.appendChild(slicerModeFieldLabel);
+        slicerModeFieldRow.appendChild(slicerModeSelect);
+        slicerGrid.appendChild(slicerModeFieldRow);
+
         const printerFieldLabel = document.createElement('label');
         printerFieldLabel.htmlFor = 'slicer-printer-model';
         printerFieldLabel.textContent = 'Printer model';
@@ -512,6 +538,7 @@ export class Controls {
 
             printerSelect.value = next.printerModelId;
             filamentSelect.value = next.filamentProfileId;
+            slicerModeSelect.value = next.slicerMode;
         };
 
         sceneSelect.addEventListener('change', () => {
@@ -527,6 +554,10 @@ export class Controls {
         filamentSelect.addEventListener('change', () => {
             const next = onFilamentProfileChange(filamentSelect.value);
             syncSlicerUiFromSettings(next);
+        });
+
+        slicerModeSelect.addEventListener('change', () => {
+            onSlicerParamsChange({ slicerMode: slicerModeSelect.value as VaseSlicerSettings['slicerMode'] });
         });
 
         const addSlicerField = (
@@ -626,7 +657,7 @@ export class Controls {
 
         const slicerHint = document.createElement('p');
         slicerHint.className = 'section-caption';
-        slicerHint.textContent = 'Generates a strict spiral vase path from GPU-sampled planar contours. Slice half-extent defines the XZ sampling bounds in scene units, Slice grid controls planar field resolution, and the slicer now rejects layers that are not single closed loops. Merge controls tune move simplification aggressiveness. Start/end templates support {nozzleTempC}, {bedTempC}, and {fanPwm}.';
+        slicerHint.textContent = 'Planar contour mode is the current strict algorithm. Cylindrical radial mode reuses radial-angle sampling around the center axis and is useful for star-convex profiles. Slice half-extent defines the XZ sampling bounds in scene units, Slice grid controls planar field resolution, and single-loop slices are still required. Merge controls tune move simplification aggressiveness. Start/end templates support {nozzleTempC}, {bedTempC}, and {fanPwm}.';
 
         syncSlicerUiFromSettings(initialSlicerParams);
 
