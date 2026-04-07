@@ -1,8 +1,7 @@
-import { Controls } from './ui/controls';
-import { Preview } from './ui/preview';
+import { Controls, Preview } from './ui';
 import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
 import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
-import Renderer from './core/renderer';
+import Renderer, { type AnimationParams, type RaymarchParams, type ViewportParams } from './core/renderer';
 import {
     getActiveSceneId,
     getAvailableScenes,
@@ -105,6 +104,8 @@ class ImplicitSurfaceStudio {
             this.renderer.getViewMode(),
             (viewMode: number) => {
                 this.renderer.setViewMode(viewMode);
+                this.updateViewModeLabel(viewMode);
+                this.setWorkspaceStatus(`Viewport mode: ${this.getViewModeLabel(viewMode)}.`);
             },
             this.sceneOptions,
             getActiveSceneId(),
@@ -130,24 +131,30 @@ class ImplicitSurfaceStudio {
 
                 this.applySceneDefaultParams(getSceneDefaultParams());
                 this.syncSceneSlicerUniforms();
+                this.updateActiveSceneLabel(sceneId);
+                this.setWorkspaceStatus(`Scene loaded: ${this.getSceneLabel(sceneId)}.`);
                 setShaderStatus('ok', `Loaded scene: ${sceneId}`);
                 return this.slicerSettings;
             },
             this.renderer.getRaymarchParams(),
-            (next) => {
+            (next: Partial<RaymarchParams>) => {
                 this.renderer.updateRaymarchParams(next);
             },
             this.renderer.getViewportParams(),
-            (next) => {
+            (next: Partial<ViewportParams>) => {
                 this.renderer.updateViewportParams(next);
             },
             this.renderer.getAnimationParams(),
-            (next) => {
+            (next: Partial<AnimationParams>) => {
                 this.renderer.updateAnimationParams(next);
+            },
+            () => {
+                this.renderer.resetCameraView();
+                this.setWorkspaceStatus('Viewport reset to default orbit.');
             },
             this.printerModels,
             this.slicerSettings.printerModelId,
-            (printerModelId) => {
+            (printerModelId: string) => {
                 const nextModel = this.printerModels.find((model) => model.id === printerModelId);
                 if (!nextModel) {
                     return this.slicerSettings;
@@ -155,11 +162,12 @@ class ImplicitSurfaceStudio {
 
                 this.slicerSettings = applyPrinterModel(this.slicerSettings, nextModel);
                 this.syncSceneSlicerUniforms();
+                this.setWorkspaceStatus(`Printer preset loaded: ${nextModel.name}.`);
                 return this.slicerSettings;
             },
             this.filamentProfiles,
             this.slicerSettings.filamentProfileId,
-            (filamentProfileId) => {
+            (filamentProfileId: string) => {
                 const nextProfile = this.filamentProfiles.find((profile) => profile.id === filamentProfileId);
                 if (!nextProfile) {
                     return this.slicerSettings;
@@ -167,10 +175,11 @@ class ImplicitSurfaceStudio {
 
                 this.slicerSettings = applyFilamentProfile(this.slicerSettings, nextProfile);
                 this.syncSceneSlicerUniforms();
+                this.setWorkspaceStatus(`Material preset loaded: ${nextProfile.name}.`);
                 return this.slicerSettings;
             },
             this.slicerSettings,
-            (next) => {
+            (next: Partial<VaseSlicerSettings>) => {
                 this.slicerSettings = { ...this.slicerSettings, ...next };
                 this.syncSceneSlicerUniforms();
             },
@@ -189,7 +198,7 @@ class ImplicitSurfaceStudio {
                     };
                 });
             },
-            (iterations, warmupRuns) => {
+            (iterations: number, warmupRuns: number) => {
                 return this.runWhilePreviewPaused(() => {
                     const benchmark = this.slicer.benchmarkVaseGcode(this.slicerSettings, iterations, warmupRuns);
                     this.preview.setToolpathOverlayWorldPoints(
@@ -197,12 +206,131 @@ class ImplicitSurfaceStudio {
                     );
                     return this.summarizeBenchmarkRuns(benchmark.runs, benchmark.warmupRuns, benchmark.measuredRuns);
                 });
+            },
+            (message: string) => {
+                this.setWorkspaceStatus(message);
             }
         );
         this.renderer.init(this.preview.getCanvas());
         this.syncSceneSlicerUniforms();
         this.attachRenderLifecycleHandlers();
+        this.initWorkspaceChrome();
+        this.updateActiveSceneLabel(getActiveSceneId());
+        this.updateViewModeLabel(this.renderer.getViewMode());
+        this.updateRailTabState(this.controls.getActiveTabId());
+        this.setWorkspaceStatus('Ready. Viewport and inspector are active.');
         this.updatePreviewRenderState();
+    }
+
+    private initWorkspaceChrome(): void {
+        const resetButtons = document.querySelectorAll<HTMLButtonElement>('[data-reset-view]');
+        resetButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                this.renderer.resetCameraView();
+                this.setWorkspaceStatus('Viewport reset to default orbit.');
+            });
+        });
+
+        const toggleButtons = document.querySelectorAll<HTMLButtonElement>('[data-toggle-inspector]');
+        toggleButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                const collapsed = document.body.classList.contains('inspector-collapsed');
+                this.setInspectorCollapsed(!collapsed);
+            });
+        });
+
+        const railButtons = document.querySelectorAll<HTMLButtonElement>('[data-tab-target]');
+        railButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                const target = button.dataset.tabTarget;
+                if (!target) {
+                    return;
+                }
+
+                this.setInspectorCollapsed(false);
+                this.controls.selectTab(target);
+            });
+        });
+
+        window.addEventListener('implicit:tab-change', (event: Event) => {
+            const customEvent = event as CustomEvent<{ tabId?: string }>;
+            if (!customEvent.detail?.tabId) {
+                return;
+            }
+
+            this.updateRailTabState(customEvent.detail.tabId);
+        });
+
+        this.updateInspectorToggleButtons(false);
+    }
+
+    private setInspectorCollapsed(collapsed: boolean): void {
+        document.body.classList.toggle('inspector-collapsed', collapsed);
+        this.updateInspectorToggleButtons(collapsed);
+        this.renderer.resize();
+    }
+
+    private updateInspectorToggleButtons(collapsed: boolean): void {
+        const toggleButtons = document.querySelectorAll<HTMLButtonElement>('[data-toggle-inspector]');
+        toggleButtons.forEach((button) => {
+            const isViewportButton = button.id === 'viewport-toggle-inspector-button';
+            button.textContent = collapsed
+                ? (isViewportButton ? 'Show Panel' : 'Show Inspector')
+                : (isViewportButton ? 'Hide Panel' : 'Hide Inspector');
+            button.setAttribute('aria-expanded', String(!collapsed));
+        });
+    }
+
+    private updateRailTabState(activeTabId: string): void {
+        const railButtons = document.querySelectorAll<HTMLButtonElement>('[data-tab-target]');
+        railButtons.forEach((button) => {
+            const isActive = button.dataset.tabTarget === activeTabId;
+            button.classList.toggle('is-active', isActive);
+            button.setAttribute('aria-pressed', String(isActive));
+        });
+    }
+
+    private updateActiveSceneLabel(sceneId: string): void {
+        const label = document.getElementById('active-scene-label');
+        if (!label) {
+            return;
+        }
+
+        label.textContent = this.getSceneLabel(sceneId);
+    }
+
+    private getSceneLabel(sceneId: string): string {
+        return this.sceneOptions.find((scene) => scene.id === sceneId)?.name ?? sceneId;
+    }
+
+    private updateViewModeLabel(viewMode: number): void {
+        const label = document.getElementById('active-view-mode-label');
+        if (!label) {
+            return;
+        }
+
+        label.textContent = this.getViewModeLabel(viewMode);
+    }
+
+    private getViewModeLabel(viewMode: number): string {
+        if (viewMode === 1) {
+            return 'RGB Normals';
+        }
+
+        if (viewMode === 2) {
+            return 'Glass';
+        }
+
+        return 'Shaded';
+    }
+
+    private setWorkspaceStatus(message: string): void {
+        const statusElement = document.getElementById('workspace-status');
+        if (!statusElement) {
+            return;
+        }
+
+        statusElement.textContent = message;
     }
 
     private startRenderingLoop(): void {
@@ -428,16 +556,18 @@ function setShaderStatus(mode: ShaderStatusMode, message: string): void {
         detailElement.id = 'shader-status-detail';
         detailElement.className = 'shader-status-detail';
         detailElement.setAttribute('aria-live', 'polite');
-        detailElement.hidden = true;
         statusContainer.appendChild(detailElement);
     }
 
     if (mode === 'error') {
-        detailElement.hidden = false;
         detailElement.textContent = normalized;
+        return;
+    }
+
+    if (mode === 'compiling') {
+        detailElement.textContent = 'Compiling active scene shaders...';
     } else {
-        detailElement.hidden = true;
-        detailElement.textContent = '';
+        detailElement.textContent = 'No shader diagnostics.';
     }
 }
 

@@ -489,6 +489,10 @@ class Renderer {
         };
     }
 
+    public resetCameraView(): void {
+        this.resetCamera();
+    }
+
     private attachInteractionHandlers(canvas: HTMLCanvasElement): void {
         canvas.style.cursor = 'grab';
 
