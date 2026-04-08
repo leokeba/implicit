@@ -395,16 +395,27 @@
     function startEditorResize(event: PointerEvent): void {
         event.preventDefault();
         cleanupEditorResize();
-
-        const startY = event.clientY;
-        const startHeight = $workspace.editorHeight;
         workspace.setEditorResizing(true);
 
-        const handlePointerMove = (moveEvent: PointerEvent) => {
-            const delta = startY - moveEvent.clientY;
-            workspace.setEditorHeight(startHeight + delta);
-            studio.resizeViewport();
-        };
+        let handlePointerMove: ((moveEvent: PointerEvent) => void) | null = null;
+
+        if (editorDockSide) {
+            const startX = event.clientX;
+            const startWidth = $workspace.editorWidth;
+            handlePointerMove = (moveEvent: PointerEvent) => {
+                const delta = moveEvent.clientX - startX;
+                workspace.setEditorWidth(startWidth + delta);
+                studio.resizeViewport();
+            };
+        } else {
+            const startY = event.clientY;
+            const startHeight = $workspace.editorHeight;
+            handlePointerMove = (moveEvent: PointerEvent) => {
+                const delta = startY - moveEvent.clientY;
+                workspace.setEditorHeight(startHeight + delta);
+                studio.resizeViewport();
+            };
+        }
 
         const handlePointerUp = () => {
             cleanupEditorResize();
@@ -416,7 +427,9 @@
         window.addEventListener('pointercancel', handlePointerUp, { once: true });
 
         editorResizeCleanup = () => {
-            window.removeEventListener('pointermove', handlePointerMove);
+            if (handlePointerMove) {
+                window.removeEventListener('pointermove', handlePointerMove);
+            }
             window.removeEventListener('pointerup', handlePointerUp);
             window.removeEventListener('pointercancel', handlePointerUp);
         };
@@ -585,7 +598,7 @@
     }
 </script>
 
-<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:editor-visible={$workspace.editorVisible}>
+<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible}>
     <TopBar
         activeSceneLabel={$workspace.activeSceneLabel}
         activeViewModeLabel={$workspace.activeViewModeLabel}
@@ -596,7 +609,7 @@
         onToggleInspector={toggleInspector}
     />
 
-    <div class="workspace-stack" class:editor-docked-left={$workspace.editorVisible && editorDockSide} style={`--editor-height: ${$workspace.editorHeight}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
+    <div class="workspace-stack" class:editor-docked-left={$workspace.editorVisible && editorDockSide} style={`--editor-height: ${$workspace.editorHeight}px; --editor-width: ${$workspace.editorWidth}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
         <div class="workspace-shell" class:editor-docked-left={$workspace.editorVisible && editorDockSide}>
             {#if $workspace.editorVisible && editorDockSide}
                 <div class="workspace-editor-slot workspace-editor-slot-side">
@@ -614,6 +627,14 @@
                         onStartResize={startEditorResize}
                     />
                 </div>
+
+                <button
+                    class="editor-dock-resizer"
+                    type="button"
+                    aria-label="Resize scene editor"
+                    on:pointerdown={startEditorResize}
+                    on:dblclick={() => { workspace.resetEditorWidth(); void resizeViewportAfterLayout(); }}
+                ></button>
             {/if}
 
             <ViewportPanel

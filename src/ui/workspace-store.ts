@@ -7,6 +7,9 @@ const LEGACY_TAB_STORAGE_KEY = 'implicit-ui-active-tab';
 export const DEFAULT_INSPECTOR_WIDTH = 388;
 export const MIN_INSPECTOR_WIDTH = 340;
 export const MAX_INSPECTOR_WIDTH = 520;
+export const DEFAULT_EDITOR_WIDTH = 420;
+export const MIN_EDITOR_WIDTH = 320;
+export const MAX_EDITOR_WIDTH = 720;
 export const DEFAULT_EDITOR_HEIGHT = 320;
 export const MIN_EDITOR_HEIGHT = 220;
 export const MAX_EDITOR_HEIGHT = 560;
@@ -17,6 +20,7 @@ interface WorkspacePreferences {
     inspectorWidth: number;
     overlayVisible: boolean;
     editorVisible: boolean;
+    editorWidth: number;
     editorHeight: number;
 }
 
@@ -35,6 +39,10 @@ function clampEditorHeight(height: number): number {
     return Math.min(MAX_EDITOR_HEIGHT, Math.max(MIN_EDITOR_HEIGHT, Math.round(height)));
 }
 
+function clampEditorWidth(width: number): number {
+    return Math.min(MAX_EDITOR_WIDTH, Math.max(MIN_EDITOR_WIDTH, Math.round(width)));
+}
+
 function getDefaultPreferences(): WorkspacePreferences {
     return {
         activeTab: 'scene',
@@ -42,6 +50,7 @@ function getDefaultPreferences(): WorkspacePreferences {
         inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
         overlayVisible: true,
         editorVisible: true,
+        editorWidth: DEFAULT_EDITOR_WIDTH,
         editorHeight: DEFAULT_EDITOR_HEIGHT,
     };
 }
@@ -81,6 +90,7 @@ function readStoredPreferences(): WorkspacePreferences {
             inspectorWidth: clampInspectorWidth(parsed.inspectorWidth ?? DEFAULT_INSPECTOR_WIDTH),
             overlayVisible: parsed.overlayVisible ?? true,
             editorVisible: typeof parsed.editorVisible === 'boolean' ? parsed.editorVisible : true,
+            editorWidth: clampEditorWidth(parsed.editorWidth ?? DEFAULT_EDITOR_WIDTH),
             editorHeight: clampEditorHeight(parsed.editorHeight ?? DEFAULT_EDITOR_HEIGHT),
         };
     } catch {
@@ -99,6 +109,7 @@ function persistPreferences(state: WorkspaceState): void {
         inspectorWidth: state.inspectorWidth,
         overlayVisible: state.overlayVisible,
         editorVisible: state.editorVisible,
+        editorWidth: state.editorWidth,
         editorHeight: state.editorHeight,
     };
 
@@ -181,6 +192,22 @@ export function createWorkspaceStore(initialLabels: Pick<WorkspaceState, 'active
             mutate((state) => ({
                 ...state,
                 editorVisible,
+            }));
+        },
+        setEditorWidth(width: number): void {
+            if (!Number.isFinite(width)) {
+                return;
+            }
+
+            mutate((state) => ({
+                ...state,
+                editorWidth: clampEditorWidth(width),
+            }));
+        },
+        resetEditorWidth(): void {
+            mutate((state) => ({
+                ...state,
+                editorWidth: DEFAULT_EDITOR_WIDTH,
             }));
         },
         setEditorHeight(height: number): void {
