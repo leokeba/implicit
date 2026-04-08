@@ -72,6 +72,7 @@
     {#if sceneDocument}
         <div class="scene-editor-body">
             <CodeMirror
+                class="scene-editor-codemirror"
                 value={sceneDocument.source}
                 lang={cpp()}
                 theme={oneDark}

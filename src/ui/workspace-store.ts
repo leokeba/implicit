@@ -41,7 +41,7 @@ function getDefaultPreferences(): WorkspacePreferences {
         inspectorCollapsed: false,
         inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
         overlayVisible: true,
-        editorVisible: false,
+        editorVisible: true,
         editorHeight: DEFAULT_EDITOR_HEIGHT,
     };
 }
@@ -80,7 +80,7 @@ function readStoredPreferences(): WorkspacePreferences {
             inspectorCollapsed: parsed.inspectorCollapsed ?? false,
             inspectorWidth: clampInspectorWidth(parsed.inspectorWidth ?? DEFAULT_INSPECTOR_WIDTH),
             overlayVisible: parsed.overlayVisible ?? true,
-            editorVisible: parsed.editorVisible ?? false,
+            editorVisible: typeof parsed.editorVisible === 'boolean' ? parsed.editorVisible : true,
             editorHeight: clampEditorHeight(parsed.editorHeight ?? DEFAULT_EDITOR_HEIGHT),
         };
     } catch {

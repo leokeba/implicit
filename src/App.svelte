@@ -29,6 +29,8 @@
 
     export let studio: StudioController;
 
+    const EDITOR_SIDE_LAYOUT_MIN_WIDTH = 1440;
+
     const snapshot = studio.getSnapshot();
 
     let sceneOptions = snapshot.sceneOptions;
@@ -62,6 +64,7 @@
     let resizeCleanup: (() => void) | null = null;
     let editorResizeCleanup: (() => void) | null = null;
     let sceneRepositoryPollHandle: number | null = null;
+    let editorDockSide = false;
 
     $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
     $: studio.setToolpathOverlayVisible($workspace.overlayVisible);
@@ -93,6 +96,15 @@
     async function resizeViewportAfterLayout(): Promise<void> {
         await tick();
         studio.resizeViewport();
+    }
+
+    function syncEditorDockSide(): void {
+        if (typeof window === 'undefined') {
+            editorDockSide = false;
+            return;
+        }
+
+        editorDockSide = window.innerWidth >= EDITOR_SIDE_LAYOUT_MIN_WIDTH;
     }
 
     async function selectTab(tabId: ControlTabId): Promise<void> {
@@ -458,6 +470,8 @@
     };
 
     onMount(() => {
+        syncEditorDockSide();
+
         const handleShaderStatus = (event: Event) => {
             const customEvent = event as CustomEvent<{ mode?: ShaderStatusMode; message?: string }>;
             const mode = customEvent.detail?.mode;
@@ -469,7 +483,16 @@
             status.setShaderStatus(mode, message);
         };
 
+        const handleWindowResize = () => {
+            const previousDockSide = editorDockSide;
+            syncEditorDockSide();
+            if (previousDockSide !== editorDockSide) {
+                void resizeViewportAfterLayout();
+            }
+        };
+
         window.addEventListener('shader-hmr-status', handleShaderStatus);
+        window.addEventListener('resize', handleWindowResize);
 
         let disposed = false;
 
@@ -527,6 +550,7 @@
         return () => {
             disposed = true;
             window.removeEventListener('shader-hmr-status', handleShaderStatus);
+            window.removeEventListener('resize', handleWindowResize);
             if (sceneRepositoryPollHandle !== null) {
                 window.clearInterval(sceneRepositoryPollHandle);
                 sceneRepositoryPollHandle = null;
@@ -572,8 +596,26 @@
         onToggleInspector={toggleInspector}
     />
 
-    <div class="workspace-stack" style={`--editor-height: ${$workspace.editorHeight}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
-        <div class="workspace-shell">
+    <div class="workspace-stack" class:editor-docked-left={$workspace.editorVisible && editorDockSide} style={`--editor-height: ${$workspace.editorHeight}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
+        <div class="workspace-shell" class:editor-docked-left={$workspace.editorVisible && editorDockSide}>
+            {#if $workspace.editorVisible && editorDockSide}
+                <div class="workspace-editor-slot workspace-editor-slot-side">
+                    <SceneEditorPanel
+                        sceneDocument={activeSceneDocument}
+                        storageMode={sceneEditorMode}
+                        dirty={sceneEditorDirty}
+                        savePending={sceneEditorSavePending}
+                        statusText={sceneEditorStatus}
+                        onChangeSource={updateSceneDocumentSource}
+                        onCreateScene={createAndActivateScene}
+                        onSaveScene={saveActiveSceneDocument}
+                        onRevertScene={revertActiveSceneDocument}
+                        onClose={toggleEditor}
+                        onStartResize={startEditorResize}
+                    />
+                </div>
+            {/if}
+
             <ViewportPanel
                 activeSceneLabel={$workspace.activeSceneLabel}
                 activeViewModeLabel={$workspace.activeViewModeLabel}
@@ -614,7 +656,7 @@
             {/if}
         </div>
 
-        {#if $workspace.editorVisible}
+        {#if $workspace.editorVisible && !editorDockSide}
             <SceneEditorPanel
                 sceneDocument={activeSceneDocument}
                 storageMode={sceneEditorMode}
