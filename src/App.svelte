@@ -11,6 +11,7 @@
     import ViewportPanel from './components/ViewportPanel.svelte';
     import { type SceneRegistrySyncResult, type ShaderStatusMode, type StudioController } from './studio-controller';
     import {
+        type BooleanSlicerKey,
         type ControlTabId,
         type InspectorSchemaHandlers,
         type InspectorSchemaState,
@@ -202,6 +203,11 @@
     }
 
     function updateSlicerNumber(key: NumericSlicerKey, value: number): void {
+        slicerSettings = { ...slicerSettings, [key]: value } as VaseSlicerSettings;
+        studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
+    }
+
+    function updateSlicerBoolean(key: BooleanSlicerKey, value: boolean): void {
         slicerSettings = { ...slicerSettings, [key]: value } as VaseSlicerSettings;
         studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
     }
@@ -473,6 +479,7 @@
         updateAnimationField,
         updateSlicerMode,
         updateSlicerNumber,
+        updateSlicerBoolean,
         commitPrinterModel,
         updateSlicerString,
         commitFilamentProfile,

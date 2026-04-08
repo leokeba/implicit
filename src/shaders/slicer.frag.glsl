@@ -16,7 +16,7 @@ uniform float uSliceY;
 uniform float uSliceYStep;
 uniform float uSliceGridSize;
 uniform float uDistanceRange;
-uniform float uHitEpsilon;
+uniform float uIsoSnapEpsilon;
 
 __SDF_PRIMITIVES_GLSL__
 
@@ -43,7 +43,7 @@ void main() {
     float z = mix(uSliceMin.y, uSliceMax.y, zT);
     float distance = mapScene(vec3(x, uSliceY + sliceIndex * uSliceYStep, z));
 
-    if (abs(distance) < uHitEpsilon) {
+    if (uIsoSnapEpsilon > 0.0 && abs(distance) < uIsoSnapEpsilon) {
         distance = 0.0;
     }
 

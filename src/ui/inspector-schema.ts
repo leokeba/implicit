@@ -18,7 +18,9 @@ export type NumericSlicerKey =
     | 'pointsPerLayer'
     | 'maxRadius'
     | 'radialSteps'
+    | 'sliceTargetGridPitchMm'
     | 'hitEpsilon'
+    | 'sliceIsoSnapFactor'
     | 'brimWidthMm'
     | 'brimGapMm'
     | 'moveMergeMinMoveMm'
@@ -38,6 +40,10 @@ export type NumericSlicerKey =
     | 'flowRate'
     | 'printSpeedMmPerSec'
     | 'firstLayerPrintSpeedMmPerSec';
+
+export type BooleanSlicerKey =
+    | 'enableContourAlignment'
+    | 'enableMoveMerging';
 
 export interface InspectorSchemaState {
     sceneOptions: SceneOption[];
@@ -67,6 +73,7 @@ export interface InspectorSchemaHandlers {
     updateAnimationField: (key: keyof AnimationParams, value: number) => void;
     updateSlicerMode: (value: string) => void;
     updateSlicerNumber: (key: NumericSlicerKey, value: number) => void;
+    updateSlicerBoolean: (key: BooleanSlicerKey, value: boolean) => void;
     commitPrinterModel: (printerModelId: string) => void;
     updateSlicerString: (key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'>, value: string) => void;
     commitFilamentProfile: (filamentProfileId: string) => void;
@@ -113,6 +120,7 @@ export type InspectorFieldSchema =
     | (SelectFieldBase & { target: 'scene'; optionsSource: 'sceneOptions' })
     | (SelectFieldBase & { target: 'viewMode'; options: InspectorFieldOption[] })
     | (SelectFieldBase & { target: 'slicerMode'; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'slicerBoolean'; key: BooleanSlicerKey; options: InspectorFieldOption[] })
     | (SelectFieldBase & { target: 'printerModel'; optionsSource: 'printerModels' })
     | (SelectFieldBase & { target: 'filamentProfile'; optionsSource: 'filamentProfiles' })
     | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> });
@@ -155,6 +163,11 @@ export const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
 const SLICER_MODE_OPTIONS: InspectorFieldOption[] = [
     { value: 'planar', label: 'Planar contour (strict)' },
     { value: 'cylindrical', label: 'Cylindrical radial (legacy)' },
+];
+
+const BOOLEAN_TOGGLE_OPTIONS: InspectorFieldOption[] = [
+    { value: 'true', label: 'On' },
+    { value: 'false', label: 'Off' },
 ];
 
 function findSceneLabel(state: InspectorSchemaState): string {
@@ -273,8 +286,19 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'number', target: 'slicer', key: 'firstLayerLineWidth', id: 'slicer-first-layer-line-width', label: 'First layer line width', step: '0.01', min: '0.2', max: '1.2' },
                     { kind: 'number', target: 'slicer', key: 'pointsPerLayer', id: 'slicer-points', label: 'Points per layer', step: '1', min: '48', max: '2048' },
                     { kind: 'number', target: 'slicer', key: 'maxRadius', id: 'slicer-max-radius', label: 'Slice half-extent', step: '0.01', min: '0.1', max: '3.0' },
-                    { kind: 'number', target: 'slicer', key: 'radialSteps', id: 'slicer-radial-steps', label: 'Slice grid', step: '1', min: '32', max: '512' },
+                ],
+            },
+            {
+                id: 'print-sampling',
+                title: 'Sampling And Debug',
+                caption: 'These controls isolate grid artifacts from alignment and path-merging artifacts.',
+                fields: [
+                    { kind: 'number', target: 'slicer', key: 'sliceTargetGridPitchMm', id: 'slicer-target-grid-pitch', label: 'Target grid pitch (mm)', step: '0.01', min: '0.025', max: '2.0' },
+                    { kind: 'number', target: 'slicer', key: 'radialSteps', id: 'slicer-radial-steps', label: 'Minimum slice grid', step: '1', min: '32', max: '512' },
                     { kind: 'number', target: 'slicer', key: 'hitEpsilon', id: 'slicer-hit-eps', label: 'Iso epsilon', step: '0.0001', min: '0.0001', max: '0.02' },
+                    { kind: 'number', target: 'slicer', key: 'sliceIsoSnapFactor', id: 'slicer-iso-snap-factor', label: 'Iso snap factor', step: '0.05', min: '0.0', max: '4.0' },
+                    { kind: 'select', target: 'slicerBoolean', key: 'enableContourAlignment', id: 'slicer-align-contours', label: 'Align contours', options: BOOLEAN_TOGGLE_OPTIONS },
+                    { kind: 'select', target: 'slicerBoolean', key: 'enableMoveMerging', id: 'slicer-enable-merge', label: 'Merge moves', options: BOOLEAN_TOGGLE_OPTIONS },
                 ],
             },
             {
@@ -410,6 +434,8 @@ export function readFieldValue(field: InspectorFieldSchema, state: InspectorSche
             return String(state.viewMode);
         case 'slicerMode':
             return state.slicerSettings.slicerMode;
+        case 'slicerBoolean':
+            return String(state.slicerSettings[field.key]);
         case 'printerModel':
             return state.slicerSettings.printerModelId;
         case 'filamentProfile':
@@ -436,7 +462,7 @@ export function readFieldOptions(field: InspectorFieldSchema, state: InspectorSc
         return [];
     }
 
-    if (field.target === 'viewMode' || field.target === 'slicerMode') {
+    if (field.target === 'viewMode' || field.target === 'slicerMode' || field.target === 'slicerBoolean') {
         return field.options;
     }
 
@@ -474,6 +500,9 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
             return;
         case 'slicerMode':
             handlers.updateSlicerMode(rawValue);
+            return;
+        case 'slicerBoolean':
+            handlers.updateSlicerBoolean(field.key, rawValue === 'true');
             return;
         case 'printerModel':
             handlers.commitPrinterModel(rawValue);

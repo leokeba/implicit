@@ -23,7 +23,9 @@ export interface VaseSlicerSettings {
     pointsPerLayer: number;
     maxRadius: number;
     radialSteps: number;
+    sliceTargetGridPitchMm: number;
     hitEpsilon: number;
+    sliceIsoSnapFactor: number;
     centerX: number;
     centerZ: number;
     lineWidth: number;
@@ -42,6 +44,8 @@ export interface VaseSlicerSettings {
     moveMergeKeepStride: number;
     brimWidthMm: number;
     brimGapMm: number;
+    enableContourAlignment: boolean;
+    enableMoveMerging: boolean;
     startGcode: string;
     endGcode: string;
 }
@@ -127,6 +131,7 @@ interface SliceSegmentVertex {
 type SliceSegment = [SliceSegmentVertex, SliceSegmentVertex];
 
 const SLICE_BATCH_SIZE = 16;
+const MAX_SLICE_GRID_SIZE = 2048;
 
 interface SliceGpuBatchResult {
     sampleY: number;
@@ -185,7 +190,9 @@ export class Slicer {
             pointsPerLayer: 640,
             maxRadius: 1.1,
             radialSteps: 256,
+            sliceTargetGridPitchMm: 0.10,
             hitEpsilon: 0.0014,
+            sliceIsoSnapFactor: 0.0,
             centerX: 110,
             centerZ: 110,
             lineWidth: 0.42,
@@ -200,10 +207,12 @@ export class Slicer {
             flowRate: 1.0,
             moveMergeMinMoveMm: 0.10,
             moveMergeMaxDeviationMm: 0.025,
-            moveMergeMaxTurnDeg: 4.0,
+            moveMergeMaxTurnDeg: 1.0,
             moveMergeKeepStride: 12,
             brimWidthMm: 5,
             brimGapMm: 0.1,
+            enableContourAlignment: true,
+            enableMoveMerging: true,
             startGcode: getDefaultStartGcode().join('\n'),
             endGcode: getDefaultEndGcode().join('\n'),
         };
@@ -293,7 +302,9 @@ export class Slicer {
         merged.pointsPerLayer = clampInt(merged.pointsPerLayer, 48, 2048);
         merged.maxRadius = clamp(merged.maxRadius, 0.1, 3.0);
         merged.radialSteps = clampInt(merged.radialSteps, 32, 512);
+        merged.sliceTargetGridPitchMm = clamp(merged.sliceTargetGridPitchMm, 0.025, 2.0);
         merged.hitEpsilon = clamp(merged.hitEpsilon, 0.0001, 0.02);
+        merged.sliceIsoSnapFactor = clamp(merged.sliceIsoSnapFactor, 0.0, 4.0);
         merged.lineWidth = clamp(merged.lineWidth, 0.2, 1.2);
         merged.firstLayerLineWidth = clamp(merged.firstLayerLineWidth, 0.2, 1.2);
         merged.filamentDiameter = clamp(merged.filamentDiameter, 1.0, 3.0);
@@ -307,6 +318,8 @@ export class Slicer {
         merged.moveMergeKeepStride = clampInt(merged.moveMergeKeepStride, 1, 200);
         merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
         merged.brimGapMm = clamp(merged.brimGapMm, 0, 5);
+        merged.enableContourAlignment = Boolean(merged.enableContourAlignment);
+        merged.enableMoveMerging = Boolean(merged.enableMoveMerging);
         if (merged.maxY <= merged.minY) {
             merged.maxY = merged.minY + merged.layerHeight;
         }
@@ -317,9 +330,17 @@ export class Slicer {
     private sampleSliceContoursGpu(settings: VaseSlicerSettings): SliceContourLayer[] {
         const modelHeightMm = this.getModelHeightMm(settings);
         const layerCount = Math.max(2, Math.floor(modelHeightMm / settings.layerHeight) + 1);
-        const requestedGridSize = clampInt(settings.radialSteps, 32, 512);
-        const gridSize = clampInt(Math.max(requestedGridSize, Math.ceil(settings.pointsPerLayer * 0.5)), 32, 512) + 1;
         const bounds = this.getSliceBounds(settings);
+        const maxGridSize = this.getMaxSliceGridSize();
+        const sliceSpanMm = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) * settings.modelScale;
+        const requestedGridSize = clampInt(settings.radialSteps, 32, Math.max(32, maxGridSize - 1)) + 1;
+        const pointDrivenGridSize = Math.ceil(settings.pointsPerLayer * 0.5) + 1;
+        const pitchDrivenGridSize = Math.ceil(sliceSpanMm / Math.max(settings.sliceTargetGridPitchMm, 1e-6)) + 1;
+        const gridSize = clampInt(
+            Math.max(requestedGridSize, pointDrivenGridSize, pitchDrivenGridSize),
+            32,
+            maxGridSize,
+        );
         const layers: SliceContourLayer[] = [];
         const batchCapacity = this.getSliceBatchCapacity(gridSize);
 
@@ -355,7 +376,9 @@ export class Slicer {
             throw new Error('Planar contour slicer produced too few valid slices.');
         }
 
-        this.alignContourLayers(layers);
+        if (settings.enableContourAlignment) {
+            this.alignContourLayers(layers);
+        }
         return layers;
     }
 
@@ -420,7 +443,7 @@ export class Slicer {
         this.setUniform1f('uSliceYStep', sliceYStep);
         this.setUniform1f('uSliceGridSize', gridSize);
         this.setUniform1f('uDistanceRange', distanceRange);
-        this.setUniform1f('uHitEpsilon', settings.hitEpsilon);
+        this.setUniform1f('uIsoSnapEpsilon', settings.hitEpsilon * settings.sliceIsoSnapFactor);
 
         for (const control of this.sceneControlDefinitions) {
             this.setUniform1f(control.uniform, this.sceneControlValues[control.key] ?? control.defaultValue);
@@ -618,6 +641,10 @@ export class Slicer {
     }
 
     private optimizeToolpath(points: ToolpathPoint[], settings: VaseSlicerSettings): ToolpathPoint[] {
+        if (!settings.enableMoveMerging) {
+            return points;
+        }
+
         if (points.length < 4) {
             return points;
         }
@@ -743,11 +770,16 @@ export class Slicer {
         lines.push(`; Line width (mm): ${settings.lineWidth.toFixed(3)}`);
         lines.push(`; First layer line width (mm): ${settings.firstLayerLineWidth.toFixed(3)}`);
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
+        lines.push(`; Target slice grid pitch (mm): ${settings.sliceTargetGridPitchMm.toFixed(3)}`);
+        lines.push(`; Minimum slice grid: ${settings.radialSteps}`);
         lines.push(`; First layer print speed (mm/s): ${settings.firstLayerPrintSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Travel speed (mm/s): ${settings.travelSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Brim width (mm): ${settings.brimWidthMm.toFixed(2)}`);
         lines.push(`; Brim gap (mm): ${settings.brimGapMm.toFixed(2)}`);
+        lines.push(`; Iso snap factor: ${settings.sliceIsoSnapFactor.toFixed(2)}`);
+        lines.push(`; Contour alignment: ${settings.enableContourAlignment ? 'on' : 'off'}`);
+        lines.push(`; Move merging: ${settings.enableMoveMerging ? 'on' : 'off'}`);
         lines.push(`; First layer extrusion/mm: ${calculateExtrusionPerMm(settings, settings.firstLayerLineWidth).toFixed(5)}`);
         lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings, settings.lineWidth).toFixed(5)}`);
         lines.push(`; Estimated height (mm): ${toolpath.estimatedHeight.toFixed(3)}`);
@@ -841,24 +873,7 @@ export class Slicer {
         this.offscreenCanvas.width = width;
         this.offscreenCanvas.height = height;
 
-        if (!this.gl) {
-            this.gl = this.offscreenCanvas.getContext('webgl', {
-                alpha: false,
-                antialias: false,
-                depth: false,
-                stencil: false,
-                preserveDrawingBuffer: true,
-            });
-        }
-
-        if (!this.gl) {
-            throw new Error('WebGL is not available for slicer generation.');
-        }
-
-        const gl = this.gl;
-        if (this.maxTextureSize <= 0) {
-            this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-        }
+        const gl = this.getOrCreateGl();
 
         const nextSignature = getSlicerProgramSignature();
         if (!this.program || this.programSignature !== nextSignature) {
@@ -911,9 +926,13 @@ export class Slicer {
     }
 
     private getSliceBatchCapacity(gridSize: number): number {
-        const maxTextureSize = Math.max(1, this.maxTextureSize || 4096);
+        const maxTextureSize = Math.max(1, this.getMaxTextureSize());
         const maxBatchByTexture = Math.max(1, Math.floor(maxTextureSize / Math.max(1, gridSize)));
         return Math.max(1, Math.min(SLICE_BATCH_SIZE, maxBatchByTexture));
+    }
+
+    private getMaxSliceGridSize(): number {
+        return clampInt(Math.min(this.getMaxTextureSize(), MAX_SLICE_GRID_SIZE), 32, MAX_SLICE_GRID_SIZE);
     }
 
     private decodeSliceBatchFields(
@@ -994,6 +1013,36 @@ export class Slicer {
         }
 
         return shader;
+    }
+
+    private getOrCreateGl(): WebGLRenderingContext {
+        if (!this.gl) {
+            this.gl = this.offscreenCanvas.getContext('webgl', {
+                alpha: false,
+                antialias: false,
+                depth: false,
+                stencil: false,
+                preserveDrawingBuffer: true,
+            });
+        }
+
+        if (!this.gl) {
+            throw new Error('WebGL is not available for slicer generation.');
+        }
+
+        if (this.maxTextureSize <= 0) {
+            this.maxTextureSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) as number;
+        }
+
+        return this.gl;
+    }
+
+    private getMaxTextureSize(): number {
+        const gl = this.getOrCreateGl();
+        if (this.maxTextureSize <= 0) {
+            this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+        }
+        return this.maxTextureSize;
     }
 
     private setUniform1f(name: string, value: number): void {
