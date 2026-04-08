@@ -1,0 +1,25 @@
+{
+  "id": "elegoo-neptune-4-max",
+  "name": "Elegoo Neptune 4 Max",
+  "plateWidthMm": 430,
+  "plateDepthMm": 430,
+  "maxHeightMm": 480,
+  "defaultFirstLayerPrintSpeedMmPerSec": 30,
+  "defaultPrintSpeedMmPerSec": 80,
+  "defaultTravelSpeedMmPerSec": 250,
+  "startGcode": [
+    ";Nozzle diameter = [nozzle_diameter]",
+    ";Filament type = [filament_type]",
+    ";Filament name = [filament_vendor]",
+    ";Filament weight = [filament_density]",
+    "PRINT_START BED_TEMP={bedTempC} EXTRUDER_TEMP={nozzleTempC} AREA_START=0,0 AREA_END=430,430"
+  ],
+  "endGcode": [
+    "M106 S0 ; disable fan",
+    "M106 P2 S0 ; disable additional fan",
+    ";TYPE:Custom",
+    "; filament end gcode",
+    "PRINT_END",
+    "M73 P100 R0"
+  ]
+}
