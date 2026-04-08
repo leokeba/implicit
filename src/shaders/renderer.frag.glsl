@@ -24,6 +24,7 @@ uniform float uMaxRadius;
 uniform float uNozzleDiameter;
 uniform float uFlowRate;
 uniform float uLayerHeight;
+uniform float uUiLightTheme;
 
 __SDF_PRIMITIVES_GLSL__
 
@@ -60,7 +61,13 @@ void main() {
             color = sampleEnvironment(rd);
         } else {
             float bg = 0.25 + 0.75 * pow(1.0 - max(rd.y, -0.2), 2.0);
-            color = mix(vec3(0.03, 0.05, 0.1), vec3(0.09, 0.12, 0.2), bg);
+            vec3 darkNear = vec3(0.03, 0.05, 0.1);
+            vec3 darkFar = vec3(0.09, 0.12, 0.2);
+            vec3 lightNear = vec3(0.77, 0.83, 0.92);
+            vec3 lightFar = vec3(0.9, 0.94, 0.98);
+            vec3 nearColor = mix(darkNear, lightNear, uUiLightTheme);
+            vec3 farColor = mix(darkFar, lightFar, uUiLightTheme);
+            color = mix(nearColor, farColor, bg);
         }
     }
 

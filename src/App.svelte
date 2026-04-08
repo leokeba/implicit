@@ -600,13 +600,19 @@
 
 <div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible}>
     <TopBar
-        activeSceneLabel={$workspace.activeSceneLabel}
-        activeViewModeLabel={$workspace.activeViewModeLabel}
-        inspectorCollapsed={$workspace.inspectorCollapsed}
+        {sceneOptions}
+        {sceneId}
+        {viewMode}
+        {printerModels}
+        {filamentProfiles}
+        printerModelId={slicerSettings.printerModelId}
+        filamentProfileId={slicerSettings.filamentProfileId}
         shaderStatusMode={$status.shaderStatusMode}
         shaderStatusText={$status.shaderStatusText}
-        onResetView={resetView}
-        onToggleInspector={toggleInspector}
+        onCommitScene={commitScene}
+        onCommitViewMode={commitViewMode}
+        onCommitPrinterModel={commitPrinterModel}
+        onCommitFilamentProfile={commitFilamentProfile}
     />
 
     <div class="workspace-stack" class:editor-docked-left={$workspace.editorVisible && editorDockSide} style={`--editor-height: ${$workspace.editorHeight}px; --editor-width: ${$workspace.editorWidth}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
@@ -638,16 +644,7 @@
             {/if}
 
             <ViewportPanel
-                activeSceneLabel={$workspace.activeSceneLabel}
-                activeViewModeLabel={$workspace.activeViewModeLabel}
-                {sceneOptions}
-                {sceneId}
-                {viewMode}
-                printerLabel={slicerSettings.printerModelName}
-                materialLabel={slicerSettings.filamentProfileName}
-                overlayVisible={$workspace.overlayVisible}
                 actionPending={$status.actionPending}
-                commandStatus={$status.outputStatus}
                 inspectorCollapsed={$workspace.inspectorCollapsed}
                 editorVisible={$workspace.editorVisible}
                 editorModeLabel={sceneEditorModeLabel}
@@ -655,12 +652,7 @@
                 onResetView={resetView}
                 onToggleInspector={toggleInspector}
                 onToggleEditor={toggleEditor}
-                onCreateScene={createAndActivateScene}
-                onCommitScene={commitScene}
-                onCommitViewMode={commitViewMode}
-                onToggleOverlay={toggleOverlay}
                 onGenerateVaseGcode={generateVaseGcode}
-                onBenchmarkVaseGcode={benchmarkVaseGcode}
             />
 
             {#if !$workspace.inspectorCollapsed}

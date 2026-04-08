@@ -88,6 +88,7 @@ class Renderer {
     private maxRadiusLocation: WebGLUniformLocation | null;
     private nozzleDiameterLocation: WebGLUniformLocation | null;
     private flowRateLocation: WebGLUniformLocation | null;
+    private uiLightThemeLocation: WebGLUniformLocation | null;
     private startTimeMs: number;
     private lastRenderTimeMs: number;
     private renderedFrameCount: number;
@@ -112,6 +113,9 @@ class Renderer {
     private sceneControlDefinitions: SceneControlDefinition[];
     private sceneControlValues: SceneControlValueMap;
     private sceneUniformLocations: Map<string, WebGLUniformLocation | null>;
+    private themeMediaQuery: MediaQueryList | null;
+    private handleThemeChange: (() => void) | null;
+    private uiLightTheme: number;
 
     constructor() {
         activeRenderers.add(this);
@@ -141,6 +145,7 @@ class Renderer {
         this.maxRadiusLocation = null;
         this.nozzleDiameterLocation = null;
         this.flowRateLocation = null;
+        this.uiLightThemeLocation = null;
         this.startTimeMs = 0;
         this.lastRenderTimeMs = 0;
         this.renderedFrameCount = 0;
@@ -191,6 +196,9 @@ class Renderer {
         this.sceneControlDefinitions = [];
         this.sceneControlValues = {};
         this.sceneUniformLocations = new Map();
+        this.themeMediaQuery = null;
+        this.handleThemeChange = null;
+        this.uiLightTheme = 0;
     }
 
     public init(canvas: HTMLCanvasElement): void {
@@ -227,7 +235,8 @@ class Renderer {
 
         this.resize();
         this.attachInteractionHandlers(canvas);
-        this.gl.clearColor(0.06, 0.08, 0.14, 1.0);
+        this.applyThemeClearColor();
+        this.registerThemeClearColorSync();
         this.startTimeMs = performance.now();
         this.lastRenderTimeMs = 0;
         this.renderedFrameCount = 0;
@@ -402,6 +411,10 @@ class Renderer {
 
         if (this.flowRateLocation) {
             gl.uniform1f(this.flowRateLocation, this.slicerUniformState.flowRate);
+        }
+
+        if (this.uiLightThemeLocation) {
+            gl.uniform1f(this.uiLightThemeLocation, this.uiLightTheme);
         }
 
         for (const control of this.sceneControlDefinitions) {
@@ -816,6 +829,7 @@ class Renderer {
         this.maxRadiusLocation = this.gl.getUniformLocation(this.program, 'uMaxRadius');
         this.nozzleDiameterLocation = this.gl.getUniformLocation(this.program, 'uNozzleDiameter');
         this.flowRateLocation = this.gl.getUniformLocation(this.program, 'uFlowRate');
+        this.uiLightThemeLocation = this.gl.getUniformLocation(this.program, 'uUiLightTheme');
         this.sceneUniformLocations.clear();
     }
 
@@ -869,6 +883,92 @@ class Renderer {
         }
 
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    private registerThemeClearColorSync(): void {
+        if (typeof window === 'undefined' || this.handleThemeChange) {
+            return;
+        }
+
+        this.themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        this.handleThemeChange = () => {
+            this.applyThemeClearColor();
+        };
+
+        if (typeof this.themeMediaQuery.addEventListener === 'function') {
+            this.themeMediaQuery.addEventListener('change', this.handleThemeChange);
+            return;
+        }
+
+        this.themeMediaQuery.addListener(this.handleThemeChange);
+    }
+
+    private applyThemeClearColor(): void {
+        const isDarkTheme = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        this.uiLightTheme = isDarkTheme ? 0 : 1;
+
+        if (!this.gl) {
+            return;
+        }
+
+        const [r, g, b] = this.resolveThemeClearColor();
+        this.gl.clearColor(r, g, b, 1.0);
+    }
+
+    private resolveThemeClearColor(): [number, number, number] {
+        if (typeof window === 'undefined') {
+            return [0.06, 0.08, 0.14];
+        }
+
+        const rootStyle = window.getComputedStyle(document.documentElement);
+        const colorToken = rootStyle.getPropertyValue('--surface-canvas').trim();
+        const parsed = this.parseCssColorToRgb(colorToken);
+        if (parsed) {
+            return parsed;
+        }
+
+        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        return isDark ? [0.06, 0.08, 0.14] : [0.86, 0.9, 0.94];
+    }
+
+    private parseCssColorToRgb(colorValue: string): [number, number, number] | null {
+        if (!colorValue) {
+            return null;
+        }
+
+        const hexMatch = /^#([\da-f]{3}|[\da-f]{6})$/i.exec(colorValue);
+        if (hexMatch) {
+            const rawHex = hexMatch[1];
+            const hex = rawHex.length === 3
+                ? rawHex.split('').map((ch) => `${ch}${ch}`).join('')
+                : rawHex;
+
+            const intValue = Number.parseInt(hex, 16);
+            const red = ((intValue >> 16) & 255) / 255;
+            const green = ((intValue >> 8) & 255) / 255;
+            const blue = (intValue & 255) / 255;
+            return [red, green, blue];
+        }
+
+        const rgbMatch = /^rgba?\(([^)]+)\)$/i.exec(colorValue);
+        if (!rgbMatch) {
+            return null;
+        }
+
+        const channels = rgbMatch[1]
+            .split(',')
+            .map((part) => Number.parseFloat(part.trim()))
+            .filter((value) => Number.isFinite(value));
+
+        if (channels.length < 3) {
+            return null;
+        }
+
+        return [
+            Math.max(0, Math.min(255, channels[0])) / 255,
+            Math.max(0, Math.min(255, channels[1])) / 255,
+            Math.max(0, Math.min(255, channels[2])) / 255,
+        ];
     }
 }
 

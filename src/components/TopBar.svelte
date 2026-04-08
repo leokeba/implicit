@@ -1,38 +1,69 @@
 <script lang="ts">
+    import type { FilamentProfile } from '../core/filament-profiles';
+    import type { PrinterModel } from '../core/printer-models';
+    import type { SceneOption } from '../core/shader-pipeline';
     import type { ShaderStatusMode } from '../studio-controller';
+    import { VIEW_MODE_OPTIONS } from '../ui/inspector-schema';
 
-    export let activeSceneLabel: string;
-    export let activeViewModeLabel: string;
-    export let inspectorCollapsed: boolean;
+    export let sceneOptions: SceneOption[];
+    export let sceneId: string;
+    export let viewMode: number;
+    export let printerModels: PrinterModel[];
+    export let filamentProfiles: FilamentProfile[];
+    export let printerModelId: string;
+    export let filamentProfileId: string;
     export let shaderStatusMode: ShaderStatusMode;
     export let shaderStatusText: string;
-    export let onResetView: () => void;
-    export let onToggleInspector: () => void | Promise<void>;
+    export let onCommitScene: (sceneId: string) => void;
+    export let onCommitViewMode: (viewMode: number) => void;
+    export let onCommitPrinterModel: (printerModelId: string) => void;
+    export let onCommitFilamentProfile: (filamentProfileId: string) => void;
 </script>
 
 <header class="app-topbar">
     <div class="app-brand">
-        <p class="app-eyebrow">Implicit Studio</p>
-        <div class="app-brand-row">
-            <h1>Implicit</h1>
-            <span class="app-build-tag">Svelte Workspace</span>
-        </div>
+        <h1>Implicit</h1>
     </div>
-    <div class="topbar-meta" aria-label="Workspace metadata">
-        <div class="topbar-chip">
-            <span class="topbar-chip-label">Scene</span>
-            <strong>{activeSceneLabel}</strong>
-        </div>
-        <div class="topbar-chip">
-            <span class="topbar-chip-label">View</span>
-            <strong>{activeViewModeLabel}</strong>
-        </div>
+
+    <div class="topbar-selectors" aria-label="Workspace selectors">
+        <label class="topbar-field">
+            <span>Scene</span>
+            <select value={sceneId} on:change={(event) => onCommitScene((event.currentTarget as HTMLSelectElement).value)}>
+                {#each sceneOptions as scene}
+                    <option value={scene.id}>{scene.name}</option>
+                {/each}
+            </select>
+        </label>
+
+        <label class="topbar-field">
+            <span>View</span>
+            <select value={String(viewMode)} on:change={(event) => onCommitViewMode(Number((event.currentTarget as HTMLSelectElement).value))}>
+                {#each VIEW_MODE_OPTIONS as option}
+                    <option value={option.value}>{option.label}</option>
+                {/each}
+            </select>
+        </label>
+
+        <label class="topbar-field">
+            <span>Machine</span>
+            <select value={printerModelId} on:change={(event) => onCommitPrinterModel((event.currentTarget as HTMLSelectElement).value)}>
+                {#each printerModels as model}
+                    <option value={model.id}>{model.name}</option>
+                {/each}
+            </select>
+        </label>
+
+        <label class="topbar-field">
+            <span>Material</span>
+            <select value={filamentProfileId} on:change={(event) => onCommitFilamentProfile((event.currentTarget as HTMLSelectElement).value)}>
+                {#each filamentProfiles as profile}
+                    <option value={profile.id}>{profile.name}</option>
+                {/each}
+            </select>
+        </label>
     </div>
+
     <div class="topbar-actions">
-        <button class="chrome-button chrome-button-secondary" type="button" on:click={onResetView}>Reset View</button>
-        <button class="chrome-button" type="button" aria-expanded={!inspectorCollapsed} on:click={onToggleInspector}>
-            {inspectorCollapsed ? 'Show Inspector' : 'Hide Inspector'}
-        </button>
         <div class={`shader-status shader-status-${shaderStatusMode}`} role="status" aria-live="polite">{shaderStatusText}</div>
     </div>
 </header>

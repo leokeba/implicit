@@ -1,6 +1,9 @@
 <script lang="ts">
+    import { onDestroy, onMount } from 'svelte';
+
     import { cpp } from '@codemirror/lang-cpp';
     import { oneDark } from '@codemirror/theme-one-dark';
+    import { EditorView } from '@codemirror/view';
     import CodeMirror from 'svelte-codemirror-editor';
 
     import type { SceneDocument } from '../core/shader-pipeline';
@@ -28,6 +31,77 @@
             fontFamily: '"IBM Plex Mono", "SFMono-Regular", Consolas, monospace',
         },
     };
+
+    const lightEditorTheme = EditorView.theme(
+        {
+            '&': {
+                backgroundColor: '#f8fbff',
+                color: '#102238',
+            },
+            '.cm-gutters': {
+                backgroundColor: '#eef3f9',
+                color: '#4b5b70',
+                borderRight: '1px solid #c4d2e0',
+            },
+            '.cm-activeLine': {
+                backgroundColor: 'rgba(0, 92, 200, 0.08)',
+            },
+            '.cm-activeLineGutter': {
+                backgroundColor: 'rgba(0, 92, 200, 0.12)',
+            },
+            '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
+                backgroundColor: 'rgba(0, 92, 200, 0.18)',
+            },
+            '&.cm-focused': {
+                outline: 'none',
+            },
+            '.cm-cursor, .cm-dropCursor': {
+                borderLeftColor: '#005cc8',
+            },
+        },
+        { dark: false }
+    );
+
+    let editorTheme = oneDark;
+    let themeMediaQuery: MediaQueryList | null = null;
+    let handleThemeChange: ((event: MediaQueryListEvent) => void) | null = null;
+
+    function syncEditorTheme(matchesDark: boolean): void {
+        editorTheme = matchesDark ? oneDark : lightEditorTheme;
+    }
+
+    onMount(() => {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        syncEditorTheme(themeMediaQuery.matches);
+
+        handleThemeChange = (event: MediaQueryListEvent) => {
+            syncEditorTheme(event.matches);
+        };
+
+        if (typeof themeMediaQuery.addEventListener === 'function') {
+            themeMediaQuery.addEventListener('change', handleThemeChange);
+            return;
+        }
+
+        themeMediaQuery.addListener(handleThemeChange);
+    });
+
+    onDestroy(() => {
+        if (!themeMediaQuery || !handleThemeChange) {
+            return;
+        }
+
+        if (typeof themeMediaQuery.removeEventListener === 'function') {
+            themeMediaQuery.removeEventListener('change', handleThemeChange);
+            return;
+        }
+
+        themeMediaQuery.removeListener(handleThemeChange);
+    });
 
     $: storageLabel = storageMode === 'filesystem' ? 'Folder Sync' : 'Browser Drafts';
     $: helperText = storageMode === 'filesystem'
@@ -75,7 +149,7 @@
                 class="scene-editor-codemirror"
                 value={sceneDocument.source}
                 lang={cpp()}
-                theme={oneDark}
+                theme={editorTheme}
                 lineWrapping={false}
                 tabSize={4}
                 styles={editorThemeStyles}
