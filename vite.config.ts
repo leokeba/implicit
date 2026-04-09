@@ -9,6 +9,15 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 const SCENE_API_PREFIX = '/__implicit_api/scenes';
 const SCENE_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.glsl$/i;
 const scenesDirectory = fileURLToPath(new URL('./src/shaders/scenes', import.meta.url));
+const codeMirrorPackages = [
+  'svelte-codemirror-editor',
+  'codemirror',
+  '@codemirror/state',
+  '@codemirror/view',
+  '@codemirror/language',
+  '@codemirror/lang-cpp',
+  '@codemirror/theme-one-dark',
+];
 
 interface SceneApiDocument {
   id: string;
@@ -161,7 +170,7 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
 export default defineConfig({
   plugins: [svelte(), createSceneFilesApiPlugin()],
   optimizeDeps: {
-    exclude: ['svelte-codemirror-editor', 'codemirror', '@codemirror/lang-cpp', '@codemirror/theme-one-dark'],
+    exclude: codeMirrorPackages,
   },
   server: {
     open: false,
@@ -180,5 +189,6 @@ export default defineConfig({
     alias: {
       '@': '/src',
     },
+    dedupe: codeMirrorPackages,
   },
 });

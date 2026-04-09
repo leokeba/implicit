@@ -83,21 +83,8 @@ export class Preview {
     public setRenderingActive(active: boolean): void {
         this.renderingActive = active;
 
-        if (this.canvas) {
-            this.canvas.style.visibility = active ? 'visible' : 'hidden';
-            if (!active) {
-                this.canvas.width = 1;
-                this.canvas.height = 1;
-            }
-        }
-
-        if (this.overlayCanvas) {
-            if (!active) {
-                this.overlayCanvas.width = 1;
-                this.overlayCanvas.height = 1;
-            } else {
-                this.syncOverlaySize();
-            }
+        if (active) {
+            this.syncOverlaySize();
         }
 
         this.syncOverlayVisibility();
@@ -216,7 +203,7 @@ export class Preview {
             return;
         }
 
-        this.overlayCanvas.style.visibility = this.renderingActive && this.overlayVisible ? 'visible' : 'hidden';
+        this.overlayCanvas.style.visibility = this.overlayVisible ? 'visible' : 'hidden';
     }
 }
 
