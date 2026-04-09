@@ -486,7 +486,8 @@ export function isFieldDisabled(field: InspectorFieldSchema, state: InspectorSch
 }
 
 function coerceNumber(rawValue: string): number {
-    const parsed = Number(rawValue);
+    const normalized = rawValue.trim().replace(',', '.');
+    const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : 0;
 }
 

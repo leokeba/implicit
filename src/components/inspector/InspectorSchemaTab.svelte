@@ -65,7 +65,6 @@
                                 max={field.max}
                                 value={Number(readFieldValue(field, state))}
                                 disabled={isFieldDisabled(field, state)}
-                                on:input={(event) => commitFieldValue(field, (event.currentTarget as HTMLInputElement).value, handlers)}
                                 on:change={(event) => commitFieldValue(field, (event.currentTarget as HTMLInputElement).value, handlers)}
                             >
                         {/if}
