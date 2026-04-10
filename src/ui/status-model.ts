@@ -15,8 +15,18 @@ export interface StatusState {
     shaderStatusText: string;
     shaderStatusDetail: string;
     actionPending: boolean;
+    progressVisible: boolean;
+    progressPercent: number;
+    progressPhaseLabel: string;
+    progressDetail: string;
     benchmarkIterations: number;
     benchmarkWarmups: number;
+}
+
+export interface CommandProgressUpdate {
+    percent: number;
+    phaseLabel: string;
+    detail: string;
 }
 
 function buildInitialState(): StatusState {
@@ -27,6 +37,10 @@ function buildInitialState(): StatusState {
         shaderStatusText: 'Shader: Ready',
         shaderStatusDetail: 'No shader diagnostics.',
         actionPending: false,
+        progressVisible: false,
+        progressPercent: 0,
+        progressPhaseLabel: '',
+        progressDetail: '',
         benchmarkIterations: 3,
         benchmarkWarmups: 1,
     };
@@ -93,21 +107,39 @@ export function createStatusModel() {
                 benchmarkWarmups: Math.max(0, Math.trunc(benchmarkWarmups || 0)),
             }));
         },
-        async runCommand(pendingLabel: string, action: () => string | Promise<string>): Promise<string> {
+        async runCommand(
+            pendingLabel: string,
+            action: (reportProgress: (next: CommandProgressUpdate) => void) => string | Promise<string>
+        ): Promise<string> {
             update((state) => ({
                 ...state,
                 actionPending: true,
                 outputStatus: pendingLabel,
                 workspaceStatus: pendingLabel,
+                progressVisible: false,
+                progressPercent: 0,
+                progressPhaseLabel: '',
+                progressDetail: '',
             }));
 
+            const reportProgress = (next: CommandProgressUpdate): void => {
+                update((state) => ({
+                    ...state,
+                    progressVisible: true,
+                    progressPercent: clamp(Math.round(next.percent), 0, 100),
+                    progressPhaseLabel: next.phaseLabel,
+                    progressDetail: next.detail,
+                }));
+            };
+
             try {
-                const message = await action();
+                const message = await action(reportProgress);
                 update((state) => ({
                     ...state,
                     actionPending: false,
                     outputStatus: message,
                     workspaceStatus: message,
+                    progressVisible: false,
                 }));
                 return message;
             } catch (error) {
@@ -117,9 +149,14 @@ export function createStatusModel() {
                     actionPending: false,
                     outputStatus: message,
                     workspaceStatus: message,
+                    progressVisible: false,
                 }));
                 return message;
             }
         },
     };
+}
+
+function clamp(value: number, min: number, max: number): number {
+    return Math.min(max, Math.max(min, value));
 }

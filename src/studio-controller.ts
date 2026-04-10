@@ -19,6 +19,7 @@ import {
 } from './core/shader-pipeline';
 import {
     Slicer,
+    type SliceProgressUpdate,
     type ToolpathPoint,
     type VaseSliceBenchmarkRun,
     type VaseSlicerSettings,
@@ -417,9 +418,11 @@ export class StudioController {
         this.syncSceneSlicerUniforms();
     }
 
-    public generateVaseGcode(): { filename: string; bytes: number; points: number } {
-        return this.runWhilePreviewPaused(() => {
-            const result = this.slicer.generateVaseGcode(this.slicerSettings);
+    public async generateVaseGcode(
+        onProgress?: (update: SliceProgressUpdate) => void
+    ): Promise<{ filename: string; bytes: number; points: number }> {
+        return this.runWhilePreviewPausedAsync(async () => {
+            const result = await this.slicer.generateVaseGcodeWithProgress(this.slicerSettings, onProgress);
             this.preview.setToolpathOverlayWorldPoints(
                 this.convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
             );
@@ -522,6 +525,17 @@ export class StudioController {
         this.updatePreviewRenderState();
         try {
             return action();
+        } finally {
+            this.isSlicing = false;
+            this.updatePreviewRenderState();
+        }
+    }
+
+    private async runWhilePreviewPausedAsync<T>(action: () => Promise<T>): Promise<T> {
+        this.isSlicing = true;
+        this.updatePreviewRenderState();
+        try {
+            return await action();
         } finally {
             this.isSlicing = false;
             this.updatePreviewRenderState();

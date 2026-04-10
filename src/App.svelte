@@ -224,8 +224,79 @@
     }
 
     async function generateVaseGcode(): Promise<void> {
-        await status.runCommand('Generating G-code...', () => {
-            const result = studio.generateVaseGcode();
+        const progressStartMs = performance.now();
+        let lastPhase = '';
+        let samplingPhaseStartMs: number | null = null;
+        let learnedTotalSliceSeconds: number | null = null;
+        let displayedEtaSeconds: number | null = null;
+        let lastEtaUpdateMs = progressStartMs;
+
+        await status.runCommand('Generating G-code...', async (reportProgress) => {
+            const result = await studio.generateVaseGcode((update) => {
+                const nowMs = performance.now();
+                const progress = Math.max(0, Math.min(1, update.overall));
+
+                if (update.phase === 'sampling') {
+                    if (samplingPhaseStartMs === null) {
+                        samplingPhaseStartMs = nowMs;
+                    }
+
+                    const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
+                    const phaseProgress = update.total > 0 ? Math.max(0, Math.min(1, update.completed / update.total)) : 0;
+
+                    // Learn expected total slice duration from measured sampling throughput once enough data exists.
+                    if (update.completed >= 4 && phaseProgress >= 0.05) {
+                        const estimatedSamplingTotalSeconds = samplingElapsedSeconds / phaseProgress;
+                        const estimatedSliceTotalSeconds = estimatedSamplingTotalSeconds / 0.76;
+                        learnedTotalSliceSeconds = learnedTotalSliceSeconds === null
+                            ? estimatedSliceTotalSeconds
+                            : (learnedTotalSliceSeconds * 0.6) + (estimatedSliceTotalSeconds * 0.4);
+                    }
+                } else if (lastPhase === 'sampling' && samplingPhaseStartMs !== null && learnedTotalSliceSeconds === null) {
+                    const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
+                    learnedTotalSliceSeconds = samplingElapsedSeconds / 0.76;
+                }
+
+                const elapsedSeconds = Math.max(0, (nowMs - progressStartMs) / 1000);
+                const fallbackEtaSeconds = progress > 0.2
+                    ? Math.max(0, elapsedSeconds * ((1 / progress) - 1))
+                    : null;
+                const rawEtaSeconds = learnedTotalSliceSeconds !== null
+                    ? Math.max(0, learnedTotalSliceSeconds - elapsedSeconds)
+                    : fallbackEtaSeconds;
+
+                let etaSeconds: number | null = null;
+                if (rawEtaSeconds !== null) {
+                    if (displayedEtaSeconds === null) {
+                        displayedEtaSeconds = rawEtaSeconds;
+                    } else {
+                        const deltaSeconds = Math.max(1e-3, (nowMs - lastEtaUpdateMs) / 1000);
+                        const allowedRise = (deltaSeconds * 0.45) + 0.08;
+                        if (rawEtaSeconds > displayedEtaSeconds + allowedRise) {
+                            displayedEtaSeconds += allowedRise;
+                        } else {
+                            displayedEtaSeconds = rawEtaSeconds;
+                        }
+                    }
+
+                    if (update.phase === 'finalizing') {
+                        displayedEtaSeconds = Math.min(displayedEtaSeconds, 1);
+                    }
+
+                    etaSeconds = displayedEtaSeconds;
+                    lastEtaUpdateMs = nowMs;
+                }
+
+                lastPhase = update.phase;
+
+                reportProgress({
+                    percent: progress * 100,
+                    phaseLabel: update.phaseLabel,
+                    detail: etaSeconds !== null
+                        ? `${update.detail} ETA ${formatEta(etaSeconds)}`
+                        : update.detail,
+                });
+            });
             return `Exported ${result.filename} (${(result.bytes / 1024).toFixed(1)} KB, ${result.points} points).`;
         });
     }
@@ -245,6 +316,17 @@
         const nextVisible = !$workspace.overlayVisible;
         workspace.setOverlayVisible(nextVisible);
         status.setWorkspaceStatus(nextVisible ? 'Toolpath overlay enabled.' : 'Toolpath overlay hidden.');
+    }
+
+    function formatEta(seconds: number): string {
+        const clamped = Math.max(0, Math.round(seconds));
+        if (clamped < 60) {
+            return `${clamped}s`;
+        }
+
+        const minutes = Math.floor(clamped / 60);
+        const remSeconds = clamped % 60;
+        return `${minutes}m ${remSeconds}s`;
     }
 
     function mergePersistedSceneDocument(nextDocument: SceneDocument): void {
@@ -697,6 +779,10 @@
         workspaceStatus={$status.workspaceStatus}
         outputStatus={$status.outputStatus}
         actionPending={$status.actionPending}
+        progressVisible={$status.progressVisible}
+        progressPercent={$status.progressPercent}
+        progressPhaseLabel={$status.progressPhaseLabel}
+        progressDetail={$status.progressDetail}
         shaderStatusDetail={$status.shaderStatusDetail}
     />
 </div>

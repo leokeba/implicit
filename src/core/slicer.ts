@@ -72,6 +72,17 @@ export interface VaseSliceResult {
     gcode: string;
 }
 
+export type SliceProgressPhase = 'preparing' | 'sampling' | 'toolpath' | 'gcode' | 'finalizing';
+
+export interface SliceProgressUpdate {
+    phase: SliceProgressPhase;
+    phaseLabel: string;
+    completed: number;
+    total: number;
+    overall: number;
+    detail: string;
+}
+
 export interface VaseSlicePhaseTimings {
     contourSamplingMs: number;
     toolpathBuildMs: number;
@@ -99,6 +110,8 @@ export interface VaseSliceBenchmarkResult {
 interface VaseSliceExecution extends VaseSliceResult {
     timings: VaseSlicePhaseTimings;
 }
+
+type SliceProgressReporter = (update: SliceProgressUpdate) => void;
 
 interface SliceBounds {
     minX: number;
@@ -228,6 +241,19 @@ export class Slicer {
         };
     }
 
+    public async generateVaseGcodeWithProgress(
+        next: Partial<VaseSlicerSettings>,
+        onProgress?: SliceProgressReporter
+    ): Promise<VaseSliceResult> {
+        const settings = this.getMergedSettings(next);
+        const result = await this.executeVaseSliceAsync(settings, onProgress);
+        return {
+            settings: result.settings,
+            toolpath: result.toolpath,
+            gcode: result.gcode,
+        };
+    }
+
     public benchmarkVaseGcode(next: Partial<VaseSlicerSettings>, iterations: number, warmupRuns = 1): VaseSliceBenchmarkResult {
         const settings = this.getMergedSettings(next);
         const measuredRunCount = clampInt(iterations, 1, 20);
@@ -276,6 +302,44 @@ export class Slicer {
         const toolpathEndTime = performance.now();
         const gcode = this.buildGcode(toolpath, settings);
         const endTime = performance.now();
+
+        return {
+            settings,
+            toolpath,
+            gcode,
+            timings: {
+                contourSamplingMs: contourSamplingEndTime - startTime,
+                toolpathBuildMs: toolpathEndTime - contourSamplingEndTime,
+                gcodeBuildMs: endTime - toolpathEndTime,
+                totalMs: endTime - startTime,
+            },
+        };
+    }
+
+    private async executeVaseSliceAsync(
+        settings: VaseSlicerSettings,
+        onProgress?: SliceProgressReporter
+    ): Promise<VaseSliceExecution> {
+        reportSliceProgress(onProgress, 'preparing', 0, 1, 0.0, 'Preparing slicer settings...');
+        await this.yieldToMainThread();
+
+        const startTime = performance.now();
+        const contourLayers = await this.sampleSliceContoursGpuAsync(settings, onProgress);
+        const contourSamplingEndTime = performance.now();
+
+        reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
+        await this.yieldToMainThread();
+        const toolpath = settings.slicerMode === 'cylindrical'
+            ? this.buildCylindricalSpiralToolpath(contourLayers, settings)
+            : this.buildPlanarSpiralToolpath(contourLayers, settings);
+        const toolpathEndTime = performance.now();
+
+        reportSliceProgress(onProgress, 'gcode', 0, 1, 0.92, 'Encoding G-code...');
+        await this.yieldToMainThread();
+        const gcode = this.buildGcode(toolpath, settings);
+        const endTime = performance.now();
+
+        reportSliceProgress(onProgress, 'finalizing', 1, 1, 1.0, 'Finalizing export...');
 
         return {
             settings,
@@ -380,6 +444,91 @@ export class Slicer {
             this.alignContourLayers(layers);
         }
         return layers;
+    }
+
+    private async sampleSliceContoursGpuAsync(
+        settings: VaseSlicerSettings,
+        onProgress?: SliceProgressReporter
+    ): Promise<SliceContourLayer[]> {
+        const modelHeightMm = this.getModelHeightMm(settings);
+        const layerCount = Math.max(2, Math.floor(modelHeightMm / settings.layerHeight) + 1);
+        const bounds = this.getSliceBounds(settings);
+        const maxGridSize = this.getMaxSliceGridSize();
+        const sliceSpanMm = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) * settings.modelScale;
+        const requestedGridSize = clampInt(settings.radialSteps, 32, Math.max(32, maxGridSize - 1)) + 1;
+        const pointDrivenGridSize = Math.ceil(settings.pointsPerLayer * 0.5) + 1;
+        const pitchDrivenGridSize = Math.ceil(sliceSpanMm / Math.max(settings.sliceTargetGridPitchMm, 1e-6)) + 1;
+        const gridSize = clampInt(
+            Math.max(requestedGridSize, pointDrivenGridSize, pitchDrivenGridSize),
+            32,
+            maxGridSize,
+        );
+
+        reportSliceProgress(onProgress, 'sampling', 0, layerCount, 0.02, `Sampling signed-distance field (${layerCount} layers)...`);
+
+        const layers: SliceContourLayer[] = [];
+        const batchCapacity = this.getSliceBatchCapacity(gridSize);
+
+        for (let layerIndex = 0; layerIndex < layerCount; layerIndex += batchCapacity) {
+            const batchLayerCount = Math.min(batchCapacity, layerCount - layerIndex);
+            const batchResults = this.sampleSignedDistanceFieldGpuBatch(settings, bounds, gridSize, layerCount, layerIndex, batchLayerCount);
+
+            for (const batchResult of batchResults) {
+                const field = batchResult.field;
+                const sampleY = batchResult.sampleY;
+                const contourSelection = selectPrimaryContour(
+                    extractContoursFromField(field, bounds),
+                    bounds,
+                    gridSize,
+                    settings,
+                );
+
+                if (!contourSelection.ok) {
+                    const sliceHeightMm = Math.max(settings.layerHeight, (sampleY - settings.minY) * settings.modelScale);
+                    throw new Error(
+                        `Spiral mode requires exactly one closed contour per slice. Layer ${layers.length + 1} at Z ${sliceHeightMm.toFixed(2)} mm produced ${contourSelection.contourCount}${contourSelection.detail ? ` (${contourSelection.detail})` : ''}.`
+                    );
+                }
+
+                layers.push({
+                    sampleY,
+                    contour: this.buildPrintableContour(contourSelection.contour, settings),
+                });
+            }
+
+            const completedLayers = Math.min(layerCount, layers.length);
+            const samplingRatio = layerCount > 0 ? completedLayers / layerCount : 1;
+            const overall = 0.02 + samplingRatio * 0.76;
+            reportSliceProgress(
+                onProgress,
+                'sampling',
+                completedLayers,
+                layerCount,
+                overall,
+                `Extracted contours for ${completedLayers}/${layerCount} layers...`
+            );
+            await this.yieldToMainThread();
+        }
+
+        if (layers.length < 2) {
+            throw new Error('Planar contour slicer produced too few valid slices.');
+        }
+
+        if (settings.enableContourAlignment) {
+            this.alignContourLayers(layers);
+        }
+        return layers;
+    }
+
+    private async yieldToMainThread(): Promise<void> {
+        await new Promise<void>((resolve) => {
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => resolve());
+                return;
+            }
+
+            setTimeout(() => resolve(), 0);
+        });
     }
 
     private sampleSignedDistanceFieldGpuBatch(
@@ -2318,6 +2467,45 @@ function expandGcodeTemplate(line: string, settings: VaseSlicerSettings): string
     return line.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, token: string) => {
         return tokenValues[token] ?? match;
     });
+}
+
+function reportSliceProgress(
+    reporter: SliceProgressReporter | undefined,
+    phase: SliceProgressPhase,
+    completed: number,
+    total: number,
+    overall: number,
+    detail: string,
+): void {
+    if (!reporter) {
+        return;
+    }
+
+    reporter({
+        phase,
+        phaseLabel: getSliceProgressPhaseLabel(phase),
+        completed,
+        total,
+        overall: clamp(overall, 0, 1),
+        detail,
+    });
+}
+
+function getSliceProgressPhaseLabel(phase: SliceProgressPhase): string {
+    switch (phase) {
+        case 'preparing':
+            return 'Preparing';
+        case 'sampling':
+            return 'Sampling';
+        case 'toolpath':
+            return 'Toolpath';
+        case 'gcode':
+            return 'G-code';
+        case 'finalizing':
+            return 'Finalizing';
+        default:
+            return 'Slicing';
+    }
 }
 
 function clamp(value: number, min: number, max: number): number {
