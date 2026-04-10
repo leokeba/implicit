@@ -848,9 +848,37 @@ export class Slicer {
             );
         }
 
+        const lastPoint = toolpath.points[toolpath.points.length - 1];
+        const topLayerPoints = toolpath.points.filter((point) => point.layer === lastPoint.layer);
+        if (topLayerPoints.length >= 3) {
+            const taperTurns = 1.25;
+            const taperSegmentCount = Math.max(12, Math.round(topLayerPoints.length * taperTurns));
+            const topHeight = Math.max(0.0, lastPoint.y);
+            const topExtrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
+            const taperFeedrate = mmPerSecToFeedrate(Math.max(8, settings.printSpeedMmPerSec * 0.8));
+
+            lines.push('; FEATURE: Top taper');
+            lines.push(';TYPE:Top surface');
+
+            let taperPrevX = lastPoint.x;
+            let taperPrevZ = lastPoint.z;
+            for (let step = 1; step <= taperSegmentCount; step++) {
+                const target = topLayerPoints[(step - 1) % topLayerPoints.length];
+                const segment = Math.hypot(target.x - taperPrevX, target.z - taperPrevZ);
+                const progress = step / taperSegmentCount;
+                const taperFactor = Math.pow(1.0 - progress, 1.2);
+                const extrusionDelta = Math.max(0, segment * topExtrusionPerMm * taperFactor);
+                lines.push(
+                    `G1 F${taperFeedrate.toFixed(0)} X${target.x.toFixed(3)} Y${target.z.toFixed(3)} Z${topHeight.toFixed(3)} E${extrusionDelta.toFixed(5)}`
+                );
+                taperPrevX = target.x;
+                taperPrevZ = target.z;
+            }
+        }
+
         lines.push('G1 F1200 E-1.20000');
         lines.push('; FEATURE: Travel');
-        lines.push('G0 F6000 Z' + Math.max(0.0, toolpath.points[toolpath.points.length - 1].y).toFixed(3));
+        lines.push('G0 F6000 Z' + Math.max(0.0, lastPoint.y).toFixed(3));
 
         const endLines = parseGcodeLines(settings.endGcode, getDefaultEndGcode());
         for (const line of endLines) {
