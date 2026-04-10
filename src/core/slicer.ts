@@ -1765,7 +1765,7 @@ function appendBrimGcode(
     let emittedAnyBrimLoop = false;
     for (let loopIndex = brimLoops; loopIndex >= 1; loopIndex--) {
         const offset = lineWidth + brimGap + (loopIndex - 1) * lineWidth;
-        const loop = buildBrimLoop(firstLayer, settings.centerX, settings.centerZ, offset);
+        const loop = buildBrimLoop(firstLayer, offset);
         if (loop.length < 3) {
             continue;
         }
@@ -1801,25 +1801,135 @@ function appendBrimGcode(
 
 function buildBrimLoop(
     source: ToolpathPoint[],
-    centerX: number,
-    centerY: number,
     offsetMm: number
 ): Array<{ x: number; y: number }> {
-    return source.map((point) => {
-        const dx = point.x - centerX;
-        const dy = point.z - centerY;
-        const length = Math.hypot(dx, dy);
-        if (length < 1e-6) {
-            return { x: point.x, y: point.z };
+    if (offsetMm <= 1e-6) {
+        return source.map((point) => ({ x: point.x, y: point.z }));
+    }
+
+    const contour = dedupeClosedPath2D(source.map((point) => ({ x: point.x, y: point.z })));
+    if (contour.length < 3) {
+        return contour;
+    }
+
+    const orientation = signedArea2D(contour);
+    if (Math.abs(orientation) < 1e-9) {
+        return contour;
+    }
+
+    const orientationSign = orientation >= 0 ? 1 : -1;
+    const edges = buildOffsetEdges2D(contour, offsetMm, orientationSign);
+    if (edges.length < 3) {
+        return contour;
+    }
+
+    const miterLimit = Math.max(offsetMm * 6.0, 0.5);
+    const loop: Array<{ x: number; y: number }> = [];
+
+    for (let index = 0; index < edges.length; index++) {
+        const prevEdge = edges[(index - 1 + edges.length) % edges.length];
+        const nextEdge = edges[index];
+        const vertex = contour[index];
+
+        const join = intersectLines2D(prevEdge.a, prevEdge.b, nextEdge.a, nextEdge.b);
+        if (join && distance2D(join, vertex) <= miterLimit) {
+            pushUnique2D(loop, join);
+            continue;
         }
 
-        const nx = dx / length;
-        const ny = dy / length;
-        return {
-            x: point.x + nx * offsetMm,
-            y: point.z + ny * offsetMm,
-        };
-    });
+        pushUnique2D(loop, prevEdge.b);
+        pushUnique2D(loop, nextEdge.a);
+    }
+
+    return dedupeClosedPath2D(loop);
+}
+
+function buildOffsetEdges2D(
+    contour: Array<{ x: number; y: number }>,
+    offsetMm: number,
+    orientationSign: number
+): Array<{ a: { x: number; y: number }; b: { x: number; y: number } }> {
+    const edges: Array<{ a: { x: number; y: number }; b: { x: number; y: number } }> = [];
+
+    for (let i = 0; i < contour.length; i++) {
+        const a = contour[i];
+        const b = contour[(i + 1) % contour.length];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const length = Math.hypot(dx, dy);
+        if (length <= 1e-8) {
+            continue;
+        }
+
+        const tx = dx / length;
+        const ty = dy / length;
+        const nx = orientationSign > 0 ? ty : -ty;
+        const ny = orientationSign > 0 ? -tx : tx;
+        edges.push({
+            a: { x: a.x + nx * offsetMm, y: a.y + ny * offsetMm },
+            b: { x: b.x + nx * offsetMm, y: b.y + ny * offsetMm },
+        });
+    }
+
+    return edges;
+}
+
+function signedArea2D(points: Array<{ x: number; y: number }>): number {
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+        const a = points[i];
+        const b = points[(i + 1) % points.length];
+        area += (a.x * b.y) - (b.x * a.y);
+    }
+    return area * 0.5;
+}
+
+function dedupeClosedPath2D(points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
+    const deduped: Array<{ x: number; y: number }> = [];
+    for (const point of points) {
+        pushUnique2D(deduped, point);
+    }
+
+    if (deduped.length > 1 && distance2D(deduped[0], deduped[deduped.length - 1]) <= 1e-6) {
+        deduped.pop();
+    }
+
+    return deduped;
+}
+
+function pushUnique2D(points: Array<{ x: number; y: number }>, next: { x: number; y: number }): void {
+    const previous = points[points.length - 1];
+    if (!previous || distance2D(previous, next) > 1e-6) {
+        points.push(next);
+    }
+}
+
+function distance2D(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function intersectLines2D(
+    a0: { x: number; y: number },
+    a1: { x: number; y: number },
+    b0: { x: number; y: number },
+    b1: { x: number; y: number }
+): { x: number; y: number } | null {
+    const arx = a1.x - a0.x;
+    const ary = a1.y - a0.y;
+    const brx = b1.x - b0.x;
+    const bry = b1.y - b0.y;
+    const det = (arx * bry) - (ary * brx);
+    if (Math.abs(det) <= 1e-9) {
+        return null;
+    }
+
+    const qpx = b0.x - a0.x;
+    const qpy = b0.y - a0.y;
+    const t = ((qpx * bry) - (qpy * brx)) / det;
+    return {
+        x: a0.x + arx * t,
+        y: a0.y + ary * t,
+    };
 }
 
 function shouldEmitOrcaMetadata(settings: VaseSlicerSettings): boolean {
