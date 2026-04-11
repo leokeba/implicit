@@ -1,7 +1,7 @@
 import type { VaseSlicerSettings, VaseToolpath } from '../slicer';
 
-export function shouldEmitOrcaMetadata(settings: VaseSlicerSettings): boolean {
-    return settings.printerModelId === 'bambu-p1s';
+export function shouldEmitOrcaMetadata(_settings: VaseSlicerSettings): boolean {
+    return true;
 }
 
 export function buildOrcaMetadataHeader(
