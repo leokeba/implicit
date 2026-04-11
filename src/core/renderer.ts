@@ -1,11 +1,7 @@
 import {
     applyShaderSourceUpdates,
     composeRendererFragmentSource,
-    getActiveSceneFileName,
-    getActiveSceneId,
-    getImportedShaderSources,
     getRendererVertexSource,
-    updateSceneSourceById,
     type SceneControlDefinition,
     type SceneControlValueMap,
     type ShaderSourceUpdates,
@@ -29,8 +25,6 @@ export interface ShaderReloadResult {
     ok: boolean;
     message: string;
 }
-
-type ShaderStatusMode = 'compiling' | 'ok' | 'error';
 
 class Renderer {
     private gl: WebGLRenderingContext | null;
@@ -89,7 +83,6 @@ class Renderer {
     private uiLightTheme: number;
 
     constructor() {
-        activeRenderers.add(this);
         this.gl = null;
         this.canvas = null;
         this.program = null;
@@ -944,9 +937,6 @@ class Renderer {
 }
 
 export default Renderer;
-const activeRenderers: Set<Renderer> = ((globalThis as any).__implicitActiveRenderers as Set<Renderer> | undefined) ?? new Set<Renderer>();
-(globalThis as any).__implicitActiveRenderers = activeRenderers;
-
 function buildSceneControlValueMap(definitions: SceneControlDefinition[], values: SceneControlValueMap): SceneControlValueMap {
     const next: SceneControlValueMap = {};
 
@@ -956,160 +946,6 @@ function buildSceneControlValueMap(definitions: SceneControlDefinition[], values
     }
 
     return next;
-}
-
-function emitShaderStatus(mode: ShaderStatusMode, message: string): void {
-    if (typeof window === 'undefined') {
-        return;
-    }
-
-    window.dispatchEvent(
-        new CustomEvent('shader-hmr-status', {
-            detail: { mode, message },
-        })
-    );
-}
-
-interface ShaderPipelineHmrModule {
-    getImportedShaderSources?: () => ShaderSourceUpdates;
-}
-
-function reloadRenderersFromUpdates(updates: ShaderSourceUpdates): void {
-    emitShaderStatus('compiling', 'Compiling...');
-
-    let anySuccess = false;
-    let lastError = 'Compile failed';
-
-    activeRenderers.forEach((renderer) => {
-        const result = renderer.hotReloadShaders(updates);
-        if (result.ok) {
-            anySuccess = true;
-        } else {
-            lastError = result.message;
-        }
-    });
-
-    if (anySuccess || activeRenderers.size === 0) {
-        emitShaderStatus('ok', 'Updated');
-        return;
-    }
-
-    emitShaderStatus('error', lastError);
-}
-
-const shaderHotDependencyPaths = Object.keys(
-    import.meta.glob('../shaders/**/*.glsl', {
-        query: '?raw',
-        import: 'default',
-    })
-);
-
-let scenePollingStarted = false;
-
-interface SceneApiDocumentResponse {
-    document?: {
-        source?: unknown;
-    };
-}
-
-function startScenePollingFallback(): void {
-    if (scenePollingStarted || typeof window === 'undefined' || !import.meta.env.DEV) {
-        return;
-    }
-
-    scenePollingStarted = true;
-    let lastSceneId = '';
-    let lastSceneSource = '';
-
-    const poll = async () => {
-        try {
-            const sceneId = getActiveSceneId();
-            const fileName = getActiveSceneFileName();
-            if (!sceneId || !fileName) {
-                return;
-            }
-
-            const source = await fetchScenePollingSource(fileName);
-            if (!source) {
-                return;
-            }
-            const sceneChanged = sceneId !== lastSceneId;
-            const sourceChanged = source !== lastSceneSource;
-            if (!sceneChanged && !sourceChanged) {
-                return;
-            }
-
-            lastSceneId = sceneId;
-            lastSceneSource = source;
-
-            if (updateSceneSourceById(sceneId, source)) {
-                reloadRenderersFromUpdates(getImportedShaderSources());
-            }
-        } catch {
-            // Ignore transient polling failures while saving files.
-        }
-    };
-
-    window.setInterval(() => {
-        void poll();
-    }, 600);
-}
-
-async function fetchScenePollingSource(fileName: string): Promise<string | null> {
-    const fromApi = await fetchSceneSourceFromApi(fileName);
-    if (fromApi) {
-        return fromApi;
-    }
-
-    const response = await fetch(`/src/shaders/scenes/${encodeURIComponent(fileName)}?t=${Date.now()}`, {
-        cache: 'no-store',
-    });
-    if (!response.ok) {
-        return null;
-    }
-
-    const source = await response.text();
-    return isLikelyHtmlDocument(source) ? null : source;
-}
-
-async function fetchSceneSourceFromApi(fileName: string): Promise<string | null> {
-    try {
-        const response = await fetch(`/__implicit_api/scenes/${encodeURIComponent(fileName)}?t=${Date.now()}`, {
-            cache: 'no-store',
-        });
-        if (!response.ok) {
-            return null;
-        }
-
-        const payload = (await response.json()) as SceneApiDocumentResponse;
-        return typeof payload.document?.source === 'string' ? payload.document.source : null;
-    } catch {
-        return null;
-    }
-}
-
-function isLikelyHtmlDocument(source: string): boolean {
-    return /^\s*<!doctype html>/i.test(source) || /^\s*<html[\s>]/i.test(source);
-}
-
-if (import.meta.hot) {
-    startScenePollingFallback();
-
-    import.meta.hot.accept(() => {
-        reloadRenderersFromUpdates(getImportedShaderSources());
-    });
-
-    import.meta.hot.accept('./shader-pipeline', (nextModule) => {
-        const resolvedModule = (Array.isArray(nextModule) ? nextModule[0] : nextModule) as ShaderPipelineHmrModule | undefined;
-        const updates = resolvedModule?.getImportedShaderSources?.() ?? getImportedShaderSources();
-        reloadRenderersFromUpdates(updates);
-    });
-
-    if (shaderHotDependencyPaths.length > 0) {
-        import.meta.hot.accept(shaderHotDependencyPaths, () => {
-            reloadRenderersFromUpdates(getImportedShaderSources());
-        });
-    }
 }
 
 const CAMERA_STATE_STORAGE_KEY = 'implicit.camera.orbit.v1';

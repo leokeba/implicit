@@ -16,7 +16,7 @@
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
     import ViewportPanel from './components/ViewportPanel.svelte';
-    import { type SceneRegistrySyncResult, type ShaderStatusMode, type StudioController } from './studio-controller';
+    import { type SceneRegistrySyncResult, type StudioController } from './studio-controller';
     import {
         type BooleanSlicerKey,
         type ControlTabId,
@@ -101,6 +101,21 @@
         activeViewModeLabel: studio.getViewModeLabel(viewMode),
     });
     const status = createStatusModel();
+    const APP_RUNTIME_STORAGE_KEY = 'implicit.runtimeState.v1';
+
+    interface AppRuntimeSnapshot {
+        sceneId?: string;
+        viewMode?: number;
+        raymarchParams?: Partial<RaymarchParams>;
+        viewportParams?: Partial<ViewportParams>;
+        animationParams?: Partial<AnimationParams>;
+        slicerSettings?: Partial<VaseSlicerSettings>;
+        sceneControlValues?: Record<string, number>;
+        activePostprocessScriptId?: string;
+        postprocessEnabled?: boolean;
+        postprocessControlValueState?: Record<string, Record<string, number>>;
+        editorDocumentMode?: 'scene' | 'postprocess';
+    }
 
     let resizeCleanup: (() => void) | null = null;
     let editorResizeCleanup: (() => void) | null = null;
@@ -108,6 +123,112 @@
     let postprocessRepositoryPollHandle: number | null = null;
     let editorDockSide = false;
     let sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
+    let runtimeSnapshotHydrated = false;
+
+    function readRuntimeSnapshot(): AppRuntimeSnapshot | null {
+        if (typeof window === 'undefined') {
+            return null;
+        }
+
+        try {
+            const raw = window.sessionStorage.getItem(APP_RUNTIME_STORAGE_KEY);
+            if (!raw) {
+                return null;
+            }
+
+            const parsed = JSON.parse(raw) as AppRuntimeSnapshot;
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function persistRuntimeSnapshot(snapshot: AppRuntimeSnapshot): void {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        try {
+            window.sessionStorage.setItem(APP_RUNTIME_STORAGE_KEY, JSON.stringify(snapshot));
+        } catch {
+            // Ignore storage write failures.
+        }
+    }
+
+    function captureRuntimeSnapshot(): AppRuntimeSnapshot {
+        return {
+            sceneId,
+            viewMode,
+            raymarchParams,
+            viewportParams,
+            animationParams,
+            slicerSettings,
+            sceneControlValues,
+            activePostprocessScriptId,
+            postprocessEnabled,
+            postprocessControlValueState,
+            editorDocumentMode,
+        };
+    }
+
+    function restoreRuntimeSnapshot(snapshot: AppRuntimeSnapshot): void {
+        if (typeof snapshot.sceneId === 'string' && sceneOptions.some((option) => option.id === snapshot.sceneId)) {
+            commitScene(snapshot.sceneId);
+        }
+
+        if (typeof snapshot.viewMode === 'number') {
+            viewMode = snapshot.viewMode;
+            studio.setViewMode(snapshot.viewMode);
+        }
+
+        if (snapshot.raymarchParams && typeof snapshot.raymarchParams === 'object') {
+            raymarchParams = { ...raymarchParams, ...snapshot.raymarchParams };
+            studio.updateRaymarchParams(snapshot.raymarchParams);
+        }
+
+        if (snapshot.viewportParams && typeof snapshot.viewportParams === 'object') {
+            viewportParams = { ...viewportParams, ...snapshot.viewportParams };
+            studio.updateViewportParams(snapshot.viewportParams);
+        }
+
+        if (snapshot.animationParams && typeof snapshot.animationParams === 'object') {
+            animationParams = { ...animationParams, ...snapshot.animationParams };
+            studio.updateAnimationParams(snapshot.animationParams);
+        }
+
+        if (snapshot.slicerSettings && typeof snapshot.slicerSettings === 'object') {
+            slicerSettings = { ...slicerSettings, ...snapshot.slicerSettings };
+            studio.updateSlicerParams(snapshot.slicerSettings);
+        }
+
+        if (snapshot.sceneControlValues && typeof snapshot.sceneControlValues === 'object') {
+            for (const definition of sceneControlDefinitions) {
+                const value = snapshot.sceneControlValues[definition.key];
+                if (typeof value !== 'number' || Number.isNaN(value)) {
+                    continue;
+                }
+
+                updateSceneControlValue(definition.key, value);
+            }
+        }
+
+        if (typeof snapshot.activePostprocessScriptId === 'string'
+            && postprocessDocuments.some((document) => document.id === snapshot.activePostprocessScriptId)) {
+            activePostprocessScriptId = snapshot.activePostprocessScriptId;
+        }
+
+        if (typeof snapshot.postprocessEnabled === 'boolean') {
+            postprocessEnabled = snapshot.postprocessEnabled;
+        }
+
+        if (snapshot.postprocessControlValueState && typeof snapshot.postprocessControlValueState === 'object') {
+            postprocessControlValueState = snapshot.postprocessControlValueState;
+        }
+
+        if (snapshot.editorDocumentMode === 'scene' || snapshot.editorDocumentMode === 'postprocess') {
+            editorDocumentMode = snapshot.editorDocumentMode;
+        }
+    }
 
     $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
     $: studio.setToolpathOverlayVisible($workspace.overlayVisible);
@@ -171,6 +292,15 @@
         outputStatus: $status.outputStatus,
         sliceDebugSnapshot,
     } satisfies InspectorSchemaState;
+    $: if (runtimeSnapshotHydrated) {
+        persistRuntimeSnapshot(captureRuntimeSnapshot());
+    }
+
+    if (import.meta.hot) {
+        import.meta.hot.dispose(() => {
+            persistRuntimeSnapshot(captureRuntimeSnapshot());
+        });
+    }
 
     async function resizeViewportAfterLayout(): Promise<void> {
         await tick();
@@ -826,17 +956,6 @@
     onMount(() => {
         syncEditorDockSide();
 
-        const handleShaderStatus = (event: Event) => {
-            const customEvent = event as CustomEvent<{ mode?: ShaderStatusMode; message?: string }>;
-            const mode = customEvent.detail?.mode;
-            const message = customEvent.detail?.message;
-            if (!mode || !message) {
-                return;
-            }
-
-            status.setShaderStatus(mode, message);
-        };
-
         const handleWindowResize = () => {
             const previousDockSide = editorDockSide;
             syncEditorDockSide();
@@ -845,8 +964,17 @@
             }
         };
 
-        window.addEventListener('shader-hmr-status', handleShaderStatus);
+        const handlePersistRuntimeSnapshot = () => {
+            if (!runtimeSnapshotHydrated) {
+                return;
+            }
+
+            persistRuntimeSnapshot(captureRuntimeSnapshot());
+        };
+
         window.addEventListener('resize', handleWindowResize);
+        window.addEventListener('beforeunload', handlePersistRuntimeSnapshot);
+        window.addEventListener('pagehide', handlePersistRuntimeSnapshot);
 
         let disposed = false;
 
@@ -917,6 +1045,13 @@
                     ? 'Editing postprocess files directly from src/postprocess-scripts.'
                     : 'Editing bundled postprocess scripts with browser-backed drafts.';
 
+                const runtimeSnapshot = readRuntimeSnapshot();
+                if (runtimeSnapshot) {
+                    restoreRuntimeSnapshot(runtimeSnapshot);
+                }
+                runtimeSnapshotHydrated = true;
+                persistRuntimeSnapshot(captureRuntimeSnapshot());
+
                 if (repository.mode === 'filesystem') {
                     sceneRepositoryPollHandle = window.setInterval(() => {
                         void refreshFilesystemScenes(true);
@@ -938,8 +1073,9 @@
 
         return () => {
             disposed = true;
-            window.removeEventListener('shader-hmr-status', handleShaderStatus);
             window.removeEventListener('resize', handleWindowResize);
+            window.removeEventListener('beforeunload', handlePersistRuntimeSnapshot);
+            window.removeEventListener('pagehide', handlePersistRuntimeSnapshot);
             if (sceneRepositoryPollHandle !== null) {
                 window.clearInterval(sceneRepositoryPollHandle);
                 sceneRepositoryPollHandle = null;

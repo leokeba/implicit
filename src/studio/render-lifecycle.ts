@@ -7,10 +7,6 @@ export function shouldRenderPreview(isSlicing: boolean): boolean {
         return false;
     }
 
-    if (typeof document !== 'undefined' && !document.hasFocus()) {
-        return false;
-    }
-
     return true;
 }
 

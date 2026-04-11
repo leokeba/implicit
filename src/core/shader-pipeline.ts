@@ -1,3 +1,13 @@
+import type {
+    SceneControlDefinition,
+    SceneControlValueMap,
+    SceneDocument,
+    SceneOption,
+    SceneParamMap,
+    SceneSlicerDefaults,
+} from './shaders/types';
+import { parseSceneControlDefinitions, parseSceneDefaultParams, readSceneNumberParam } from './shaders/scene-parser';
+
 import defaultSceneSource from '../shaders/scenes/defaultScene.glsl?raw';
 import environmentSource from '../shaders/lib/environment.glsl?raw';
 import materialsSource from '../shaders/lib/materials.glsl?raw';
@@ -8,15 +18,6 @@ import sdfPrimitivesSource from '../shaders/lib/sdf-primitives.glsl?raw';
 import slicerFragmentTemplateSource from '../shaders/slicer.frag.glsl?raw';
 import slicerVertexSource from '../shaders/slicer.vert.glsl?raw';
 import utilsSource from '../shaders/lib/utils.glsl?raw';
-import { parseSceneControlDefinitions, parseSceneDefaultParams, readSceneNumberParam } from './shaders/scene-parser';
-import type {
-    SceneControlDefinition,
-    SceneControlValueMap,
-    SceneDocument,
-    SceneOption,
-    SceneParamMap,
-    SceneSlicerDefaults,
-} from './shaders/types';
 export type {
     SceneControlDefinition,
     SceneControlValueMap,
@@ -32,13 +33,6 @@ const sceneSourceModules = import.meta.glob('../shaders/scenes/*.glsl', {
     query: '?raw',
     import: 'default',
 }) as Record<string, string>;
-
-const sceneHotDependencyPaths = Object.keys(
-    import.meta.glob('../shaders/scenes/*.glsl', {
-        query: '?raw',
-        import: 'default',
-    })
-);
 
 export interface ShaderSourceUpdates {
     rendererVertex?: string;
@@ -463,56 +457,3 @@ function storeActiveSceneId(sceneId: string): void {
     }
 }
 
-if (import.meta.hot && sceneHotDependencyPaths.length > 0) {
-    import.meta.hot.accept(sceneHotDependencyPaths, (nextModules) => {
-        const modules = Array.isArray(nextModules) ? nextModules : [nextModules];
-        const byId = new Map(sceneEntries.map((entry) => [entry.id, entry]));
-
-        for (let index = 0; index < sceneHotDependencyPaths.length; index += 1) {
-            const path = sceneHotDependencyPaths[index];
-            if (!path) {
-                continue;
-            }
-
-            const filename = path.split('/').pop() ?? '';
-            const id = filename.replace(/\.glsl(?:\?raw)?$/i, '');
-            if (!id) {
-                continue;
-            }
-
-            const moduleValue = modules[index] as string | { default?: string } | undefined;
-            const source = typeof moduleValue === 'string'
-                ? moduleValue
-                : typeof moduleValue?.default === 'string'
-                    ? moduleValue.default
-                    : '';
-
-            const existing = byId.get(id);
-            if (existing) {
-                existing.fileName = filename;
-                existing.source = source;
-                existing.name = toSceneLabel(id);
-                existing.controls = parseSceneControlDefinitions(source);
-            } else {
-                byId.set(id, {
-                    id,
-                    name: toSceneLabel(id),
-                    fileName: filename,
-                    source,
-                    controls: parseSceneControlDefinitions(source),
-                });
-            }
-        }
-
-        sceneEntries.length = 0;
-        sceneEntries.push(...Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name)));
-
-        const activeEntry = resolveSceneEntryById(activeSceneId);
-        if (activeEntry) {
-            activeSources = {
-                ...activeSources,
-                scene: activeEntry.source,
-            };
-        }
-    });
-}

@@ -16,3 +16,27 @@ mount(App, {
         studio: new StudioController(),
     },
 });
+
+if (import.meta.hot) {
+    let reloadScheduled = false;
+
+    import.meta.hot.on('vite:beforeUpdate', (payload: unknown) => {
+        if (reloadScheduled || typeof window === 'undefined') {
+            return;
+        }
+
+        const updates = (payload as { updates?: Array<{ path?: unknown }> } | undefined)?.updates;
+        const sourceUpdateDetected = Array.isArray(updates)
+            && updates.some((update) => {
+                const path = typeof update?.path === 'string' ? update.path : '';
+                return path.includes('/src/') || path.endsWith('/styles.css');
+            });
+
+        if (!sourceUpdateDetected) {
+            return;
+        }
+
+        reloadScheduled = true;
+        window.location.reload();
+    });
+}
