@@ -1,4 +1,5 @@
 <script lang="ts">
+    import SliceDebugView from './SliceDebugView.svelte';
     import {
         commitFieldValue,
         isFieldDisabled,
@@ -96,5 +97,8 @@
 
     {#if tab.consoleSource === 'outputStatus'}
         <div class="output-console">{state.outputStatus}</div>
+        {#if state.sliceDebugSnapshot}
+            <SliceDebugView snapshot={state.sliceDebugSnapshot} />
+        {/if}
     {/if}
 </section>

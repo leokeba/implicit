@@ -1,11 +1,13 @@
 import type { AnimationParams, RaymarchParams, ViewportParams } from '../core/renderer';
 import type { SceneControlDefinition, SceneControlValueMap, SceneOption } from '../core/shader-pipeline';
+import type { SliceDebugSnapshot, VaseSlicerSettings } from '../core/slicer';
 
 import type { FilamentProfile } from '../core/filament-profiles';
+import type { PostprocessControlDefinition } from '../core/toolpath-postprocess';
+import type { PostprocessScriptDocument } from './postprocess-documents';
 import type { PrinterModel } from '../core/printer-models';
-import type { VaseSlicerSettings } from '../core/slicer';
 
-export type ControlTabId = 'scene' | 'camera' | 'render' | 'print' | 'machine' | 'material' | 'output';
+export type ControlTabId = 'scene' | 'camera' | 'render' | 'print' | 'machine' | 'material' | 'postprocess' | 'output';
 
 export type NumericSlicerKey =
     | 'minY'
@@ -39,7 +41,8 @@ export type NumericSlicerKey =
     | 'fanPercent'
     | 'flowRate'
     | 'printSpeedMmPerSec'
-    | 'firstLayerPrintSpeedMmPerSec';
+    | 'firstLayerPrintSpeedMmPerSec'
+    | 'minLayerTimeSec';
 
 export type BooleanSlicerKey =
     | 'enableContourAlignment'
@@ -51,16 +54,27 @@ export interface InspectorSchemaState {
     sceneControlValues: SceneControlValueMap;
     printerModels: PrinterModel[];
     filamentProfiles: FilamentProfile[];
+    postprocessDocuments: PostprocessScriptDocument[];
+    postprocessControlDefinitions: PostprocessControlDefinition[];
+    postprocessControlValues: Record<string, number>;
     sceneId: string;
     viewMode: number;
     raymarchParams: RaymarchParams;
     viewportParams: ViewportParams;
     animationParams: AnimationParams;
     slicerSettings: VaseSlicerSettings;
+    activePostprocessScriptId: string;
+    postprocessEnabled: boolean;
+    postprocessSource: string;
+    postprocessStatus: string;
+    postprocessDirty: boolean;
+    postprocessStorageLabel: string;
+    postprocessSavePending: boolean;
     benchmarkIterations: number;
     benchmarkWarmups: number;
     actionPending: boolean;
     outputStatus: string;
+    sliceDebugSnapshot: SliceDebugSnapshot | null;
 }
 
 export interface InspectorSchemaHandlers {
@@ -77,6 +91,13 @@ export interface InspectorSchemaHandlers {
     commitPrinterModel: (printerModelId: string) => void;
     updateSlicerString: (key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'>, value: string) => void;
     commitFilamentProfile: (filamentProfileId: string) => void;
+    commitPostprocessScript: (scriptId: string) => void;
+    updatePostprocessEnabled: (value: boolean) => void;
+    updatePostprocessSource: (value: string) => void;
+    updatePostprocessControlValue: (controlKey: string, value: number) => void;
+    createPostprocessScript: () => void | Promise<void>;
+    savePostprocessScript: () => void | Promise<void>;
+    revertPostprocessScript: () => void;
     setBenchmarkIterations: (value: number) => void;
     setBenchmarkWarmups: (value: number) => void;
     generateVaseGcode: () => void | Promise<void>;
@@ -116,6 +137,7 @@ export type InspectorFieldSchema =
     | (NumberFieldBase & { target: 'animation'; key: keyof AnimationParams })
     | (NumberFieldBase & { target: 'slicer'; key: NumericSlicerKey })
     | (NumberFieldBase & { target: 'sceneControl'; key: string })
+    | (NumberFieldBase & { target: 'postprocessControl'; key: string })
     | (NumberFieldBase & { target: 'command'; key: 'benchmarkIterations' | 'benchmarkWarmups' })
     | (SelectFieldBase & { target: 'scene'; optionsSource: 'sceneOptions' })
     | (SelectFieldBase & { target: 'viewMode'; options: InspectorFieldOption[] })
@@ -123,7 +145,10 @@ export type InspectorFieldSchema =
     | (SelectFieldBase & { target: 'slicerBoolean'; key: BooleanSlicerKey; options: InspectorFieldOption[] })
     | (SelectFieldBase & { target: 'printerModel'; optionsSource: 'printerModels' })
     | (SelectFieldBase & { target: 'filamentProfile'; optionsSource: 'filamentProfiles' })
-    | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> });
+    | (SelectFieldBase & { target: 'postprocessScript'; optionsSource: 'postprocessDocuments' })
+    | (SelectFieldBase & { target: 'postprocessEnabled'; options: InspectorFieldOption[] })
+    | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> })
+    | (TextareaFieldBase & { target: 'postprocessText' });
 
 export interface InspectorSummaryItemSchema {
     label: string;
@@ -138,7 +163,7 @@ export interface InspectorSectionSchema {
 }
 
 export interface InspectorActionSchema {
-    id: 'resetView' | 'generateVaseGcode' | 'benchmarkVaseGcode';
+    id: 'resetView' | 'generateVaseGcode' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript';
     label: string;
     tone?: 'secondary';
     disabledWhenPending?: boolean;
@@ -370,8 +395,35 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'number', target: 'slicer', key: 'flowRate', id: 'slicer-flow', label: 'Flow rate', step: '0.01', min: '0.01', max: '5.0' },
                     { kind: 'number', target: 'slicer', key: 'printSpeedMmPerSec', id: 'slicer-print-speed', label: 'Print speed (mm/s)', step: '1', min: '5', max: '200' },
                     { kind: 'number', target: 'slicer', key: 'firstLayerPrintSpeedMmPerSec', id: 'slicer-first-layer-speed', label: 'First layer speed (mm/s)', step: '1', min: '5', max: '200' },
+                    { kind: 'number', target: 'slicer', key: 'minLayerTimeSec', id: 'slicer-min-layer-time', label: 'Min layer time (s)', step: '0.1', min: '0', max: '120' },
                 ],
             },
+        ],
+    },
+    {
+        id: 'postprocess',
+        label: 'Postprocess',
+        summary: [
+            { label: 'Script', read: (state) => state.postprocessDocuments.find((document) => document.id === state.activePostprocessScriptId)?.name ?? 'None' },
+            { label: 'State', read: (state) => state.postprocessEnabled ? 'Enabled' : 'Disabled' },
+            { label: 'Storage', read: (state) => state.postprocessStorageLabel },
+        ],
+        sections: [
+            {
+                id: 'postprocess-config',
+                title: 'Script Selection',
+                caption: 'Scripts run on the raw spiral path before move merging, extrusion recompute, and layer-time shaping. Use the shared editor panel to edit source.',
+                fields: [
+                    { kind: 'select', target: 'postprocessScript', id: 'postprocess-script-select', label: 'Active script', optionsSource: 'postprocessDocuments' },
+                    { kind: 'select', target: 'postprocessEnabled', id: 'postprocess-enabled', label: 'Enable script', options: BOOLEAN_TOGGLE_OPTIONS },
+                ],
+            },
+        ],
+        note: 'Scripts may declare // @control { ... } parameters. Use context.params plus point.metrics.layerFilamentMm, layerFilamentProgress, spiralFilamentMm, and spiralFilamentProgress in transform(context).',
+        actions: [
+            { id: 'createPostprocessScript', label: 'New Script' },
+            { id: 'revertPostprocessScript', label: 'Revert', tone: 'secondary' },
+            { id: 'savePostprocessScript', label: 'Save Script' },
         ],
     },
     {
@@ -407,6 +459,22 @@ export function getInspectorTabSchema(tabId: ControlTabId): InspectorTabSchema {
 
 export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSchemaState): InspectorTabSchema {
     const baseTab = getInspectorTabSchema(tabId);
+    if (tabId === 'postprocess') {
+        const postprocessControlSections = buildPostprocessControlSections(state.postprocessControlDefinitions);
+        if (postprocessControlSections.length === 0) {
+            return baseTab;
+        }
+
+        return {
+            ...baseTab,
+            summary: [
+                ...baseTab.summary,
+                { label: 'Custom', read: () => `${state.postprocessControlDefinitions.length} control${state.postprocessControlDefinitions.length === 1 ? '' : 's'}` },
+            ],
+            sections: [...baseTab.sections, ...postprocessControlSections],
+        };
+    }
+
     if (tabId !== 'scene') {
         return baseTab;
     }
@@ -440,8 +508,14 @@ export function readFieldValue(field: InspectorFieldSchema, state: InspectorSche
             return state.slicerSettings.printerModelId;
         case 'filamentProfile':
             return state.slicerSettings.filamentProfileId;
+        case 'postprocessScript':
+            return state.activePostprocessScriptId;
+        case 'postprocessEnabled':
+            return String(state.postprocessEnabled);
         case 'sceneControl':
             return state.sceneControlValues[field.key] ?? 0;
+        case 'postprocessControl':
+            return state.postprocessControlValues[field.key] ?? 0;
         case 'raymarch':
             return state.raymarchParams[field.key];
         case 'viewport':
@@ -454,6 +528,8 @@ export function readFieldValue(field: InspectorFieldSchema, state: InspectorSche
             return state[field.key];
         case 'slicerText':
             return state.slicerSettings[field.key];
+        case 'postprocessText':
+            return state.postprocessSource;
     }
 }
 
@@ -462,7 +538,12 @@ export function readFieldOptions(field: InspectorFieldSchema, state: InspectorSc
         return [];
     }
 
-    if (field.target === 'viewMode' || field.target === 'slicerMode' || field.target === 'slicerBoolean') {
+    if (
+        field.target === 'viewMode' ||
+        field.target === 'slicerMode' ||
+        field.target === 'slicerBoolean' ||
+        field.target === 'postprocessEnabled'
+    ) {
         return field.options;
     }
 
@@ -476,6 +557,10 @@ export function readFieldOptions(field: InspectorFieldSchema, state: InspectorSc
 
     if (field.target === 'filamentProfile') {
         return state.filamentProfiles.map((profile) => ({ value: profile.id, label: profile.name }));
+    }
+
+    if (field.target === 'postprocessScript') {
+        return state.postprocessDocuments.map((document) => ({ value: document.id, label: document.name }));
     }
 
     return [];
@@ -511,8 +596,17 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
         case 'filamentProfile':
             handlers.commitFilamentProfile(rawValue);
             return;
+        case 'postprocessScript':
+            handlers.commitPostprocessScript(rawValue);
+            return;
+        case 'postprocessEnabled':
+            handlers.updatePostprocessEnabled(rawValue === 'true');
+            return;
         case 'sceneControl':
             handlers.updateSceneControlValue(field.key, coerceNumber(rawValue));
+            return;
+        case 'postprocessControl':
+            handlers.updatePostprocessControlValue(field.key, coerceNumber(rawValue));
             return;
         case 'viewport':
             handlers.updateViewportField(field.key, coerceNumber(rawValue));
@@ -537,6 +631,9 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
         case 'slicerText':
             handlers.updateSlicerString(field.key, rawValue);
             return;
+        case 'postprocessText':
+            handlers.updatePostprocessSource(rawValue);
+            return;
     }
 }
 
@@ -548,6 +645,12 @@ export function triggerInspectorAction(action: InspectorActionSchema, handlers: 
             return handlers.generateVaseGcode();
         case 'benchmarkVaseGcode':
             return handlers.benchmarkVaseGcode();
+        case 'createPostprocessScript':
+            return handlers.createPostprocessScript();
+        case 'savePostprocessScript':
+            return handlers.savePostprocessScript();
+        case 'revertPostprocessScript':
+            return handlers.revertPostprocessScript();
     }
 }
 
@@ -572,6 +675,35 @@ function buildSceneControlSections(definitions: SceneControlDefinition[]): Inspe
             target: 'sceneControl' as const,
             key: definition.key,
             id: `scene-control-${definition.key}`,
+            label: definition.label,
+            step: String(definition.step),
+            min: String(definition.min),
+            max: String(definition.max),
+        })),
+    }));
+}
+
+function buildPostprocessControlSections(definitions: PostprocessControlDefinition[]): InspectorSectionSchema[] {
+    const bySection = new Map<string, PostprocessControlDefinition[]>();
+
+    for (const definition of definitions) {
+        const sectionKey = definition.section || 'Script Parameters';
+        const existing = bySection.get(sectionKey) ?? [];
+        existing.push(definition);
+        bySection.set(sectionKey, existing);
+    }
+
+    return Array.from(bySection.entries()).map(([sectionTitle, sectionDefinitions]) => ({
+        id: `postprocess-${slugifySection(sectionTitle)}`,
+        title: sectionTitle,
+        caption: sectionDefinitions.some((definition) => definition.description)
+            ? sectionDefinitions.map((definition) => definition.description).filter(Boolean).join(' ')
+            : 'Controls declared by the active postprocess script.',
+        fields: sectionDefinitions.map((definition) => ({
+            kind: 'number' as const,
+            target: 'postprocessControl' as const,
+            key: definition.key,
+            id: `postprocess-control-${definition.key}`,
             label: definition.label,
             step: String(definition.step),
             min: String(definition.min),

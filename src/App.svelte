@@ -4,8 +4,15 @@
     import type { AnimationParams, RaymarchParams, ViewportParams } from './core/renderer';
     import type { SceneDocument } from './core/shader-pipeline';
     import type { VaseSlicerSettings } from './core/slicer';
+    import {
+        buildPostprocessParameterValues,
+        clampPostprocessControlValue,
+        parsePostprocessControlDefinitions,
+        type PostprocessControlDefinition,
+        type ToolpathPostprocessConfig,
+    } from './core/toolpath-postprocess';
+    import DocumentEditorPanel from './components/DocumentEditorPanel.svelte';
     import InspectorPanel from './components/InspectorPanel.svelte';
-    import SceneEditorPanel from './components/SceneEditorPanel.svelte';
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
     import ViewportPanel from './components/ViewportPanel.svelte';
@@ -25,6 +32,16 @@
         saveSceneDocuments,
         type SceneDocumentStorageMode,
     } from './ui/scene-documents';
+    import {
+        createPostprocessDocument,
+        getBundledPostprocessDocuments,
+        hasDirtyPostprocessDocuments,
+        loadPostprocessRepository,
+        reloadFilesystemPostprocessDocuments,
+        savePostprocessDocument,
+        type PostprocessScriptDocument,
+        type PostprocessScriptStorageMode,
+    } from './ui/postprocess-documents';
     import { createStatusModel } from './ui/status-model';
     import { createWorkspaceStore } from './ui/workspace-store';
 
@@ -46,6 +63,7 @@
     let animationParams = snapshot.animationParams;
     let slicerSettings = snapshot.slicerSettings;
     const bundledSceneDocuments = studio.getSceneDocuments();
+    const bundledPostprocessDocuments = getBundledPostprocessDocuments();
     let sceneDocuments = bundledSceneDocuments;
     let persistedSceneDocuments = bundledSceneDocuments;
     let sceneEditorMode: SceneDocumentStorageMode = 'browser';
@@ -55,6 +73,22 @@
     let persistedActiveSceneDocument: SceneDocument | null = persistedSceneDocuments[0] ?? null;
     let sceneEditorDirty = false;
     let sceneEditorModeLabel = 'Browser Drafts';
+    let postprocessDocuments = bundledPostprocessDocuments;
+    let persistedPostprocessDocuments = bundledPostprocessDocuments;
+    let postprocessMode: PostprocessScriptStorageMode = 'browser';
+    let postprocessStatus = 'Postprocess scripts ready.';
+    let postprocessSavePending = false;
+    let activePostprocessScriptId = bundledPostprocessDocuments[0]?.id ?? '';
+    let postprocessEnabled = false;
+    let activePostprocessDocument: PostprocessScriptDocument | null = postprocessDocuments[0] ?? null;
+    let persistedActivePostprocessDocument: PostprocessScriptDocument | null = persistedPostprocessDocuments[0] ?? null;
+    let postprocessDirty = false;
+    let postprocessModeLabel = 'Browser Drafts';
+    let activePostprocessConfig: ToolpathPostprocessConfig | null = null;
+    let postprocessControlDefinitions: PostprocessControlDefinition[] = [];
+    let postprocessControlValueState: Record<string, Record<string, number>> = {};
+    let postprocessControlValues: Record<string, number> = {};
+    let editorDocumentMode: 'scene' | 'postprocess' = 'scene';
 
     const workspace = createWorkspaceStore({
         activeSceneLabel: studio.getSceneLabel(sceneId),
@@ -65,7 +99,9 @@
     let resizeCleanup: (() => void) | null = null;
     let editorResizeCleanup: (() => void) | null = null;
     let sceneRepositoryPollHandle: number | null = null;
+    let postprocessRepositoryPollHandle: number | null = null;
     let editorDockSide = false;
+    let sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
 
     $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
     $: studio.setToolpathOverlayVisible($workspace.overlayVisible);
@@ -76,22 +112,58 @@
             (!persistedActiveSceneDocument || activeSceneDocument.source !== persistedActiveSceneDocument.source)
     );
     $: sceneEditorModeLabel = sceneEditorMode === 'filesystem' ? 'Folder Sync' : 'Browser Drafts';
+    $: if (!postprocessDocuments.some((document) => document.id === activePostprocessScriptId)) {
+        activePostprocessScriptId = postprocessDocuments[0]?.id ?? '';
+    }
+    $: activePostprocessDocument = postprocessDocuments.find((document) => document.id === activePostprocessScriptId) ?? null;
+    $: persistedActivePostprocessDocument = persistedPostprocessDocuments.find((document) => document.id === activePostprocessScriptId) ?? null;
+    $: postprocessDirty = Boolean(
+        activePostprocessDocument &&
+            (!persistedActivePostprocessDocument || activePostprocessDocument.source !== persistedActivePostprocessDocument.source)
+    );
+    $: postprocessModeLabel = postprocessMode === 'filesystem' ? 'Folder Sync' : 'Browser Drafts';
+    $: postprocessControlDefinitions = parsePostprocessControlDefinitions(activePostprocessDocument?.source ?? '');
+    $: postprocessControlValues = activePostprocessDocument
+        ? buildPostprocessParameterValues(postprocessControlDefinitions, postprocessControlValueState[activePostprocessDocument.id])
+        : {};
+    $: activePostprocessConfig = activePostprocessDocument
+        ? {
+            enabled: postprocessEnabled,
+            scriptId: activePostprocessDocument.id,
+            scriptName: activePostprocessDocument.name,
+            language: activePostprocessDocument.language,
+            source: activePostprocessDocument.source,
+            parameterValues: postprocessControlValues,
+        }
+        : null;
+    $: studio.setToolpathPostprocessConfig(activePostprocessConfig);
     $: inspectorState = {
         sceneOptions,
         sceneControlDefinitions,
         sceneControlValues,
         printerModels,
         filamentProfiles,
+        postprocessDocuments,
+        postprocessControlDefinitions,
+        postprocessControlValues,
         sceneId,
         viewMode,
         raymarchParams,
         viewportParams,
         animationParams,
         slicerSettings,
+        activePostprocessScriptId,
+        postprocessEnabled,
+        postprocessSource: activePostprocessDocument?.source ?? '',
+        postprocessStatus,
+        postprocessDirty,
+        postprocessStorageLabel: postprocessModeLabel,
+        postprocessSavePending,
         benchmarkIterations: $status.benchmarkIterations,
         benchmarkWarmups: $status.benchmarkWarmups,
         actionPending: $status.actionPending,
         outputStatus: $status.outputStatus,
+        sliceDebugSnapshot,
     } satisfies InspectorSchemaState;
 
     async function resizeViewportAfterLayout(): Promise<void> {
@@ -109,6 +181,12 @@
     }
 
     async function selectTab(tabId: ControlTabId): Promise<void> {
+        if (tabId === 'scene') {
+            editorDocumentMode = 'scene';
+        } else if (tabId === 'postprocess') {
+            editorDocumentMode = 'postprocess';
+        }
+
         workspace.selectTab(tabId);
         await resizeViewportAfterLayout();
     }
@@ -119,7 +197,22 @@
     }
 
     async function toggleEditor(): Promise<void> {
+        if (!$workspace.editorVisible) {
+            editorDocumentMode = $workspace.activeTab === 'postprocess' ? 'postprocess' : 'scene';
+        }
+
         workspace.toggleEditor();
+        await resizeViewportAfterLayout();
+    }
+
+    async function switchEditorDocument(): Promise<void> {
+        editorDocumentMode = editorDocumentMode === 'postprocess' ? 'scene' : 'postprocess';
+        workspace.selectTab(editorDocumentMode === 'postprocess' ? 'postprocess' : 'scene');
+
+        if (!$workspace.editorVisible) {
+            workspace.setEditorVisible(true);
+        }
+
         await resizeViewportAfterLayout();
     }
 
@@ -223,6 +316,57 @@
         studio.updateSlicerParams({ slicerMode: nextMode });
     }
 
+    function commitPostprocessScript(scriptId: string): void {
+        activePostprocessScriptId = scriptId;
+        const nextDocument = postprocessDocuments.find((document) => document.id === scriptId);
+        postprocessStatus = nextDocument
+            ? `Active postprocess script: ${nextDocument.name}.`
+            : 'No active postprocess script selected.';
+        status.setWorkspaceStatus(postprocessStatus);
+    }
+
+    function updatePostprocessEnabled(value: boolean): void {
+        postprocessEnabled = value;
+        postprocessStatus = value
+            ? `Postprocess enabled${activePostprocessDocument ? `: ${activePostprocessDocument.name}.` : '.'}`
+            : 'Postprocess disabled.';
+        status.setWorkspaceStatus(postprocessStatus);
+    }
+
+    function updatePostprocessSource(value: string): void {
+        if (!activePostprocessDocument) {
+            return;
+        }
+
+        postprocessDocuments = postprocessDocuments.map((document) =>
+            document.id === activePostprocessDocument.id
+                ? { ...document, source: value }
+                : document
+        );
+        postprocessStatus = 'Postprocess script updated locally. Save to persist changes.';
+    }
+
+    function updatePostprocessControlValue(controlKey: string, value: number): void {
+        if (!activePostprocessDocument) {
+            return;
+        }
+
+        const definition = postprocessControlDefinitions.find((candidate) => candidate.key === controlKey);
+        if (!definition) {
+            return;
+        }
+
+        const nextScriptValues = {
+            ...(postprocessControlValueState[activePostprocessDocument.id] ?? {}),
+            [definition.key]: clampPostprocessControlValue(value, definition),
+        };
+
+        postprocessControlValueState = {
+            ...postprocessControlValueState,
+            [activePostprocessDocument.id]: nextScriptValues,
+        };
+    }
+
     async function generateVaseGcode(): Promise<void> {
         const progressStartMs = performance.now();
         let lastPhase = '';
@@ -232,9 +376,10 @@
         let lastEtaUpdateMs = progressStartMs;
 
         await status.runCommand('Generating G-code...', async (reportProgress) => {
-            const result = await studio.generateVaseGcode((update) => {
-                const nowMs = performance.now();
-                const progress = Math.max(0, Math.min(1, update.overall));
+            try {
+                const result = await studio.generateVaseGcode((update) => {
+                    const nowMs = performance.now();
+                    const progress = Math.max(0, Math.min(1, update.overall));
 
                 if (update.phase === 'sampling') {
                     if (samplingPhaseStartMs === null) {
@@ -287,17 +432,23 @@
                     lastEtaUpdateMs = nowMs;
                 }
 
-                lastPhase = update.phase;
+                    lastPhase = update.phase;
 
-                reportProgress({
-                    percent: progress * 100,
-                    phaseLabel: update.phaseLabel,
-                    detail: etaSeconds !== null
-                        ? `${update.detail} ETA ${formatEta(etaSeconds)}`
-                        : update.detail,
+                    reportProgress({
+                        percent: progress * 100,
+                        phaseLabel: update.phaseLabel,
+                        detail: etaSeconds !== null
+                            ? `${update.detail} ETA ${formatEta(etaSeconds)}`
+                            : update.detail,
+                    });
                 });
-            });
-            return `Exported ${result.filename} (${(result.bytes / 1024).toFixed(1)} KB, ${result.points} points).`;
+                return `Exported ${result.filename} (${(result.bytes / 1024).toFixed(1)} KB, ${result.points} points).`;
+            } finally {
+                sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
+                if (sliceDebugSnapshot) {
+                    workspace.selectTab('output');
+                }
+            }
         });
     }
 
@@ -308,6 +459,7 @@
         const warmupLabel = `${warmups} warmup run${warmups === 1 ? '' : 's'}`;
         await status.runCommand(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, () => {
             const summary = studio.benchmarkVaseGcode(iterations, warmups);
+            sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
             return `Benchmark settled on ${summary.measuredRuns} measured run${summary.measuredRuns === 1 ? '' : 's'} after ${summary.warmupRuns} warmup run${summary.warmupRuns === 1 ? '' : 's'}: avg ${summary.averageMs.toFixed(1)} ms, median ${summary.medianMs.toFixed(1)} ms, min ${summary.minMs.toFixed(1)} ms, max ${summary.maxMs.toFixed(1)} ms, spread ${summary.spreadMs.toFixed(1)} ms. Phase avg: sample ${summary.averageContourSamplingMs.toFixed(1)} ms, toolpath ${summary.averageToolpathBuildMs.toFixed(1)} ms, gcode ${summary.averageGcodeBuildMs.toFixed(1)} ms. Last output: ${(summary.bytes / 1024).toFixed(1)} KB, ${summary.points} points, ${summary.layers} layers.`;
         });
     }
@@ -334,6 +486,13 @@
             ? persistedSceneDocuments.map((document) => (document.id === nextDocument.id ? nextDocument : document))
             : [...persistedSceneDocuments, nextDocument];
         persistedSceneDocuments = nextPersisted.sort((left, right) => left.name.localeCompare(right.name));
+    }
+
+    function mergePersistedPostprocessDocument(nextDocument: PostprocessScriptDocument): void {
+        const nextPersisted = persistedPostprocessDocuments.some((document) => document.id === nextDocument.id)
+            ? persistedPostprocessDocuments.map((document) => (document.id === nextDocument.id ? nextDocument : document))
+            : [...persistedPostprocessDocuments, nextDocument];
+        persistedPostprocessDocuments = nextPersisted.sort((left, right) => left.name.localeCompare(right.name));
     }
 
     async function saveActiveSceneDocument(): Promise<void> {
@@ -398,6 +557,95 @@
         status.setWorkspaceStatus(sceneEditorStatus);
     }
 
+    async function saveActivePostprocessDocument(): Promise<void> {
+        if (!activePostprocessDocument || !postprocessDirty || postprocessSavePending) {
+            return;
+        }
+
+        postprocessSavePending = true;
+        postprocessStatus = postprocessMode === 'filesystem'
+            ? 'Saving postprocess script to folder...'
+            : 'Saving postprocess script to browser storage...';
+
+        try {
+            const nextDocuments = await savePostprocessDocument(
+                postprocessMode,
+                activePostprocessDocument,
+                bundledPostprocessDocuments,
+                postprocessDocuments,
+            );
+
+            postprocessDocuments = nextDocuments;
+            if (postprocessMode === 'filesystem') {
+                const savedDocument = nextDocuments.find((document) => document.id === activePostprocessDocument.id);
+                if (savedDocument) {
+                    mergePersistedPostprocessDocument(savedDocument);
+                }
+            } else {
+                persistedPostprocessDocuments = nextDocuments;
+            }
+
+            postprocessStatus = postprocessMode === 'filesystem'
+                ? `Saved ${activePostprocessDocument.fileName} to src/postprocess-scripts.`
+                : `Saved ${activePostprocessDocument.name} to browser storage.`;
+            status.setWorkspaceStatus(postprocessStatus);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Postprocess save failed.';
+            postprocessStatus = message;
+            status.setWorkspaceStatus(message);
+        } finally {
+            postprocessSavePending = false;
+        }
+    }
+
+    function revertActivePostprocessDocument(): void {
+        if (!activePostprocessDocument) {
+            return;
+        }
+
+        const persisted = persistedPostprocessDocuments.find((document) => document.id === activePostprocessDocument.id);
+        if (!persisted) {
+            return;
+        }
+
+        postprocessDocuments = postprocessDocuments.map((document) =>
+            document.id === activePostprocessDocument.id
+                ? { ...document, source: persisted.source }
+                : document
+        );
+
+        postprocessStatus = `Reverted ${persisted.fileName} to the last saved version.`;
+        status.setWorkspaceStatus(postprocessStatus);
+    }
+
+    async function createAndActivatePostprocessScript(): Promise<void> {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        const requestedName = window.prompt(
+            'Postprocess script name',
+            activePostprocessDocument ? `${activePostprocessDocument.name} Variant` : 'New Postprocess'
+        );
+        if (requestedName === null) {
+            return;
+        }
+
+        const nextDocument = createPostprocessDocument(postprocessDocuments, 'typescript', requestedName);
+        postprocessDocuments = [...postprocessDocuments, nextDocument].sort((left, right) => left.name.localeCompare(right.name));
+        activePostprocessScriptId = nextDocument.id;
+        postprocessEnabled = true;
+        editorDocumentMode = 'postprocess';
+        workspace.selectTab('postprocess');
+        workspace.setEditorVisible(true);
+        postprocessStatus = `Created ${nextDocument.fileName}. Save it to persist the new script.`;
+        status.setWorkspaceStatus(postprocessStatus);
+
+        if (postprocessMode === 'filesystem') {
+            await saveActivePostprocessDocument();
+        }
+    }
+
     async function createAndActivateScene(): Promise<void> {
         if (typeof window === 'undefined') {
             return;
@@ -416,6 +664,8 @@
 
         sceneDocuments = [...sceneDocuments, nextDocument].sort((left, right) => left.name.localeCompare(right.name));
         applySceneRegistryResult(studio.syncSceneDocuments(sceneDocuments));
+        editorDocumentMode = 'scene';
+        workspace.selectTab('scene');
         workspace.setEditorVisible(true);
         commitScene(nextDocument.id);
         sceneEditorStatus = `Created ${nextDocument.fileName}. Save it to persist the new scene.`;
@@ -565,6 +815,13 @@
         commitPrinterModel,
         updateSlicerString,
         commitFilamentProfile,
+        commitPostprocessScript,
+        updatePostprocessEnabled,
+        updatePostprocessSource,
+        updatePostprocessControlValue,
+        createPostprocessScript: createAndActivatePostprocessScript,
+        savePostprocessScript: saveActivePostprocessDocument,
+        revertPostprocessScript: revertActivePostprocessDocument,
         setBenchmarkIterations: (value) => status.setBenchmarkIterations(value),
         setBenchmarkWarmups: (value) => status.setBenchmarkWarmups(value),
         generateVaseGcode,
@@ -617,9 +874,30 @@
             }
         };
 
+        const refreshFilesystemPostprocessScripts = async (silent: boolean = false): Promise<void> => {
+            if (postprocessMode !== 'filesystem' || hasDirtyPostprocessDocuments(postprocessDocuments, persistedPostprocessDocuments)) {
+                return;
+            }
+
+            const nextDocuments = await reloadFilesystemPostprocessDocuments();
+            if (!nextDocuments || arePostprocessCollectionsEqual(nextDocuments, persistedPostprocessDocuments)) {
+                return;
+            }
+
+            persistedPostprocessDocuments = nextDocuments;
+            postprocessDocuments = nextDocuments;
+            if (!silent) {
+                postprocessStatus = 'Postprocess folder updated from disk.';
+                status.setWorkspaceStatus(postprocessStatus);
+            }
+        };
+
         void (async () => {
             try {
-                const repository = await loadSceneRepository(bundledSceneDocuments);
+                const [repository, postprocessRepository] = await Promise.all([
+                    loadSceneRepository(bundledSceneDocuments),
+                    loadPostprocessRepository(bundledPostprocessDocuments),
+                ]);
                 if (disposed) {
                     return;
                 }
@@ -629,16 +907,30 @@
                 sceneDocuments = repository.documents;
                 applySceneRegistryResult(studio.syncSceneDocuments(repository.documents));
 
+                postprocessMode = postprocessRepository.mode;
+                persistedPostprocessDocuments = postprocessRepository.documents;
+                postprocessDocuments = postprocessRepository.documents;
+                activePostprocessScriptId = postprocessRepository.documents[0]?.id ?? activePostprocessScriptId;
+
                 studio.init();
                 status.setShaderStatus('ready', 'Ready');
                 sceneEditorStatus = repository.mode === 'filesystem'
                     ? 'Editing scene files directly from src/shaders/scenes.'
                     : 'Editing bundled defaults with browser-backed drafts.';
                 status.setWorkspaceStatus(sceneEditorStatus);
+                postprocessStatus = postprocessRepository.mode === 'filesystem'
+                    ? 'Editing postprocess files directly from src/postprocess-scripts.'
+                    : 'Editing bundled postprocess scripts with browser-backed drafts.';
 
                 if (repository.mode === 'filesystem') {
                     sceneRepositoryPollHandle = window.setInterval(() => {
                         void refreshFilesystemScenes(true);
+                    }, 1200);
+                }
+
+                if (postprocessRepository.mode === 'filesystem') {
+                    postprocessRepositoryPollHandle = window.setInterval(() => {
+                        void refreshFilesystemPostprocessScripts(true);
                     }, 1200);
                 }
             } catch (error) {
@@ -656,6 +948,10 @@
             if (sceneRepositoryPollHandle !== null) {
                 window.clearInterval(sceneRepositoryPollHandle);
                 sceneRepositoryPollHandle = null;
+            }
+            if (postprocessRepositoryPollHandle !== null) {
+                window.clearInterval(postprocessRepositoryPollHandle);
+                postprocessRepositoryPollHandle = null;
             }
         };
     });
@@ -685,6 +981,23 @@
             );
         });
     }
+
+    function arePostprocessCollectionsEqual(left: PostprocessScriptDocument[], right: PostprocessScriptDocument[]): boolean {
+        if (left.length !== right.length) {
+            return false;
+        }
+
+        return left.every((document, index) => {
+            const candidate = right[index];
+            return Boolean(
+                candidate &&
+                    candidate.id === document.id &&
+                    candidate.fileName === document.fileName &&
+                    candidate.language === document.language &&
+                    candidate.source === document.source
+            );
+        });
+    }
 </script>
 
 <div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible}>
@@ -708,16 +1021,33 @@
         <div class="workspace-shell" class:editor-docked-left={$workspace.editorVisible && editorDockSide}>
             {#if $workspace.editorVisible && editorDockSide}
                 <div class="workspace-editor-slot workspace-editor-slot-side">
-                    <SceneEditorPanel
-                        sceneDocument={activeSceneDocument}
-                        storageMode={sceneEditorMode}
-                        dirty={sceneEditorDirty}
-                        savePending={sceneEditorSavePending}
-                        statusText={sceneEditorStatus}
-                        onChangeSource={updateSceneDocumentSource}
-                        onCreateScene={createAndActivateScene}
-                        onSaveScene={saveActiveSceneDocument}
-                        onRevertScene={revertActiveSceneDocument}
+                    <DocumentEditorPanel
+                        panelLabel={editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor'}
+                        storageLabel={editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel}
+                        dirty={editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty}
+                        dirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
+                        savePending={editorDocumentMode === 'postprocess' ? postprocessSavePending : sceneEditorSavePending}
+                        statusText={editorDocumentMode === 'postprocess' ? postprocessStatus : sceneEditorStatus}
+                        documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneDocument?.name ?? null}
+                        documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneDocument?.fileName ?? null}
+                        source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneDocument?.source ?? null}
+                        helperText={editorDocumentMode === 'postprocess'
+                            ? (postprocessMode === 'filesystem'
+                                ? 'Saving writes directly into src/postprocess-scripts so VS Code and exports stay in sync.'
+                                : 'Saving keeps bundled script defaults and stores overrides or new scripts in browser storage.')
+                            : (sceneEditorMode === 'filesystem'
+                                ? 'Saving writes directly into src/shaders/scenes so VS Code and the viewport stay in sync.'
+                                : 'Saving keeps bundled scene defaults and stores overrides or new scenes in browser storage.')}
+                        createLabel={editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene'}
+                        saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save Scene'}
+                        hideLabel="Hide Editor"
+                        switchLabel={editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script'}
+                        language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : 'glsl'}
+                        onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneDocumentSource}
+                        onCreate={editorDocumentMode === 'postprocess' ? createAndActivatePostprocessScript : createAndActivateScene}
+                        onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneDocument}
+                        onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneDocument}
+                        onSwitchDocument={switchEditorDocument}
                         onClose={toggleEditor}
                         onStartResize={startEditorResize}
                     />
@@ -736,8 +1066,10 @@
                 actionPending={$status.actionPending}
                 inspectorCollapsed={$workspace.inspectorCollapsed}
                 editorVisible={$workspace.editorVisible}
-                editorModeLabel={sceneEditorModeLabel}
-                editorDirty={sceneEditorDirty}
+                editorTitleLabel={editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor'}
+                editorModeLabel={editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel}
+                editorDirty={editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty}
+                editorDirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
                 onResetView={resetView}
                 onToggleInspector={toggleInspector}
                 onToggleEditor={toggleEditor}
@@ -759,16 +1091,33 @@
         </div>
 
         {#if $workspace.editorVisible && !editorDockSide}
-            <SceneEditorPanel
-                sceneDocument={activeSceneDocument}
-                storageMode={sceneEditorMode}
-                dirty={sceneEditorDirty}
-                savePending={sceneEditorSavePending}
-                statusText={sceneEditorStatus}
-                onChangeSource={updateSceneDocumentSource}
-                onCreateScene={createAndActivateScene}
-                onSaveScene={saveActiveSceneDocument}
-                onRevertScene={revertActiveSceneDocument}
+            <DocumentEditorPanel
+                panelLabel={editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor'}
+                storageLabel={editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel}
+                dirty={editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty}
+                dirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
+                savePending={editorDocumentMode === 'postprocess' ? postprocessSavePending : sceneEditorSavePending}
+                statusText={editorDocumentMode === 'postprocess' ? postprocessStatus : sceneEditorStatus}
+                documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneDocument?.name ?? null}
+                documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneDocument?.fileName ?? null}
+                source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneDocument?.source ?? null}
+                helperText={editorDocumentMode === 'postprocess'
+                    ? (postprocessMode === 'filesystem'
+                        ? 'Saving writes directly into src/postprocess-scripts so VS Code and exports stay in sync.'
+                        : 'Saving keeps bundled script defaults and stores overrides or new scripts in browser storage.')
+                    : (sceneEditorMode === 'filesystem'
+                        ? 'Saving writes directly into src/shaders/scenes so VS Code and the viewport stay in sync.'
+                        : 'Saving keeps bundled scene defaults and stores overrides or new scenes in browser storage.')}
+                createLabel={editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene'}
+                saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save Scene'}
+                hideLabel="Hide Editor"
+                switchLabel={editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script'}
+                language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : 'glsl'}
+                onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneDocumentSource}
+                onCreate={editorDocumentMode === 'postprocess' ? createAndActivatePostprocessScript : createAndActivateScene}
+                onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneDocument}
+                onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneDocument}
+                onSwitchDocument={switchEditorDocument}
                 onClose={toggleEditor}
                 onStartResize={startEditorResize}
             />

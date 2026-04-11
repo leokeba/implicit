@@ -5,6 +5,11 @@ import {
     type SceneControlDefinition,
     type SceneControlValueMap,
 } from './shader-pipeline';
+import {
+    applyToolpathPostprocess,
+    type ToolpathPostprocessConfig,
+    type ToolpathPostprocessSummary,
+} from './toolpath-postprocess';
 
 export interface VaseSlicerSettings {
     slicerMode: 'planar' | 'cylindrical';
@@ -33,6 +38,7 @@ export interface VaseSlicerSettings {
     filamentDiameter: number;
     firstLayerPrintSpeedMmPerSec: number;
     printSpeedMmPerSec: number;
+    minLayerTimeSec: number;
     travelSpeedMmPerSec: number;
     nozzleTempC: number;
     bedTempC: number;
@@ -57,6 +63,7 @@ export interface ToolpathPoint {
     e: number;
     speedMmPerSec: number;
     layer: number;
+    extrusionScale?: number;
 }
 
 export interface VaseToolpath {
@@ -64,6 +71,7 @@ export interface VaseToolpath {
     layerCount: number;
     pointsPerLayer: number;
     estimatedHeight: number;
+    postprocessSummary?: ToolpathPostprocessSummary | null;
 }
 
 export interface VaseSliceResult {
@@ -266,6 +274,7 @@ export class Slicer {
             filamentDiameter: 1.75,
             firstLayerPrintSpeedMmPerSec: 20,
             printSpeedMmPerSec: 35,
+            minLayerTimeSec: 8,
             travelSpeedMmPerSec: 120,
             nozzleTempC: 215,
             bedTempC: 55,
@@ -284,9 +293,9 @@ export class Slicer {
         };
     }
 
-    public generateVaseGcode(next: Partial<VaseSlicerSettings>): VaseSliceResult {
+    public generateVaseGcode(next: Partial<VaseSlicerSettings>, postprocessConfig?: ToolpathPostprocessConfig | null): VaseSliceResult {
         const settings = this.getMergedSettings(next);
-        const result = this.executeVaseSlice(settings);
+        const result = this.executeVaseSlice(settings, postprocessConfig);
         return {
             settings: result.settings,
             toolpath: result.toolpath,
@@ -296,10 +305,11 @@ export class Slicer {
 
     public async generateVaseGcodeWithProgress(
         next: Partial<VaseSlicerSettings>,
-        onProgress?: SliceProgressReporter
+        onProgress?: SliceProgressReporter,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
     ): Promise<VaseSliceResult> {
         const settings = this.getMergedSettings(next);
-        const result = await this.executeVaseSliceAsync(settings, onProgress);
+        const result = await this.executeVaseSliceAsync(settings, onProgress, postprocessConfig);
         return {
             settings: result.settings,
             toolpath: result.toolpath,
@@ -307,7 +317,12 @@ export class Slicer {
         };
     }
 
-    public benchmarkVaseGcode(next: Partial<VaseSlicerSettings>, iterations: number, warmupRuns = 1): VaseSliceBenchmarkResult {
+    public benchmarkVaseGcode(
+        next: Partial<VaseSlicerSettings>,
+        iterations: number,
+        warmupRuns = 1,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
+    ): VaseSliceBenchmarkResult {
         const settings = this.getMergedSettings(next);
         const measuredRunCount = clampInt(iterations, 1, 20);
         const warmupRunCount = clampInt(warmupRuns, 0, 10);
@@ -316,7 +331,7 @@ export class Slicer {
         let lastResult: VaseSliceResult | null = null;
 
         for (let runIndex = 0; runIndex < totalRunCount; runIndex++) {
-            const result = this.executeVaseSlice(settings);
+            const result = this.executeVaseSlice(settings, postprocessConfig);
             lastResult = {
                 settings: result.settings,
                 toolpath: result.toolpath,
@@ -349,14 +364,17 @@ export class Slicer {
         return this.lastSliceDebugSnapshot;
     }
 
-    private executeVaseSlice(settings: VaseSlicerSettings): VaseSliceExecution {
+    private executeVaseSlice(
+        settings: VaseSlicerSettings,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
+    ): VaseSliceExecution {
         this.lastSliceDebugSnapshot = null;
         const startTime = performance.now();
         const contourLayers = this.sampleSliceContoursGpu(settings);
         const contourSamplingEndTime = performance.now();
         const toolpath = settings.slicerMode === 'cylindrical'
-            ? this.buildCylindricalSpiralToolpath(contourLayers, settings)
-            : this.buildPlanarSpiralToolpath(contourLayers, settings);
+            ? this.buildCylindricalSpiralToolpath(contourLayers, settings, postprocessConfig)
+            : this.buildPlanarSpiralToolpath(contourLayers, settings, postprocessConfig);
         const toolpathEndTime = performance.now();
         const gcode = this.buildGcode(toolpath, settings);
         const endTime = performance.now();
@@ -376,7 +394,8 @@ export class Slicer {
 
     private async executeVaseSliceAsync(
         settings: VaseSlicerSettings,
-        onProgress?: SliceProgressReporter
+        onProgress?: SliceProgressReporter,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
     ): Promise<VaseSliceExecution> {
         this.lastSliceDebugSnapshot = null;
         reportSliceProgress(onProgress, 'preparing', 0, 1, 0.0, 'Preparing slicer settings...');
@@ -389,8 +408,8 @@ export class Slicer {
         reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
         await this.yieldToMainThread();
         const toolpath = settings.slicerMode === 'cylindrical'
-            ? this.buildCylindricalSpiralToolpath(contourLayers, settings)
-            : this.buildPlanarSpiralToolpath(contourLayers, settings);
+            ? this.buildCylindricalSpiralToolpath(contourLayers, settings, postprocessConfig)
+            : this.buildPlanarSpiralToolpath(contourLayers, settings, postprocessConfig);
         const toolpathEndTime = performance.now();
 
         reportSliceProgress(onProgress, 'gcode', 0, 1, 0.92, 'Encoding G-code...');
@@ -433,6 +452,7 @@ export class Slicer {
         merged.filamentDiameter = clamp(merged.filamentDiameter, 1.0, 3.0);
         merged.printSpeedMmPerSec = clamp(merged.printSpeedMmPerSec, 5, 200);
         merged.firstLayerPrintSpeedMmPerSec = clamp(merged.firstLayerPrintSpeedMmPerSec, 5, merged.printSpeedMmPerSec);
+        merged.minLayerTimeSec = clamp(merged.minLayerTimeSec, 0, 120);
         merged.travelSpeedMmPerSec = clamp(merged.travelSpeedMmPerSec, 10, 300);
         merged.flowRate = clamp(merged.flowRate, 0.01, 5.0);
         merged.moveMergeMinMoveMm = clamp(merged.moveMergeMinMoveMm, 0.005, 1.0);
@@ -692,11 +712,19 @@ export class Slicer {
         return this.decodeSliceBatchFields(pixels, width, gridSize, batchLayerCount, distanceRange, firstSampleY, sliceYStep);
     }
 
-    private buildPlanarSpiralToolpath(contourLayers: SliceContourLayer[], settings: VaseSlicerSettings): VaseToolpath {
-        return this.buildInterpolatedSpiralToolpath(contourLayers, settings);
+    private buildPlanarSpiralToolpath(
+        contourLayers: SliceContourLayer[],
+        settings: VaseSlicerSettings,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
+    ): VaseToolpath {
+        return this.buildInterpolatedSpiralToolpath(contourLayers, settings, postprocessConfig);
     }
 
-    private buildCylindricalSpiralToolpath(contourLayers: SliceContourLayer[], settings: VaseSlicerSettings): VaseToolpath {
+    private buildCylindricalSpiralToolpath(
+        contourLayers: SliceContourLayer[],
+        settings: VaseSlicerSettings,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
+    ): VaseToolpath {
         const cylindricalLayers: SliceContourLayer[] = contourLayers.map((layer, layerIndex) => {
             const contour = this.sampleCylindricalContour(layer.contour, settings.pointsPerLayer);
             if (contour.length !== settings.pointsPerLayer) {
@@ -709,10 +737,14 @@ export class Slicer {
             };
         });
 
-        return this.buildInterpolatedSpiralToolpath(cylindricalLayers, settings);
+        return this.buildInterpolatedSpiralToolpath(cylindricalLayers, settings, postprocessConfig);
     }
 
-    private buildInterpolatedSpiralToolpath(contourLayers: SliceContourLayer[], settings: VaseSlicerSettings): VaseToolpath {
+    private buildInterpolatedSpiralToolpath(
+        contourLayers: SliceContourLayer[],
+        settings: VaseSlicerSettings,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
+    ): VaseToolpath {
         const layers = contourLayers.length;
         const perLayer = settings.pointsPerLayer;
         const modelHeightMm = this.getModelHeightMm(settings);
@@ -772,14 +804,17 @@ export class Slicer {
             }
         }
 
-        const optimizedPoints = this.optimizeToolpath(points, settings);
+        const postprocessed = applyToolpathPostprocess(points, settings, postprocessConfig);
+        const optimizedPoints = this.optimizeToolpath(postprocessed.points, settings);
         this.recomputeExtrusion(optimizedPoints, settings);
+        this.applyMinimumLayerTime(optimizedPoints, settings);
 
         return {
             points: optimizedPoints,
             layerCount: layers,
             pointsPerLayer: perLayer,
             estimatedHeight: this.getModelHeightMm(settings),
+            postprocessSummary: postprocessed.summary,
         };
     }
 
@@ -935,8 +970,20 @@ export class Slicer {
             const isTinyMove = a <= minMoveMm && b <= minMoveMm;
             const isSmoothEnough = deviation <= maxDeviationMm && turnDeg <= maxTurnDeg;
 
+            const speedStable =
+                Math.abs(prev.speedMmPerSec - cur.speedMmPerSec) <= 1e-3 &&
+                Math.abs(cur.speedMmPerSec - next.speedMmPerSec) <= 1e-3;
+            const prevExtrusionScale = prev.extrusionScale ?? 1;
+            const curExtrusionScale = cur.extrusionScale ?? 1;
+            const nextExtrusionScale = next.extrusionScale ?? 1;
+            const extrusionStable =
+                Math.abs(prevExtrusionScale - curExtrusionScale) <= 1e-4 &&
+                Math.abs(curExtrusionScale - nextExtrusionScale) <= 1e-4;
+
             const canMerge =
                 (isTinyMove || isSmoothEnough) &&
+                speedStable &&
+                extrusionStable &&
                 skipped < keepStride;
 
             if (canMerge) {
@@ -984,11 +1031,53 @@ export class Slicer {
             const point = points[i];
             const segment = distance3(prev, point);
             const layerProgress = transitionProgress[i];
+            const extrusionScale = clamp(point.extrusionScale ?? 1, 0, 16);
             const segmentExtrusionPerMm = point.layer === 0
                 ? firstLayerExtrusionPerMm
                 : (point.layer === 1 ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, layerProgress) : extrusionPerMm);
-            eAcc += segment * segmentExtrusionPerMm;
+            eAcc += segment * segmentExtrusionPerMm * extrusionScale;
             point.e = eAcc;
+        }
+    }
+
+    private applyMinimumLayerTime(points: ToolpathPoint[], settings: VaseSlicerSettings): void {
+        const minLayerTimeSec = settings.minLayerTimeSec;
+        if (points.length < 2 || minLayerTimeSec <= 0) {
+            return;
+        }
+
+        const minAllowedSpeedMmPerSec = 1.0;
+        let layerStart = 0;
+        while (layerStart < points.length) {
+            const layer = points[layerStart].layer;
+            let layerEnd = layerStart + 1;
+            while (layerEnd < points.length && points[layerEnd].layer === layer) {
+                layerEnd++;
+            }
+
+            if (layer === 0) {
+                layerStart = layerEnd;
+                continue;
+            }
+
+            const baseSpeedMmPerSec = settings.printSpeedMmPerSec;
+            let layerPathLengthMm = 0;
+            for (let i = layerStart + 1; i < layerEnd; i++) {
+                layerPathLengthMm += distance3(points[i - 1], points[i]);
+            }
+
+            const maxSpeedForMinTime = layerPathLengthMm / minLayerTimeSec;
+            const targetSpeedMmPerSec = clamp(
+                Math.min(baseSpeedMmPerSec, maxSpeedForMinTime),
+                minAllowedSpeedMmPerSec,
+                baseSpeedMmPerSec,
+            );
+
+            for (let i = layerStart; i < layerEnd; i++) {
+                points[i].speedMmPerSec = targetSpeedMmPerSec;
+            }
+
+            layerStart = layerEnd;
         }
     }
 
@@ -1036,6 +1125,7 @@ export class Slicer {
         lines.push(`; Minimum slice grid: ${settings.radialSteps}`);
         lines.push(`; First layer print speed (mm/s): ${settings.firstLayerPrintSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
+        lines.push(`; Minimum layer time (s): ${settings.minLayerTimeSec.toFixed(2)}`);
         lines.push(`; Travel speed (mm/s): ${settings.travelSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Brim width (mm): ${settings.brimWidthMm.toFixed(2)}`);
         lines.push(`; Brim gap (mm): ${settings.brimGapMm.toFixed(2)}`);
@@ -1045,6 +1135,14 @@ export class Slicer {
         lines.push(`; First layer extrusion/mm: ${calculateExtrusionPerMm(settings, settings.firstLayerLineWidth).toFixed(5)}`);
         lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings, settings.lineWidth).toFixed(5)}`);
         lines.push(`; Estimated height (mm): ${toolpath.estimatedHeight.toFixed(3)}`);
+        if (toolpath.postprocessSummary) {
+            lines.push(`; Postprocess script: ${toolpath.postprocessSummary.scriptName} (${toolpath.postprocessSummary.language})`);
+            lines.push(`; Postprocess points: ${toolpath.postprocessSummary.inputPointCount} -> ${toolpath.postprocessSummary.outputPointCount} before merge`);
+            lines.push(`; Postprocess runtime (ms): ${toolpath.postprocessSummary.durationMs.toFixed(2)}`);
+            for (const note of toolpath.postprocessSummary.notes) {
+                lines.push(`; Postprocess note: ${note}`);
+            }
+        }
         const rawPathPoints = toolpath.layerCount * toolpath.pointsPerLayer;
         const mergedPathPoints = toolpath.points.length;
         const removedPathPoints = Math.max(0, rawPathPoints - mergedPathPoints);

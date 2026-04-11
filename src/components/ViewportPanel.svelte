@@ -2,8 +2,10 @@
     export let actionPending: boolean;
     export let inspectorCollapsed: boolean;
     export let editorVisible: boolean;
+    export let editorTitleLabel: string;
     export let editorModeLabel: string;
     export let editorDirty: boolean;
+    export let editorDirtyLabel: string;
     export let onResetView: () => void;
     export let onToggleInspector: () => void | Promise<void>;
     export let onToggleEditor: () => void | Promise<void>;
@@ -16,9 +18,10 @@
             <div class="viewport-command-surface">
                 <div class="viewport-toolbar-group viewport-toolbar-group-strong">
                     <span class="viewport-badge">Live Viewport</span>
+                    <span class="viewport-badge">{editorTitleLabel}</span>
                     <span class="viewport-badge viewport-badge-muted">{editorModeLabel}</span>
                     {#if editorDirty}
-                        <span class="viewport-badge scene-editor-dirty-badge">Unsaved Scene</span>
+                        <span class="viewport-badge scene-editor-dirty-badge">{editorDirtyLabel}</span>
                     {/if}
                 </div>
                 <div class="viewport-toolbar-actions">

@@ -19,11 +19,13 @@ import {
 } from './core/shader-pipeline';
 import {
     Slicer,
+    type SliceDebugSnapshot,
     type SliceProgressUpdate,
     type ToolpathPoint,
     type VaseSliceBenchmarkRun,
     type VaseSlicerSettings,
 } from './core/slicer';
+import type { ToolpathPostprocessConfig } from './core/toolpath-postprocess';
 import { Preview } from './ui';
 
 export interface SlicerBenchmarkSummary {
@@ -149,6 +151,7 @@ export class StudioController {
     private initialized: boolean;
     private sceneControlDefinitions: SceneControlDefinition[];
     private sceneControlValues: SceneControlValueMap;
+    private toolpathPostprocessConfig: ToolpathPostprocessConfig | null;
 
     constructor() {
         this.renderer = new Renderer();
@@ -164,6 +167,7 @@ export class StudioController {
         this.initialized = false;
         this.sceneControlDefinitions = getSceneControlDefinitions();
         this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions);
+        this.toolpathPostprocessConfig = null;
 
         if (this.filamentProfiles.length > 0) {
             this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
@@ -379,6 +383,10 @@ export class StudioController {
         this.preview.setOverlayVisible(visible);
     }
 
+    public getLastSliceDebugSnapshot(): SliceDebugSnapshot | null {
+        return this.slicer.getLastSliceDebugSnapshot();
+    }
+
     public changePrinterModel(printerModelId: string): PresetChangeResult {
         const nextModel = this.printerModels.find((model) => model.id === printerModelId);
         if (!nextModel) {
@@ -418,11 +426,15 @@ export class StudioController {
         this.syncSceneSlicerUniforms();
     }
 
+    public setToolpathPostprocessConfig(config: ToolpathPostprocessConfig | null): void {
+        this.toolpathPostprocessConfig = config ? { ...config } : null;
+    }
+
     public async generateVaseGcode(
         onProgress?: (update: SliceProgressUpdate) => void
     ): Promise<{ filename: string; bytes: number; points: number }> {
         return this.runWhilePreviewPausedAsync(async () => {
-            const result = await this.slicer.generateVaseGcodeWithProgress(this.slicerSettings, onProgress);
+            const result = await this.slicer.generateVaseGcodeWithProgress(this.slicerSettings, onProgress, this.toolpathPostprocessConfig);
             this.preview.setToolpathOverlayWorldPoints(
                 this.convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
             );
@@ -438,7 +450,7 @@ export class StudioController {
 
     public benchmarkVaseGcode(iterations: number, warmupRuns: number): SlicerBenchmarkSummary {
         return this.runWhilePreviewPaused(() => {
-            const benchmark = this.slicer.benchmarkVaseGcode(this.slicerSettings, iterations, warmupRuns);
+            const benchmark = this.slicer.benchmarkVaseGcode(this.slicerSettings, iterations, warmupRuns, this.toolpathPostprocessConfig);
             this.preview.setToolpathOverlayWorldPoints(
                 this.convertToolpathToScenePoints(benchmark.lastResult.toolpath.points, benchmark.settings)
             );
