@@ -444,7 +444,7 @@ export class StudioController {
             this.preview.setToolpathOverlayWorldPoints(
                 convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
             );
-            const filename = buildSlicerFilename(this.slicerSettings);
+            const filename = buildSlicerFilename(this.slicerSettings, this.toolpathPostprocessConfig);
             downloadTextFile(filename, result.gcode);
             return {
                 filename,
