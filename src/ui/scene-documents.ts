@@ -1,4 +1,10 @@
 import type { SceneDocument } from '../core/shader-pipeline';
+import {
+    buildBrowserStoragePayload,
+    hasDirtyDocuments,
+    mergeBrowserDocuments,
+    type StoredBrowserDocuments,
+} from './documents/repository';
 
 const SCENE_DOCUMENTS_STORAGE_KEY = 'implicit.sceneDocuments.v1';
 const SCENE_API_ENDPOINT = '/__implicit_api/scenes';
@@ -8,11 +14,6 @@ export type SceneDocumentStorageMode = 'browser' | 'filesystem';
 export interface SceneRepositoryState {
     mode: SceneDocumentStorageMode;
     documents: SceneDocument[];
-}
-
-interface StoredBrowserDocuments {
-    overrides: Array<{ id: string; source: string }>;
-    customs: SceneDocument[];
 }
 
 interface SceneApiDocumentPayload {
@@ -84,40 +85,16 @@ export function createSceneDocument(existingDocuments: SceneDocument[], sourceTe
 }
 
 export function hasDirtySceneDocuments(workingDocuments: SceneDocument[], persistedDocuments: SceneDocument[]): boolean {
-    const persistedById = new Map(persistedDocuments.map((document) => [document.id, document]));
-
-    if (workingDocuments.length !== persistedDocuments.length) {
-        return true;
-    }
-
-    return workingDocuments.some((document) => {
-        const persisted = persistedById.get(document.id);
-        return !persisted || persisted.source !== document.source || persisted.fileName !== document.fileName;
-    });
+    return hasDirtyDocuments(workingDocuments, persistedDocuments, (working, persisted) => (
+        working.id === persisted.id &&
+        working.source === persisted.source &&
+        working.fileName === persisted.fileName
+    ));
 }
 
 function loadBrowserSceneDocuments(defaultDocuments: SceneDocument[]): SceneDocument[] {
     const stored = readStoredBrowserDocuments();
-    const defaultById = new Map(defaultDocuments.map((document) => [document.id, cloneSceneDocument(document)]));
-
-    for (const override of stored.overrides) {
-        const existing = defaultById.get(override.id);
-        if (!existing) {
-            continue;
-        }
-
-        existing.source = override.source;
-    }
-
-    for (const custom of stored.customs) {
-        if (defaultById.has(custom.id)) {
-            continue;
-        }
-
-        defaultById.set(custom.id, cloneSceneDocument(custom));
-    }
-
-    return sortSceneDocuments(Array.from(defaultById.values()));
+    return mergeBrowserDocuments(defaultDocuments, stored, cloneSceneDocument, sortSceneDocuments);
 }
 
 function persistBrowserSceneDocuments(defaultDocuments: SceneDocument[], currentDocuments: SceneDocument[]): void {
@@ -125,26 +102,12 @@ function persistBrowserSceneDocuments(defaultDocuments: SceneDocument[], current
         return;
     }
 
-    const defaultsById = new Map(defaultDocuments.map((document) => [document.id, document]));
-    const overrides: StoredBrowserDocuments['overrides'] = [];
-    const customs: SceneDocument[] = [];
-
-    for (const document of currentDocuments) {
-        const defaultDocument = defaultsById.get(document.id);
-        if (defaultDocument) {
-            if (defaultDocument.source !== document.source) {
-                overrides.push({ id: document.id, source: document.source });
-            }
-            continue;
-        }
-
-        customs.push(cloneSceneDocument(document));
-    }
+    const payload = buildBrowserStoragePayload(defaultDocuments, currentDocuments, cloneSceneDocument);
 
     try {
         localStorage.setItem(
             SCENE_DOCUMENTS_STORAGE_KEY,
-            JSON.stringify({ overrides, customs } satisfies StoredBrowserDocuments)
+            JSON.stringify(payload)
         );
     } catch {
         // Ignore storage write failures.
@@ -209,7 +172,7 @@ async function readErrorPayload(response: Response): Promise<string> {
     }
 }
 
-function readStoredBrowserDocuments(): StoredBrowserDocuments {
+function readStoredBrowserDocuments(): StoredBrowserDocuments<SceneDocument> {
     if (typeof localStorage === 'undefined') {
         return { overrides: [], customs: [] };
     }
@@ -220,7 +183,7 @@ function readStoredBrowserDocuments(): StoredBrowserDocuments {
             return { overrides: [], customs: [] };
         }
 
-        const parsed = JSON.parse(raw) as Partial<StoredBrowserDocuments>;
+        const parsed = JSON.parse(raw) as Partial<StoredBrowserDocuments<SceneDocument>>;
         return {
             overrides: Array.isArray(parsed.overrides)
                 ? parsed.overrides.filter(isStoredOverride)

@@ -8,6 +8,24 @@ import sdfPrimitivesSource from '../shaders/lib/sdf-primitives.glsl?raw';
 import slicerFragmentTemplateSource from '../shaders/slicer.frag.glsl?raw';
 import slicerVertexSource from '../shaders/slicer.vert.glsl?raw';
 import utilsSource from '../shaders/lib/utils.glsl?raw';
+import { parseSceneControlDefinitions, parseSceneDefaultParams, readSceneNumberParam } from './shaders/scene-parser';
+import type {
+    SceneControlDefinition,
+    SceneControlValueMap,
+    SceneDocument,
+    SceneOption,
+    SceneParamMap,
+    SceneSlicerDefaults,
+} from './shaders/types';
+export type {
+    SceneControlDefinition,
+    SceneControlValueMap,
+    SceneDocument,
+    SceneOption,
+    SceneParamMap,
+    SceneParamValue,
+    SceneSlicerDefaults,
+} from './shaders/types';
 
 const sceneSourceModules = import.meta.glob('../shaders/scenes/*.glsl', {
     eager: true,
@@ -46,42 +64,6 @@ interface ShaderSources {
     environment: string;
     materials: string;
     utils: string;
-}
-
-export type SceneParamValue = number | boolean | string;
-export type SceneParamMap = Record<string, SceneParamValue>;
-export type SceneControlValueMap = Record<string, number>;
-
-export interface SceneControlDefinition {
-    key: string;
-    label: string;
-    uniform: string;
-    min: number;
-    max: number;
-    step: number;
-    defaultValue: number;
-    section: string;
-    description?: string;
-}
-
-export interface SceneSlicerDefaults {
-    minY?: number;
-    maxY?: number;
-    modelScale?: number;
-    maxRadius?: number;
-    nozzleDiameterMm?: number;
-    flowRate?: number;
-    layerHeightMm?: number;
-}
-
-export interface SceneOption {
-    id: string;
-    name: string;
-}
-
-export interface SceneDocument extends SceneOption {
-    fileName: string;
-    source: string;
 }
 
 interface SceneEntry extends SceneDocument {
@@ -347,77 +329,6 @@ export function getSceneSlicerDefaults(): SceneSlicerDefaults {
     return defaults;
 }
 
-function parseSceneDefaultParams(sceneSource: string): SceneParamMap {
-    const params: SceneParamMap = {};
-    const definePattern = /^\s*#define\s+SCENE_DEFAULT_([A-Z0-9_]+)\s+(.+?)\s*$/gm;
-
-    let match: RegExpExecArray | null = definePattern.exec(sceneSource);
-    while (match) {
-        const macroSuffix = match[1] ?? '';
-        const rawExpression = match[2] ?? '';
-        const key = sceneParamKeyFromMacroSuffix(macroSuffix);
-        const value = parseSceneParamLiteral(rawExpression);
-
-        if (key.length > 0 && value !== undefined) {
-            params[key] = value;
-        }
-
-        match = definePattern.exec(sceneSource);
-    }
-
-    return params;
-}
-
-function readSceneNumberParam(params: SceneParamMap, keys: string[], positiveOnly = false): number | undefined {
-    for (const key of keys) {
-        const value = params[key];
-        if (typeof value !== 'number' || !Number.isFinite(value)) {
-            continue;
-        }
-
-        if (positiveOnly && value <= 0) {
-            continue;
-        }
-
-        return value;
-    }
-
-    return undefined;
-}
-
-function sceneParamKeyFromMacroSuffix(macroSuffix: string): string {
-    return macroSuffix
-        .trim()
-        .toLowerCase()
-        .replace(/_+([a-z0-9])/g, (_, letter: string) => letter.toUpperCase());
-}
-
-function parseSceneParamLiteral(rawExpression: string): SceneParamValue | undefined {
-    const inlineCommentOffset = rawExpression.indexOf('//');
-    const expression = (inlineCommentOffset >= 0 ? rawExpression.slice(0, inlineCommentOffset) : rawExpression).trim();
-    if (!expression) {
-        return undefined;
-    }
-
-    if ((expression.startsWith('"') && expression.endsWith('"')) || (expression.startsWith("'") && expression.endsWith("'"))) {
-        return expression.slice(1, -1);
-    }
-
-    const normalized = expression.toLowerCase();
-    if (normalized === 'true') {
-        return true;
-    }
-    if (normalized === 'false') {
-        return false;
-    }
-
-    const parsed = Number(expression);
-    if (!Number.isFinite(parsed)) {
-        return expression;
-    }
-    return parsed;
-}
-
 function buildSceneEntries(modules: Record<string, string | { default: string }>): SceneEntry[] {
     const deduped = new Map<string, SceneEntry>();
 
@@ -474,94 +385,6 @@ function normalizeSceneFileName(value: string): string {
     }
 
     return `${sanitized || 'scene'}.glsl`;
-}
-
-interface SceneControlConfigFile {
-    key?: unknown;
-    label?: unknown;
-    uniform?: unknown;
-    min?: unknown;
-    max?: unknown;
-    step?: unknown;
-    default?: unknown;
-    section?: unknown;
-    description?: unknown;
-}
-
-function parseSceneControlDefinitions(sceneSource: string): SceneControlDefinition[] {
-    const pattern = /^\s*\/\/\s*@control\s+(\{.+\})\s*$/gm;
-    const controls: SceneControlDefinition[] = [];
-    const seenKeys = new Set<string>();
-
-    let match: RegExpExecArray | null = pattern.exec(sceneSource);
-    while (match) {
-        const parsed = safeParseSceneControlConfig(match[1] ?? '');
-        if (!parsed || seenKeys.has(parsed.key)) {
-            match = pattern.exec(sceneSource);
-            continue;
-        }
-
-        seenKeys.add(parsed.key);
-        controls.push(parsed);
-        match = pattern.exec(sceneSource);
-    }
-
-    return controls;
-}
-
-function safeParseSceneControlConfig(rawPayload: string): SceneControlDefinition | null {
-    try {
-        const parsed = JSON.parse(rawPayload) as SceneControlConfigFile;
-        const key = typeof parsed.key === 'string' ? normalizeSceneControlKey(parsed.key) : '';
-        if (!key) {
-            return null;
-        }
-
-        const min = readFiniteNumber(parsed.min);
-        const max = readFiniteNumber(parsed.max);
-        const step = readFiniteNumber(parsed.step);
-        if (min === null || max === null || step === null || max <= min || step <= 0) {
-            return null;
-        }
-
-        const fallbackDefault = min + (max - min) * 0.5;
-        const defaultValue = clampSceneControlValue(readFiniteNumber(parsed.default) ?? fallbackDefault, min, max);
-        const uniform = typeof parsed.uniform === 'string' && parsed.uniform.trim().length > 0
-            ? parsed.uniform.trim()
-            : `uScene${key.charAt(0).toUpperCase()}${key.slice(1)}`;
-
-        return {
-            key,
-            label: typeof parsed.label === 'string' && parsed.label.trim().length > 0 ? parsed.label.trim() : toSceneLabel(key),
-            uniform,
-            min,
-            max,
-            step,
-            defaultValue,
-            section: typeof parsed.section === 'string' && parsed.section.trim().length > 0 ? parsed.section.trim() : 'Scene Parameters',
-            description: typeof parsed.description === 'string' && parsed.description.trim().length > 0 ? parsed.description.trim() : undefined,
-        };
-    } catch {
-        return null;
-    }
-}
-
-function normalizeSceneControlKey(value: string): string {
-    return value
-        .trim()
-        .replace(/[^a-zA-Z0-9]+/g, ' ')
-        .trim()
-        .replace(/\s+(.)/g, (_, letter: string) => letter.toUpperCase())
-        .replace(/\s/g, '')
-        .replace(/^[A-Z]/, (letter) => letter.toLowerCase());
-}
-
-function readFiniteNumber(value: unknown): number | null {
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function clampSceneControlValue(value: number, min: number, max: number): number {
-    return Math.min(max, Math.max(min, value));
 }
 
 function getSceneSourceById(sceneId: string): string {

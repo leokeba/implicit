@@ -17,8 +17,16 @@ implicit
 │   ├── main.ts                # Application orchestration entry point
 │   ├── core
 │   │   ├── renderer.ts        # Realtime viewport renderer and camera interaction
+│   │   ├── renderer/
+│   │   │   └── types.ts       # Shared renderer type contracts
 │   │   ├── slicer.ts          # Vase-mode slicing and G-code emission
+│   │   ├── slicer/
+│   │   │   ├── gcode-metadata.ts
+│   │   │   └── gcode-template.ts
 │   │   └── shader-pipeline.ts # Central shader source composition and shared scene wiring
+│   │   └── shaders/
+│   │       ├── scene-parser.ts
+│   │       └── types.ts
 │   ├── shaders
 │   │   ├── renderer.vert.glsl
 │   │   ├── renderer.frag.glsl
@@ -31,8 +39,23 @@ implicit
 │   │       ├── environment.glsl
 │   │       └── materials.glsl
 │   ├── ui
-│   │   ├── controls.ts        # UI controls
+│   │   ├── inspector-schema.ts # Compatibility entrypoint for inspector modules
+│   │   ├── inspector/
+│   │   │   ├── types.ts
+│   │   │   ├── tabs.ts
+│   │   │   ├── readers.ts
+│   │   │   ├── commit.ts
+│   │   │   └── dynamic-sections.ts
+│   │   ├── documents/
+│   │   │   └── repository.ts
 │   │   └── preview.ts         # Canvas and toolpath overlay
+│   ├── studio/
+│   │   ├── benchmark-summary.ts
+│   │   ├── file-export.ts
+│   │   ├── render-lifecycle.ts
+│   │   └── toolpath-overlay.ts
+│   ├── app/
+│   │   └── helpers.ts
 │   └── types/
 │       └── shaders.d.ts
 ├── index.html            # Main HTML file

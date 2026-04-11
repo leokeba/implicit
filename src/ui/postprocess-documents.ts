@@ -1,4 +1,10 @@
 import type { ToolpathPostprocessLanguage } from '../core/toolpath-postprocess';
+import {
+    buildBrowserStoragePayload,
+    hasDirtyDocuments,
+    mergeBrowserDocuments,
+    type StoredBrowserDocuments,
+} from './documents/repository';
 
 const POSTPROCESS_STORAGE_KEY = 'implicit.postprocessScripts.v1';
 const POSTPROCESS_API_ENDPOINT = '/__implicit_api/postprocess-scripts';
@@ -22,11 +28,6 @@ export interface PostprocessScriptDocument {
 export interface PostprocessRepositoryState {
     mode: PostprocessScriptStorageMode;
     documents: PostprocessScriptDocument[];
-}
-
-interface StoredBrowserDocuments {
-    overrides: Array<{ id: string; source: string }>;
-    customs: PostprocessScriptDocument[];
 }
 
 interface ScriptApiDocumentPayload {
@@ -123,40 +124,17 @@ export function hasDirtyPostprocessDocuments(
     workingDocuments: PostprocessScriptDocument[],
     persistedDocuments: PostprocessScriptDocument[]
 ): boolean {
-    const persistedById = new Map(persistedDocuments.map((document) => [document.id, document]));
-
-    if (workingDocuments.length !== persistedDocuments.length) {
-        return true;
-    }
-
-    return workingDocuments.some((document) => {
-        const persisted = persistedById.get(document.id);
-        return !persisted || persisted.source !== document.source || persisted.fileName !== document.fileName || persisted.language !== document.language;
-    });
+    return hasDirtyDocuments(workingDocuments, persistedDocuments, (working, persisted) => (
+        working.id === persisted.id &&
+        working.source === persisted.source &&
+        working.fileName === persisted.fileName &&
+        working.language === persisted.language
+    ));
 }
 
 function loadBrowserPostprocessDocuments(defaultDocuments: PostprocessScriptDocument[]): PostprocessScriptDocument[] {
     const stored = readStoredBrowserDocuments();
-    const defaultById = new Map(defaultDocuments.map((document) => [document.id, clonePostprocessDocument(document)]));
-
-    for (const override of stored.overrides) {
-        const existing = defaultById.get(override.id);
-        if (!existing) {
-            continue;
-        }
-
-        existing.source = override.source;
-    }
-
-    for (const custom of stored.customs) {
-        if (defaultById.has(custom.id)) {
-            continue;
-        }
-
-        defaultById.set(custom.id, clonePostprocessDocument(custom));
-    }
-
-    return sortPostprocessDocuments(Array.from(defaultById.values()));
+    return mergeBrowserDocuments(defaultDocuments, stored, clonePostprocessDocument, sortPostprocessDocuments);
 }
 
 function persistBrowserPostprocessDocuments(defaultDocuments: PostprocessScriptDocument[], currentDocuments: PostprocessScriptDocument[]): void {
@@ -164,26 +142,12 @@ function persistBrowserPostprocessDocuments(defaultDocuments: PostprocessScriptD
         return;
     }
 
-    const defaultsById = new Map(defaultDocuments.map((document) => [document.id, document]));
-    const overrides: StoredBrowserDocuments['overrides'] = [];
-    const customs: PostprocessScriptDocument[] = [];
-
-    for (const document of currentDocuments) {
-        const defaultDocument = defaultsById.get(document.id);
-        if (defaultDocument) {
-            if (defaultDocument.source !== document.source) {
-                overrides.push({ id: document.id, source: document.source });
-            }
-            continue;
-        }
-
-        customs.push(clonePostprocessDocument(document));
-    }
+    const payload = buildBrowserStoragePayload(defaultDocuments, currentDocuments, clonePostprocessDocument);
 
     try {
         localStorage.setItem(
             POSTPROCESS_STORAGE_KEY,
-            JSON.stringify({ overrides, customs } satisfies StoredBrowserDocuments)
+            JSON.stringify(payload)
         );
     } catch {
         // Ignore storage write failures.
@@ -254,7 +218,7 @@ async function readErrorPayload(response: Response): Promise<string> {
     }
 }
 
-function readStoredBrowserDocuments(): StoredBrowserDocuments {
+function readStoredBrowserDocuments(): StoredBrowserDocuments<PostprocessScriptDocument> {
     if (typeof localStorage === 'undefined') {
         return { overrides: [], customs: [] };
     }
@@ -265,7 +229,7 @@ function readStoredBrowserDocuments(): StoredBrowserDocuments {
             return { overrides: [], customs: [] };
         }
 
-        const parsed = JSON.parse(raw) as Partial<StoredBrowserDocuments>;
+        const parsed = JSON.parse(raw) as Partial<StoredBrowserDocuments<PostprocessScriptDocument>>;
         return {
             overrides: Array.isArray(parsed.overrides)
                 ? parsed.overrides.filter(isStoredOverride)
