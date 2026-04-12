@@ -1,11 +1,12 @@
-import type { VaseSlicerSettings } from '../../core/slicer';
-import { buildPostprocessControlSections, buildSceneControlSections } from './dynamic-sections';
 import type {
     ControlTabId,
     InspectorFieldOption,
     InspectorSchemaState,
     InspectorTabSchema,
 } from './types';
+import { buildPostprocessControlSections, buildSceneControlSections } from './dynamic-sections';
+
+import type { VaseSlicerSettings } from '../../core/slicer';
 
 export const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
     { value: '0', label: 'Shaded' },
@@ -200,6 +201,17 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'textarea', target: 'slicerText', key: 'endGcode', id: 'slicer-end-gcode', label: 'End G-code', rows: 5 },
                 ],
             },
+            {
+                id: 'machine-printer-connection',
+                title: 'Printer Connection',
+                caption: 'Configure Moonraker connection details for one-click prints.',
+                fields: [
+                    { kind: 'text', target: 'printerConnection', key: 'baseUrl', id: 'printer-connection-base-url', label: 'Moonraker URL', placeholder: 'http://printer.local:7125', inputType: 'url' },
+                    { kind: 'text', target: 'printerConnection', key: 'apiKey', id: 'printer-connection-api-key', label: 'API key (optional)', placeholder: 'Leave blank for trusted LAN', inputType: 'password' },
+                    { kind: 'text', target: 'printerConnection', key: 'uploadPath', id: 'printer-connection-upload-path', label: 'Upload subfolder (optional)', placeholder: 'implicit' },
+                    { kind: 'select', target: 'printerConnectionAutoStart', id: 'printer-connection-auto-start', label: 'Auto-start after upload', options: BOOLEAN_TOGGLE_OPTIONS },
+                ],
+            },
         ],
     },
     {
@@ -244,6 +256,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                 fields: [
                     { kind: 'select', target: 'postprocessScript', id: 'postprocess-script-select', label: 'Active script', optionsSource: 'postprocessDocuments' },
                     { kind: 'select', target: 'postprocessEnabled', id: 'postprocess-enabled', label: 'Enable script', options: BOOLEAN_TOGGLE_OPTIONS },
+                    { kind: 'select', target: 'postprocessAutoUpdate', id: 'postprocess-auto-update', label: 'Auto-update generated G-code', options: BOOLEAN_TOGGLE_OPTIONS },
                 ],
             },
         ],
@@ -287,6 +300,27 @@ export function getInspectorTabSchema(tabId: ControlTabId): InspectorTabSchema {
 
 export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSchemaState): InspectorTabSchema {
     const baseTab = getInspectorTabSchema(tabId);
+    if (tabId === 'output') {
+        const outputActions: InspectorTabSchema['actions'] = [
+            { id: 'generateVaseGcode', label: state.exportActionLabel, disabledWhenPending: true },
+        ];
+
+        if (state.hasGeneratedGcode) {
+            outputActions.push({ id: 'downloadGeneratedGcode', label: 'Download', disabledWhenPending: true });
+        }
+
+        if (state.printerConfigured && state.printerAvailable) {
+            outputActions.push({ id: 'sendVaseGcodeToPrinter', label: 'Print', disabledWhenPending: true });
+        }
+
+        outputActions.push({ id: 'benchmarkVaseGcode', label: 'Benchmark', tone: 'secondary', disabledWhenPending: true });
+
+        return {
+            ...baseTab,
+            actions: outputActions,
+        };
+    }
+
     if (tabId === 'postprocess') {
         const postprocessControlSections = buildPostprocessControlSections(state.postprocessControlDefinitions);
         if (postprocessControlSections.length === 0) {

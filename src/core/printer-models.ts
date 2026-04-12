@@ -9,6 +9,10 @@ export interface PrinterModel {
     defaultFirstLayerPrintSpeedMmPerSec?: number;
     defaultPrintSpeedMmPerSec?: number;
     defaultTravelSpeedMmPerSec?: number;
+    defaultMoonrakerUrl?: string;
+    defaultMoonrakerApiKey?: string;
+    defaultMoonrakerUploadPath?: string;
+    defaultMoonrakerAutoStartPrint?: boolean;
     startGcode: string[];
     endGcode: string[];
 }
@@ -22,6 +26,10 @@ interface PrinterModelFile {
     defaultFirstLayerPrintSpeedMmPerSec?: unknown;
     defaultPrintSpeedMmPerSec?: unknown;
     defaultTravelSpeedMmPerSec?: unknown;
+    defaultMoonrakerUrl?: unknown;
+    defaultMoonrakerApiKey?: unknown;
+    defaultMoonrakerUploadPath?: unknown;
+    defaultMoonrakerAutoStartPrint?: unknown;
     startGcode?: unknown;
     endGcode?: unknown;
 }
@@ -94,6 +102,10 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
     const defaultFirstLayerPrintSpeedMmPerSec = toOptionalPositiveNumber(model.defaultFirstLayerPrintSpeedMmPerSec);
     const defaultPrintSpeedMmPerSec = toOptionalPositiveNumber(model.defaultPrintSpeedMmPerSec);
     const defaultTravelSpeedMmPerSec = toOptionalPositiveNumber(model.defaultTravelSpeedMmPerSec);
+    const defaultMoonrakerUrl = toOptionalString(model.defaultMoonrakerUrl);
+    const defaultMoonrakerApiKey = toOptionalString(model.defaultMoonrakerApiKey);
+    const defaultMoonrakerUploadPath = toOptionalString(model.defaultMoonrakerUploadPath);
+    const defaultMoonrakerAutoStartPrint = toOptionalBoolean(model.defaultMoonrakerAutoStartPrint);
     const startGcode = toGcodeLines(model.startGcode);
     const endGcode = toGcodeLines(model.endGcode);
 
@@ -111,6 +123,10 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
         defaultFirstLayerPrintSpeedMmPerSec,
         defaultPrintSpeedMmPerSec,
         defaultTravelSpeedMmPerSec,
+        defaultMoonrakerUrl,
+        defaultMoonrakerApiKey,
+        defaultMoonrakerUploadPath,
+        defaultMoonrakerAutoStartPrint,
         startGcode,
         endGcode,
     };
@@ -134,6 +150,19 @@ function toOptionalPositiveNumber(value: unknown): number | undefined {
         return undefined;
     }
     return value;
+}
+
+function toOptionalString(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+        return undefined;
+    }
+
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function toOptionalBoolean(value: unknown): boolean | undefined {
+    return typeof value === 'boolean' ? value : undefined;
 }
 
 function toGcodeLines(value: unknown): string[] {

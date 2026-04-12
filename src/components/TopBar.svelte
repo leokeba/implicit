@@ -14,10 +14,15 @@
     export let filamentProfileId: string;
     export let shaderStatusMode: ShaderStatusMode;
     export let shaderStatusText: string;
+    export let actionPending: boolean;
+    export let showDownloadButton: boolean;
+    export let showPrintButton: boolean;
     export let onCommitScene: (sceneId: string) => void;
     export let onCommitViewMode: (viewMode: number) => void;
     export let onCommitPrinterModel: (printerModelId: string) => void;
     export let onCommitFilamentProfile: (filamentProfileId: string) => void;
+    export let onDownloadGeneratedGcode: () => void | Promise<void>;
+    export let onSendVaseGcodeToPrinter: () => void | Promise<void>;
 </script>
 
 <header class="app-topbar">
@@ -64,6 +69,12 @@
     </div>
 
     <div class="topbar-actions">
+        {#if showDownloadButton}
+            <button class="chrome-button" type="button" disabled={actionPending} on:click={onDownloadGeneratedGcode}>Download</button>
+        {/if}
+        {#if showPrintButton}
+            <button class="chrome-button" type="button" disabled={actionPending} on:click={onSendVaseGcodeToPrinter}>Print</button>
+        {/if}
         <div class={`shader-status shader-status-${shaderStatusMode}`} role="status" aria-live="polite">{shaderStatusText}</div>
     </div>
 </header>

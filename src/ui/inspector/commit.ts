@@ -32,6 +32,15 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
         case 'postprocessEnabled':
             handlers.updatePostprocessEnabled(rawValue === 'true');
             return;
+        case 'postprocessAutoUpdate':
+            handlers.updatePostprocessAutoUpdate(rawValue === 'true');
+            return;
+        case 'printerConnectionAutoStart':
+            handlers.updatePrinterConnectionAutoStart(rawValue === 'true');
+            return;
+        case 'printerConnection':
+            handlers.updatePrinterConnectionString(field.key, rawValue);
+            return;
         case 'sceneControl':
             handlers.updateSceneControlValue(field.key, coerceNumber(rawValue));
             return;
@@ -73,6 +82,10 @@ export function triggerInspectorAction(action: InspectorActionSchema, handlers: 
             return handlers.resetView();
         case 'generateVaseGcode':
             return handlers.generateVaseGcode();
+        case 'downloadGeneratedGcode':
+            return handlers.downloadGeneratedGcode();
+        case 'sendVaseGcodeToPrinter':
+            return handlers.sendVaseGcodeToPrinter();
         case 'benchmarkVaseGcode':
             return handlers.benchmarkVaseGcode();
         case 'createPostprocessScript':

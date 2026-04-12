@@ -48,6 +48,8 @@ export type BooleanSlicerKey =
     | 'enableContourAlignment'
     | 'enableMoveMerging';
 
+export type PrinterConnectionStringKey = 'baseUrl' | 'apiKey' | 'uploadPath';
+
 export interface InspectorSchemaState {
     sceneOptions: SceneOption[];
     sceneControlDefinitions: SceneControlDefinition[];
@@ -70,11 +72,22 @@ export interface InspectorSchemaState {
     postprocessDirty: boolean;
     postprocessStorageLabel: string;
     postprocessSavePending: boolean;
+    postprocessAutoUpdate: boolean;
     benchmarkIterations: number;
     benchmarkWarmups: number;
     actionPending: boolean;
     outputStatus: string;
     sliceDebugSnapshot: SliceDebugSnapshot | null;
+    printerConnection: {
+        baseUrl: string;
+        apiKey: string;
+        uploadPath: string;
+        autoStartPrint: boolean;
+    };
+    printerConfigured: boolean;
+    printerAvailable: boolean;
+    exportActionLabel: string;
+    hasGeneratedGcode: boolean;
 }
 
 export interface InspectorSchemaHandlers {
@@ -93,6 +106,7 @@ export interface InspectorSchemaHandlers {
     commitFilamentProfile: (filamentProfileId: string) => void;
     commitPostprocessScript: (scriptId: string) => void;
     updatePostprocessEnabled: (value: boolean) => void;
+    updatePostprocessAutoUpdate: (value: boolean) => void;
     updatePostprocessSource: (value: string) => void;
     updatePostprocessControlValue: (controlKey: string, value: number) => void;
     createPostprocessScript: () => void | Promise<void>;
@@ -100,7 +114,11 @@ export interface InspectorSchemaHandlers {
     revertPostprocessScript: () => void;
     setBenchmarkIterations: (value: number) => void;
     setBenchmarkWarmups: (value: number) => void;
+    updatePrinterConnectionString: (key: PrinterConnectionStringKey, value: string) => void;
+    updatePrinterConnectionAutoStart: (value: boolean) => void;
     generateVaseGcode: () => void | Promise<void>;
+    downloadGeneratedGcode: () => void | Promise<void>;
+    sendVaseGcodeToPrinter: () => void | Promise<void>;
     benchmarkVaseGcode: () => void | Promise<void>;
 }
 
@@ -131,6 +149,12 @@ interface TextareaFieldBase extends FieldBase {
     rows: number;
 }
 
+interface TextFieldBase extends FieldBase {
+    kind: 'text';
+    placeholder?: string;
+    inputType?: 'text' | 'password' | 'url';
+}
+
 export type InspectorFieldSchema =
     | (NumberFieldBase & { target: 'raymarch'; key: keyof RaymarchParams })
     | (NumberFieldBase & { target: 'viewport'; key: keyof ViewportParams })
@@ -147,6 +171,9 @@ export type InspectorFieldSchema =
     | (SelectFieldBase & { target: 'filamentProfile'; optionsSource: 'filamentProfiles' })
     | (SelectFieldBase & { target: 'postprocessScript'; optionsSource: 'postprocessDocuments' })
     | (SelectFieldBase & { target: 'postprocessEnabled'; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'postprocessAutoUpdate'; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'printerConnectionAutoStart'; options: InspectorFieldOption[] })
+    | (TextFieldBase & { target: 'printerConnection'; key: PrinterConnectionStringKey })
     | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> })
     | (TextareaFieldBase & { target: 'postprocessText' });
 
@@ -163,7 +190,7 @@ export interface InspectorSectionSchema {
 }
 
 export interface InspectorActionSchema {
-    id: 'resetView' | 'generateVaseGcode' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript';
+    id: 'resetView' | 'generateVaseGcode' | 'downloadGeneratedGcode' | 'sendVaseGcodeToPrinter' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript';
     label: string;
     tone?: 'secondary';
     disabledWhenPending?: boolean;

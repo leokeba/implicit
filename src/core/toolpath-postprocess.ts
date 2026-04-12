@@ -50,12 +50,14 @@ export interface ToolpathPostprocessLayerSummary {
 export interface ToolpathPostprocessPointMetrics {
     pointIndex: number;
     layerPointIndex: number;
+    shapeLayerIndex: number;
     segmentPathMm: number;
     segmentFilamentMm: number;
     layerPathMm: number;
     layerPathProgress: number;
     layerFilamentMm: number;
     layerFilamentProgress: number;
+    shapeLayerProgress: number;
     spiralPathMm: number;
     spiralPathProgress: number;
     spiralFilamentMm: number;
@@ -239,10 +241,18 @@ export function buildToolpathPostprocessContext(
     }
 
     const layerSummaryByLayer = new Map(layerSummaries.map((summary) => [summary.layer, summary]));
+    const layerOrdinalByLayer = new Map(layerSummaries.map((summary, index) => [summary.layer, index]));
+    const layerCount = layerSummaries.length;
     const contextPoints = points.map((point, index) => {
         const layerSummary = layerSummaryByLayer.get(point.layer);
+        const layerOrdinal = layerOrdinalByLayer.get(point.layer) ?? 0;
         const layerPathTotal = layerSummary?.pathLengthMm ?? 0;
         const layerFilamentTotal = layerSummary?.filamentLengthMm ?? 0;
+        const layerPathProgress = ratioOrZero(layerPath[index], layerPathTotal);
+        const layerFilamentProgress = ratioOrZero(layerFilament[index], layerFilamentTotal);
+        const intraLayerProgress = layerFilamentTotal > 1e-9 ? layerFilamentProgress : layerPathProgress;
+        const normalizedLayerSpan = layerCount > 0 ? 1 / layerCount : 0;
+        const shapeLayerProgress = Math.min(1, Math.max(0, (layerOrdinal * normalizedLayerSpan) + (intraLayerProgress * normalizedLayerSpan)));
 
         return {
             x: point.x,
@@ -255,12 +265,14 @@ export function buildToolpathPostprocessContext(
             metrics: {
                 pointIndex: index,
                 layerPointIndex: layerPointIndex[index],
+                shapeLayerIndex: layerOrdinal,
                 segmentPathMm: segmentPath[index],
                 segmentFilamentMm: segmentFilament[index],
                 layerPathMm: layerPath[index],
-                layerPathProgress: ratioOrZero(layerPath[index], layerPathTotal),
+                layerPathProgress,
                 layerFilamentMm: layerFilament[index],
-                layerFilamentProgress: ratioOrZero(layerFilament[index], layerFilamentTotal),
+                layerFilamentProgress,
+                shapeLayerProgress,
                 spiralPathMm: spiralPath[index],
                 spiralPathProgress: ratioOrZero(spiralPath[index], totalPath),
                 spiralFilamentMm: spiralFilament[index],

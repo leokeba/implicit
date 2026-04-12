@@ -18,6 +18,12 @@ export function readFieldValue(field: InspectorFieldSchema, state: InspectorSche
             return state.activePostprocessScriptId;
         case 'postprocessEnabled':
             return String(state.postprocessEnabled);
+        case 'postprocessAutoUpdate':
+            return String(state.postprocessAutoUpdate);
+        case 'printerConnectionAutoStart':
+            return String(state.printerConnection.autoStartPrint);
+        case 'printerConnection':
+            return state.printerConnection[field.key];
         case 'sceneControl':
             return state.sceneControlValues[field.key] ?? 0;
         case 'postprocessControl':
@@ -48,7 +54,9 @@ export function readFieldOptions(field: InspectorFieldSchema, state: InspectorSc
         field.target === 'viewMode' ||
         field.target === 'slicerMode' ||
         field.target === 'slicerBoolean' ||
-        field.target === 'postprocessEnabled'
+        field.target === 'postprocessEnabled' ||
+        field.target === 'postprocessAutoUpdate' ||
+        field.target === 'printerConnectionAutoStart'
     ) {
         return field.options;
     }

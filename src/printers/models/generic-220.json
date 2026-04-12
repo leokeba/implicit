@@ -7,6 +7,9 @@
   "defaultFirstLayerPrintSpeedMmPerSec": 24,
   "defaultPrintSpeedMmPerSec": 40,
   "defaultTravelSpeedMmPerSec": 120,
+  "defaultMoonrakerUrl": "http://printer.local:7125",
+  "defaultMoonrakerUploadPath": "implicit",
+  "defaultMoonrakerAutoStartPrint": true,
   "startGcode": [
     "G90",
     "M82",

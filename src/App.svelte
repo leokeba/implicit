@@ -50,6 +50,7 @@
     } from './app/helpers';
     import { createStatusModel } from './ui/status-model';
     import { createWorkspaceStore } from './ui/workspace-store';
+    import { checkMoonrakerAvailability, downloadTextFile, uploadGcodeToMoonraker } from './studio/file-export';
 
     export let studio: StudioController;
 
@@ -102,6 +103,23 @@
     });
     const status = createStatusModel();
     const APP_RUNTIME_STORAGE_KEY = 'implicit.runtimeState.v1';
+    const PRINTER_TARGET_STORAGE_KEY = 'implicit.printerTarget.v1';
+
+    interface PrinterTarget {
+        baseUrl: string;
+        apiKey: string;
+        autoStartPrint: boolean;
+        uploadPath: string;
+    }
+
+    interface GeneratedGcodeArtifact {
+        filename: string;
+        gcode: string;
+        bytes: number;
+        points: number;
+        sliceSignature: string;
+        postprocessSignature: string;
+    }
 
     interface AppRuntimeSnapshot {
         sceneId?: string;
@@ -113,6 +131,7 @@
         sceneControlValues?: Record<string, number>;
         activePostprocessScriptId?: string;
         postprocessEnabled?: boolean;
+        postprocessAutoUpdate?: boolean;
         postprocessControlValueState?: Record<string, Record<string, number>>;
         editorDocumentMode?: 'scene' | 'postprocess';
     }
@@ -121,9 +140,123 @@
     let editorResizeCleanup: (() => void) | null = null;
     let sceneRepositoryPollHandle: number | null = null;
     let postprocessRepositoryPollHandle: number | null = null;
+    let printerAvailabilityPollHandle: number | null = null;
     let editorDockSide = false;
     let sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
     let runtimeSnapshotHydrated = false;
+    let printerTarget: PrinterTarget = {
+        baseUrl: '',
+        apiKey: '',
+        uploadPath: '',
+        autoStartPrint: true,
+    };
+    let generatedGcodeArtifact: GeneratedGcodeArtifact | null = null;
+    let printerAvailable = false;
+    let printerConfigured = false;
+    let currentSliceSignature = '';
+    let currentPostprocessSignature = '';
+    let hasGeneratedArtifactForCurrentSlice = false;
+    let hasGeneratedArtifactForCurrentState = false;
+    let generateActionLabel = 'Generate';
+    let showDownloadButton = false;
+    let postprocessAutoUpdate = false;
+    let postprocessAutoUpdateTimer: number | null = null;
+    let postprocessAutoUpdatePending = false;
+
+    function buildSliceSignature(): string {
+        return JSON.stringify({
+            sceneId,
+            sceneSource: activeSceneDocument?.source ?? '',
+            sceneControlValues,
+            slicerSettings,
+        });
+    }
+
+    function buildPostprocessSignature(config: ToolpathPostprocessConfig | null): string {
+        return JSON.stringify(config ?? null);
+    }
+
+    function readPrinterTarget(): PrinterTarget {
+        if (typeof window === 'undefined') {
+            return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
+        }
+
+        try {
+            const raw = window.localStorage.getItem(PRINTER_TARGET_STORAGE_KEY);
+            if (!raw) {
+                return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
+            }
+
+            const parsed = JSON.parse(raw) as Partial<PrinterTarget>;
+            if (!parsed || typeof parsed !== 'object') {
+                return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
+            }
+
+            return {
+                baseUrl: typeof parsed.baseUrl === 'string' ? parsed.baseUrl.trim() : '',
+                apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
+                autoStartPrint: typeof parsed.autoStartPrint === 'boolean' ? parsed.autoStartPrint : true,
+                uploadPath: typeof parsed.uploadPath === 'string' ? parsed.uploadPath.trim() : '',
+            };
+        } catch {
+            return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
+        }
+    }
+
+    function persistPrinterTarget(target: PrinterTarget): void {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        try {
+            window.localStorage.setItem(PRINTER_TARGET_STORAGE_KEY, JSON.stringify(target));
+        } catch {
+            // Ignore storage write failures.
+        }
+    }
+
+    function persistCurrentPrinterTarget(): void {
+        persistPrinterTarget(printerTarget);
+    }
+
+    async function refreshPrinterAvailability(): Promise<void> {
+        const configuredBaseUrl = printerTarget.baseUrl.trim();
+        if (!configuredBaseUrl) {
+            printerAvailable = false;
+            return;
+        }
+
+        printerAvailable = await checkMoonrakerAvailability(configuredBaseUrl, printerTarget.apiKey);
+    }
+
+    async function applyPrinterModelConnectionDefaults(printerModelId: string): Promise<void> {
+        const model = printerModels.find((candidate) => candidate.id === printerModelId);
+        if (!model) {
+            return;
+        }
+
+        const hasConnectionDefaults =
+            typeof model.defaultMoonrakerUrl === 'string' ||
+            typeof model.defaultMoonrakerApiKey === 'string' ||
+            typeof model.defaultMoonrakerUploadPath === 'string' ||
+            typeof model.defaultMoonrakerAutoStartPrint === 'boolean';
+
+        if (!hasConnectionDefaults) {
+            return;
+        }
+
+        printerTarget = {
+            baseUrl: model.defaultMoonrakerUrl ?? printerTarget.baseUrl,
+            apiKey: model.defaultMoonrakerApiKey ?? printerTarget.apiKey,
+            uploadPath: model.defaultMoonrakerUploadPath ?? printerTarget.uploadPath,
+            autoStartPrint: typeof model.defaultMoonrakerAutoStartPrint === 'boolean'
+                ? model.defaultMoonrakerAutoStartPrint
+                : printerTarget.autoStartPrint,
+        };
+
+        persistCurrentPrinterTarget();
+        await refreshPrinterAvailability();
+    }
 
     function readRuntimeSnapshot(): AppRuntimeSnapshot | null {
         if (typeof window === 'undefined') {
@@ -166,6 +299,7 @@
             sceneControlValues,
             activePostprocessScriptId,
             postprocessEnabled,
+            postprocessAutoUpdate,
             postprocessControlValueState,
             editorDocumentMode,
         };
@@ -221,6 +355,10 @@
             postprocessEnabled = snapshot.postprocessEnabled;
         }
 
+        if (typeof snapshot.postprocessAutoUpdate === 'boolean') {
+            postprocessAutoUpdate = snapshot.postprocessAutoUpdate;
+        }
+
         if (snapshot.postprocessControlValueState && typeof snapshot.postprocessControlValueState === 'object') {
             postprocessControlValueState = snapshot.postprocessControlValueState;
         }
@@ -264,6 +402,21 @@
         }
         : null;
     $: studio.setToolpathPostprocessConfig(activePostprocessConfig);
+    $: printerConfigured = printerTarget.baseUrl.trim().length > 0;
+    $: currentSliceSignature = buildSliceSignature();
+    $: currentPostprocessSignature = buildPostprocessSignature(activePostprocessConfig);
+    $: hasGeneratedArtifactForCurrentSlice = Boolean(
+        generatedGcodeArtifact && generatedGcodeArtifact.sliceSignature === currentSliceSignature
+    );
+    $: hasGeneratedArtifactForCurrentState = Boolean(
+        generatedGcodeArtifact &&
+            generatedGcodeArtifact.sliceSignature === currentSliceSignature &&
+            generatedGcodeArtifact.postprocessSignature === currentPostprocessSignature
+    );
+    $: generateActionLabel = hasGeneratedArtifactForCurrentSlice && !hasGeneratedArtifactForCurrentState
+        ? 'Update'
+        : 'Generate';
+    $: showDownloadButton = hasGeneratedArtifactForCurrentState;
     $: inspectorState = {
         sceneOptions,
         sceneControlDefinitions,
@@ -286,12 +439,27 @@
         postprocessDirty,
         postprocessStorageLabel: postprocessModeLabel,
         postprocessSavePending,
+        postprocessAutoUpdate,
         benchmarkIterations: $status.benchmarkIterations,
         benchmarkWarmups: $status.benchmarkWarmups,
         actionPending: $status.actionPending,
         outputStatus: $status.outputStatus,
         sliceDebugSnapshot,
+        printerConnection: {
+            baseUrl: printerTarget.baseUrl,
+            apiKey: printerTarget.apiKey,
+            uploadPath: printerTarget.uploadPath,
+            autoStartPrint: printerTarget.autoStartPrint,
+        },
+        printerConfigured,
+        printerAvailable,
+        exportActionLabel: generateActionLabel,
+        hasGeneratedGcode: hasGeneratedArtifactForCurrentState,
     } satisfies InspectorSchemaState;
+    $: if (postprocessAutoUpdatePending && !$status.actionPending) {
+        postprocessAutoUpdatePending = false;
+        queuePostprocessAutoUpdate();
+    }
     $: if (runtimeSnapshotHydrated) {
         persistRuntimeSnapshot(captureRuntimeSnapshot());
     }
@@ -423,6 +591,26 @@
         const result = studio.changePrinterModel(printerModelId);
         slicerSettings = result.settings;
         status.applyPresetChange(result);
+        void applyPrinterModelConnectionDefaults(printerModelId);
+    }
+
+    function updatePrinterConnectionString(key: 'baseUrl' | 'apiKey' | 'uploadPath', value: string): void {
+        printerTarget = {
+            ...printerTarget,
+            [key]: value.trim(),
+        };
+        persistCurrentPrinterTarget();
+        if (key === 'baseUrl' || key === 'apiKey') {
+            void refreshPrinterAvailability();
+        }
+    }
+
+    function updatePrinterConnectionAutoStart(value: boolean): void {
+        printerTarget = {
+            ...printerTarget,
+            autoStartPrint: value,
+        };
+        persistCurrentPrinterTarget();
     }
 
     function commitFilamentProfile(filamentProfileId: string): void {
@@ -459,6 +647,7 @@
             ? `Active postprocess script: ${nextDocument.name}.`
             : 'No active postprocess script selected.';
         status.setWorkspaceStatus(postprocessStatus);
+        schedulePostprocessAutoUpdate();
     }
 
     function updatePostprocessEnabled(value: boolean): void {
@@ -467,6 +656,21 @@
             ? `Postprocess enabled${activePostprocessDocument ? `: ${activePostprocessDocument.name}.` : '.'}`
             : 'Postprocess disabled.';
         status.setWorkspaceStatus(postprocessStatus);
+        schedulePostprocessAutoUpdate();
+    }
+
+    function updatePostprocessAutoUpdate(value: boolean): void {
+        postprocessAutoUpdate = value;
+        if (value) {
+            queuePostprocessAutoUpdate();
+            return;
+        }
+
+        if (postprocessAutoUpdateTimer !== null) {
+            window.clearTimeout(postprocessAutoUpdateTimer);
+            postprocessAutoUpdateTimer = null;
+        }
+        postprocessAutoUpdatePending = false;
     }
 
     function updatePostprocessSource(value: string): void {
@@ -480,6 +684,7 @@
                 : document
         );
         postprocessStatus = 'Postprocess script updated locally. Save to persist changes.';
+        schedulePostprocessAutoUpdate();
     }
 
     function updatePostprocessControlValue(controlKey: string, value: number): void {
@@ -501,9 +706,51 @@
             ...postprocessControlValueState,
             [activePostprocessDocument.id]: nextScriptValues,
         };
+        schedulePostprocessAutoUpdate();
     }
 
-    async function generateVaseGcode(): Promise<void> {
+    function schedulePostprocessAutoUpdate(): void {
+        // Wait for reactive signatures to update before checking auto-update guards.
+        void tick().then(() => {
+            queuePostprocessAutoUpdate();
+        });
+    }
+
+    function queuePostprocessAutoUpdate(): void {
+        if (!postprocessAutoUpdate || !hasGeneratedArtifactForCurrentSlice || hasGeneratedArtifactForCurrentState) {
+            return;
+        }
+
+        if ($status.actionPending) {
+            postprocessAutoUpdatePending = true;
+            return;
+        }
+
+        if (postprocessAutoUpdateTimer !== null) {
+            window.clearTimeout(postprocessAutoUpdateTimer);
+        }
+
+        postprocessAutoUpdateTimer = window.setTimeout(() => {
+            postprocessAutoUpdateTimer = null;
+            if (!postprocessAutoUpdate || !hasGeneratedArtifactForCurrentSlice || hasGeneratedArtifactForCurrentState || $status.actionPending) {
+                return;
+            }
+
+            void generateVaseGcode();
+        }, 300);
+    }
+
+    function setGeneratedArtifactForCurrentState(artifact: { filename: string; gcode: string; bytes: number; points: number }): void {
+        generatedGcodeArtifact = {
+            ...artifact,
+            sliceSignature: currentSliceSignature,
+            postprocessSignature: currentPostprocessSignature,
+        };
+    }
+
+    async function buildFullArtifactWithProgress(
+        reportProgress: (update: { percent: number; phaseLabel: string; detail: string }) => void,
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
         const progressStartMs = performance.now();
         let lastPhase = '';
         let samplingPhaseStartMs: number | null = null;
@@ -511,74 +758,187 @@
         let displayedEtaSeconds: number | null = null;
         let lastEtaUpdateMs = progressStartMs;
 
-        await status.runCommand('Generating G-code...', async (reportProgress) => {
-            try {
-                const result = await studio.generateVaseGcode((update) => {
-                    const nowMs = performance.now();
-                    const progress = Math.max(0, Math.min(1, update.overall));
+        return studio.buildVaseGcodeArtifact(currentSliceSignature, (update) => {
+            const nowMs = performance.now();
+            const progress = Math.max(0, Math.min(1, update.overall));
 
-                if (update.phase === 'sampling') {
-                    if (samplingPhaseStartMs === null) {
-                        samplingPhaseStartMs = nowMs;
-                    }
-
-                    const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
-                    const phaseProgress = update.total > 0 ? Math.max(0, Math.min(1, update.completed / update.total)) : 0;
-
-                    // Learn expected total slice duration from measured sampling throughput once enough data exists.
-                    if (update.completed >= 4 && phaseProgress >= 0.05) {
-                        const estimatedSamplingTotalSeconds = samplingElapsedSeconds / phaseProgress;
-                        const estimatedSliceTotalSeconds = estimatedSamplingTotalSeconds / 0.76;
-                        learnedTotalSliceSeconds = learnedTotalSliceSeconds === null
-                            ? estimatedSliceTotalSeconds
-                            : (learnedTotalSliceSeconds * 0.6) + (estimatedSliceTotalSeconds * 0.4);
-                    }
-                } else if (lastPhase === 'sampling' && samplingPhaseStartMs !== null && learnedTotalSliceSeconds === null) {
-                    const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
-                    learnedTotalSliceSeconds = samplingElapsedSeconds / 0.76;
+            if (update.phase === 'sampling') {
+                if (samplingPhaseStartMs === null) {
+                    samplingPhaseStartMs = nowMs;
                 }
 
-                const elapsedSeconds = Math.max(0, (nowMs - progressStartMs) / 1000);
-                const fallbackEtaSeconds = progress > 0.2
-                    ? Math.max(0, elapsedSeconds * ((1 / progress) - 1))
-                    : null;
-                const rawEtaSeconds = learnedTotalSliceSeconds !== null
-                    ? Math.max(0, learnedTotalSliceSeconds - elapsedSeconds)
-                    : fallbackEtaSeconds;
+                const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
+                const phaseProgress = update.total > 0 ? Math.max(0, Math.min(1, update.completed / update.total)) : 0;
 
-                let etaSeconds: number | null = null;
-                if (rawEtaSeconds !== null) {
-                    if (displayedEtaSeconds === null) {
-                        displayedEtaSeconds = rawEtaSeconds;
+                // Learn expected total slice duration from measured sampling throughput once enough data exists.
+                if (update.completed >= 4 && phaseProgress >= 0.05) {
+                    const estimatedSamplingTotalSeconds = samplingElapsedSeconds / phaseProgress;
+                    const estimatedSliceTotalSeconds = estimatedSamplingTotalSeconds / 0.76;
+                    learnedTotalSliceSeconds = learnedTotalSliceSeconds === null
+                        ? estimatedSliceTotalSeconds
+                        : (learnedTotalSliceSeconds * 0.6) + (estimatedSliceTotalSeconds * 0.4);
+                }
+            } else if (lastPhase === 'sampling' && samplingPhaseStartMs !== null && learnedTotalSliceSeconds === null) {
+                const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
+                learnedTotalSliceSeconds = samplingElapsedSeconds / 0.76;
+            }
+
+            const elapsedSeconds = Math.max(0, (nowMs - progressStartMs) / 1000);
+            const fallbackEtaSeconds = progress > 0.2
+                ? Math.max(0, elapsedSeconds * ((1 / progress) - 1))
+                : null;
+            const rawEtaSeconds = learnedTotalSliceSeconds !== null
+                ? Math.max(0, learnedTotalSliceSeconds - elapsedSeconds)
+                : fallbackEtaSeconds;
+
+            let etaSeconds: number | null = null;
+            if (rawEtaSeconds !== null) {
+                if (displayedEtaSeconds === null) {
+                    displayedEtaSeconds = rawEtaSeconds;
+                } else {
+                    const deltaSeconds = Math.max(1e-3, (nowMs - lastEtaUpdateMs) / 1000);
+                    const allowedRise = (deltaSeconds * 0.45) + 0.08;
+                    if (rawEtaSeconds > displayedEtaSeconds + allowedRise) {
+                        displayedEtaSeconds += allowedRise;
                     } else {
-                        const deltaSeconds = Math.max(1e-3, (nowMs - lastEtaUpdateMs) / 1000);
-                        const allowedRise = (deltaSeconds * 0.45) + 0.08;
-                        if (rawEtaSeconds > displayedEtaSeconds + allowedRise) {
-                            displayedEtaSeconds += allowedRise;
-                        } else {
-                            displayedEtaSeconds = rawEtaSeconds;
-                        }
+                        displayedEtaSeconds = rawEtaSeconds;
                     }
-
-                    if (update.phase === 'finalizing') {
-                        displayedEtaSeconds = Math.min(displayedEtaSeconds, 1);
-                    }
-
-                    etaSeconds = displayedEtaSeconds;
-                    lastEtaUpdateMs = nowMs;
                 }
 
-                    lastPhase = update.phase;
+                if (update.phase === 'finalizing') {
+                    displayedEtaSeconds = Math.min(displayedEtaSeconds, 1);
+                }
 
-                    reportProgress({
-                        percent: progress * 100,
-                        phaseLabel: update.phaseLabel,
-                        detail: etaSeconds !== null
-                            ? `${update.detail} ETA ${formatEta(etaSeconds)}`
-                            : update.detail,
-                    });
+                etaSeconds = displayedEtaSeconds;
+                lastEtaUpdateMs = nowMs;
+            }
+
+            lastPhase = update.phase;
+
+            reportProgress({
+                percent: progress * 100,
+                phaseLabel: update.phaseLabel,
+                detail: etaSeconds !== null
+                    ? `${update.detail} ETA ${formatEta(etaSeconds)}`
+                    : update.detail,
+            });
+        });
+    }
+
+    async function buildUpdatedArtifactFromCachedBase(
+        reportProgress: (update: { percent: number; phaseLabel: string; detail: string }) => void,
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
+        reportProgress({
+            percent: 12,
+            phaseLabel: 'Postprocess',
+            detail: 'Applying updated postprocess script and controls...',
+        });
+        await tick();
+
+        const artifact = await studio.buildVaseGcodeArtifactFromCachedBase(currentSliceSignature);
+
+        reportProgress({
+            percent: 100,
+            phaseLabel: 'Finalizing',
+            detail: 'Updated G-code artifact is ready.',
+        });
+        return artifact;
+    }
+
+    async function generateVaseGcode(): Promise<void> {
+        const shouldUpdateFromCachedSlice = hasGeneratedArtifactForCurrentSlice && !hasGeneratedArtifactForCurrentState;
+
+        await status.runCommand(shouldUpdateFromCachedSlice ? 'Updating G-code...' : 'Generating G-code...', async (reportProgress) => {
+            try {
+                const artifact = shouldUpdateFromCachedSlice
+                    ? await buildUpdatedArtifactFromCachedBase(reportProgress)
+                    : await buildFullArtifactWithProgress(reportProgress);
+
+                setGeneratedArtifactForCurrentState(artifact);
+                const actionVerb = shouldUpdateFromCachedSlice ? 'Updated' : 'Generated';
+                return `${actionVerb} ${artifact.filename} (${(artifact.bytes / 1024).toFixed(1)} KB, ${artifact.points} points). Use Download to save locally.`;
+            } finally {
+                sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
+                if (sliceDebugSnapshot) {
+                    workspace.selectTab('output');
+                }
+            }
+        });
+    }
+
+    async function downloadGeneratedGcode(): Promise<void> {
+        if (!generatedGcodeArtifact || !hasGeneratedArtifactForCurrentState) {
+            status.setWorkspaceStatus('Generate or Update first, then download.');
+            return;
+        }
+
+        const artifact = generatedGcodeArtifact;
+
+        await status.runCommand('Downloading G-code...', async () => {
+            downloadTextFile(artifact.filename, artifact.gcode);
+            return `Downloaded ${artifact.filename} (${(artifact.bytes / 1024).toFixed(1)} KB).`;
+        });
+    }
+
+    async function sendVaseGcodeToPrinter(): Promise<void> {
+        if (!printerConfigured) {
+            status.setWorkspaceStatus('Set Moonraker URL in Machine > Printer Connection to enable Print.');
+            return;
+        }
+
+        if (!printerAvailable) {
+            await refreshPrinterAvailability();
+        }
+
+        if (!printerAvailable) {
+            status.setWorkspaceStatus(`Printer is not reachable at ${printerTarget.baseUrl}.`);
+            return;
+        }
+
+        await executeSendVaseGcodeToPrinter(printerTarget);
+    }
+
+    async function executeSendVaseGcodeToPrinter(configuredTarget: PrinterTarget): Promise<void> {
+        const canSendCached = Boolean(generatedGcodeArtifact && hasGeneratedArtifactForCurrentState);
+
+        await status.runCommand(canSendCached ? 'Sending to printer...' : 'Preparing and sending...', async (reportProgress) => {
+            try {
+                const artifact = canSendCached && generatedGcodeArtifact
+                    ? generatedGcodeArtifact
+                    : hasGeneratedArtifactForCurrentSlice && !hasGeneratedArtifactForCurrentState
+                        ? await buildUpdatedArtifactFromCachedBase((next) => reportProgress({
+                            ...next,
+                            percent: Math.min(92, Math.max(0, next.percent * 0.92)),
+                        }))
+                        : await buildFullArtifactWithProgress((next) => reportProgress({
+                            ...next,
+                            percent: Math.min(92, Math.max(0, next.percent * 0.92)),
+                        }));
+
+                if (!canSendCached) {
+                    setGeneratedArtifactForCurrentState(artifact);
+                }
+
+                reportProgress({
+                    percent: 96,
+                    phaseLabel: 'Upload',
+                    detail: `Uploading ${artifact.filename} to ${configuredTarget.baseUrl}...`,
                 });
-                return `Exported ${result.filename} (${(result.bytes / 1024).toFixed(1)} KB, ${result.points} points).`;
+
+                const uploadResult = await uploadGcodeToMoonraker(artifact.filename, artifact.gcode, {
+                    baseUrl: configuredTarget.baseUrl,
+                    apiKey: configuredTarget.apiKey,
+                    print: configuredTarget.autoStartPrint,
+                    path: configuredTarget.uploadPath,
+                });
+
+                const actionSuffix = uploadResult.printStarted
+                    ? 'Print started.'
+                    : uploadResult.printQueued
+                        ? 'Print queued.'
+                        : 'Upload complete.';
+
+                return `Sent ${artifact.filename} to ${uploadResult.root}/${uploadResult.path}. ${actionSuffix}`;
             } finally {
                 sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
                 if (sliceDebugSnapshot) {
@@ -942,6 +1302,7 @@
         commitFilamentProfile,
         commitPostprocessScript,
         updatePostprocessEnabled,
+        updatePostprocessAutoUpdate,
         updatePostprocessSource,
         updatePostprocessControlValue,
         createPostprocessScript: createAndActivatePostprocessScript,
@@ -949,7 +1310,11 @@
         revertPostprocessScript: revertActivePostprocessDocument,
         setBenchmarkIterations: (value) => status.setBenchmarkIterations(value),
         setBenchmarkWarmups: (value) => status.setBenchmarkWarmups(value),
+        updatePrinterConnectionString,
+        updatePrinterConnectionAutoStart,
         generateVaseGcode,
+        downloadGeneratedGcode,
+        sendVaseGcodeToPrinter,
         benchmarkVaseGcode,
     };
 
@@ -1036,6 +1401,11 @@
                 activePostprocessScriptId = postprocessRepository.documents[0]?.id ?? activePostprocessScriptId;
 
                 studio.init();
+                printerTarget = readPrinterTarget();
+                if (!printerTarget.baseUrl.trim()) {
+                    await applyPrinterModelConnectionDefaults(slicerSettings.printerModelId);
+                }
+                await refreshPrinterAvailability();
                 status.setShaderStatus('ready', 'Ready');
                 sceneEditorStatus = repository.mode === 'filesystem'
                     ? 'Editing scene files directly from src/shaders/scenes.'
@@ -1063,6 +1433,10 @@
                         void refreshFilesystemPostprocessScripts(true);
                     }, 1200);
                 }
+
+                printerAvailabilityPollHandle = window.setInterval(() => {
+                    void refreshPrinterAvailability();
+                }, 12000);
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Failed to initialize renderer';
                 status.setShaderStatus('error', message);
@@ -1084,12 +1458,20 @@
                 window.clearInterval(postprocessRepositoryPollHandle);
                 postprocessRepositoryPollHandle = null;
             }
+            if (printerAvailabilityPollHandle !== null) {
+                window.clearInterval(printerAvailabilityPollHandle);
+                printerAvailabilityPollHandle = null;
+            }
         };
     });
 
     onDestroy(() => {
         cleanupInspectorResize();
         cleanupEditorResize();
+        if (postprocessAutoUpdateTimer !== null) {
+            window.clearTimeout(postprocessAutoUpdateTimer);
+            postprocessAutoUpdateTimer = null;
+        }
     });
 
 </script>
@@ -1105,10 +1487,15 @@
         filamentProfileId={slicerSettings.filamentProfileId}
         shaderStatusMode={$status.shaderStatusMode}
         shaderStatusText={$status.shaderStatusText}
+        actionPending={$status.actionPending}
+        showDownloadButton={showDownloadButton}
+        showPrintButton={printerConfigured && printerAvailable}
         onCommitScene={commitScene}
         onCommitViewMode={commitViewMode}
         onCommitPrinterModel={commitPrinterModel}
         onCommitFilamentProfile={commitFilamentProfile}
+        onDownloadGeneratedGcode={downloadGeneratedGcode}
+        onSendVaseGcodeToPrinter={sendVaseGcodeToPrinter}
     />
 
     <div class="workspace-stack" class:editor-docked-left={$workspace.editorVisible && editorDockSide} style={`--editor-height: ${$workspace.editorHeight}px; --editor-width: ${$workspace.editorWidth}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
@@ -1160,14 +1547,11 @@
                 actionPending={$status.actionPending}
                 inspectorCollapsed={$workspace.inspectorCollapsed}
                 editorVisible={$workspace.editorVisible}
-                editorTitleLabel={editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor'}
-                editorModeLabel={editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel}
-                editorDirty={editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty}
-                editorDirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
                 onResetView={resetView}
                 onToggleInspector={toggleInspector}
                 onToggleEditor={toggleEditor}
                 onGenerateVaseGcode={generateVaseGcode}
+                generateActionLabel={generateActionLabel}
             />
 
             {#if !$workspace.inspectorCollapsed}
@@ -1228,4 +1612,5 @@
         progressDetail={$status.progressDetail}
         shaderStatusDetail={$status.shaderStatusDetail}
     />
+
 </div>

@@ -48,6 +48,15 @@
                                     <option value={option.value}>{option.label}</option>
                                 {/each}
                             </select>
+                        {:else if field.kind === 'text'}
+                            <input
+                                id={field.id}
+                                type={field.inputType ?? 'text'}
+                                placeholder={field.placeholder ?? ''}
+                                value={String(readFieldValue(field, state))}
+                                disabled={isFieldDisabled(field, state)}
+                                on:change={(event) => commitFieldValue(field, (event.currentTarget as HTMLInputElement).value, handlers)}
+                            >
                         {:else if field.kind === 'textarea'}
                             <textarea
                                 id={field.id}

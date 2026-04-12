@@ -19,9 +19,9 @@ import {
 } from './core/shader-pipeline';
 import {
     Slicer,
+    type VaseBaseToolpath,
     type SliceDebugSnapshot,
     type SliceProgressUpdate,
-    type ToolpathPoint,
     type VaseSliceBenchmarkRun,
     type VaseSlicerSettings,
 } from './core/slicer';
@@ -157,6 +157,7 @@ export class StudioController {
     private sceneControlValues: SceneControlValueMap;
     private toolpathPostprocessConfig: ToolpathPostprocessConfig | null;
     private renderLifecycleCleanup: (() => void) | null;
+    private cachedBaseToolpath: { cacheKey: string; baseToolpath: VaseBaseToolpath } | null;
 
     constructor() {
         this.renderer = new Renderer();
@@ -174,6 +175,7 @@ export class StudioController {
         this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions);
         this.toolpathPostprocessConfig = null;
         this.renderLifecycleCleanup = null;
+        this.cachedBaseToolpath = null;
 
         if (this.filamentProfiles.length > 0) {
             this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
@@ -439,15 +441,70 @@ export class StudioController {
     public async generateVaseGcode(
         onProgress?: (update: SliceProgressUpdate) => void
     ): Promise<{ filename: string; bytes: number; points: number }> {
+        const artifact = await this.buildVaseGcodeArtifact('__adhoc__', onProgress);
+        downloadTextFile(artifact.filename, artifact.gcode);
+        return {
+            filename: artifact.filename,
+            bytes: artifact.bytes,
+            points: artifact.points,
+        };
+    }
+
+    public async buildVaseGcodeArtifact(
+        cacheKey: string,
+        onProgress?: (update: SliceProgressUpdate) => void
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
         return this.runWhilePreviewPausedAsync(async () => {
-            const result = await this.slicer.generateVaseGcodeWithProgress(this.slicerSettings, onProgress, this.toolpathPostprocessConfig);
+            const baseResult = await this.slicer.generateVaseBaseToolpathWithProgress(this.slicerSettings, onProgress);
+            this.cachedBaseToolpath = {
+                cacheKey,
+                baseToolpath: {
+                    ...baseResult.baseToolpath,
+                    points: baseResult.baseToolpath.points.map((point) => ({ ...point })),
+                },
+            };
+            const result = this.slicer.generateVaseGcodeFromBaseToolpath(
+                baseResult.baseToolpath,
+                this.slicerSettings,
+                this.toolpathPostprocessConfig,
+            );
             this.preview.setToolpathOverlayWorldPoints(
                 convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
             );
             const filename = buildSlicerFilename(this.slicerSettings, this.toolpathPostprocessConfig);
-            downloadTextFile(filename, result.gcode);
             return {
                 filename,
+                gcode: result.gcode,
+                bytes: result.gcode.length,
+                points: result.toolpath.points.length,
+            };
+        });
+    }
+
+    public async buildVaseGcodeArtifactFromCachedBase(
+        cacheKey: string,
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
+        return this.runWhilePreviewPausedAsync(async () => {
+            if (!this.cachedBaseToolpath || this.cachedBaseToolpath.cacheKey !== cacheKey) {
+                throw new Error('No cached slice is available. Generate toolpath first.');
+            }
+
+            const baseToolpath = {
+                ...this.cachedBaseToolpath.baseToolpath,
+                points: this.cachedBaseToolpath.baseToolpath.points.map((point) => ({ ...point })),
+            };
+            const result = this.slicer.generateVaseGcodeFromBaseToolpath(
+                baseToolpath,
+                this.slicerSettings,
+                this.toolpathPostprocessConfig,
+            );
+            this.preview.setToolpathOverlayWorldPoints(
+                convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
+            );
+            const filename = buildSlicerFilename(this.slicerSettings, this.toolpathPostprocessConfig);
+            return {
+                filename,
+                gcode: result.gcode,
                 bytes: result.gcode.length,
                 points: result.toolpath.points.length,
             };

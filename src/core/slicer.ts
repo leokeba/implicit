@@ -86,10 +86,22 @@ export interface VaseToolpath {
     postprocessSummary?: ToolpathPostprocessSummary | null;
 }
 
+export interface VaseBaseToolpath {
+    points: ToolpathPoint[];
+    layerCount: number;
+    pointsPerLayer: number;
+    estimatedHeight: number;
+}
+
 export interface VaseSliceResult {
     settings: VaseSlicerSettings;
     toolpath: VaseToolpath;
     gcode: string;
+}
+
+export interface VaseSliceBaseResult {
+    settings: VaseSlicerSettings;
+    baseToolpath: VaseBaseToolpath;
 }
 
 export interface SliceDebugBounds {
@@ -372,6 +384,33 @@ export class Slicer {
         };
     }
 
+    public async generateVaseBaseToolpathWithProgress(
+        next: Partial<VaseSlicerSettings>,
+        onProgress?: SliceProgressReporter,
+    ): Promise<VaseSliceBaseResult> {
+        const settings = this.getMergedSettings(next);
+        const baseToolpath = await this.executeVaseBaseSliceAsync(settings, onProgress);
+        return {
+            settings,
+            baseToolpath,
+        };
+    }
+
+    public generateVaseGcodeFromBaseToolpath(
+        baseToolpath: VaseBaseToolpath,
+        next: Partial<VaseSlicerSettings>,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
+    ): VaseSliceResult {
+        const settings = this.getMergedSettings(next);
+        const finalized = this.finalizeSpiralToolpath(baseToolpath, settings, postprocessConfig);
+        const gcode = this.buildGcode(finalized, settings);
+        return {
+            settings,
+            toolpath: finalized,
+            gcode,
+        };
+    }
+
     public getLastSliceDebugSnapshot(): SliceDebugSnapshot | null {
         return this.lastSliceDebugSnapshot;
     }
@@ -384,9 +423,10 @@ export class Slicer {
         const startTime = performance.now();
         const contourLayers = this.sampleSliceContoursGpu(settings);
         const contourSamplingEndTime = performance.now();
-        const toolpath = settings.slicerMode === 'cylindrical'
-            ? this.buildCylindricalSpiralToolpath(contourLayers, settings, postprocessConfig)
-            : this.buildPlanarSpiralToolpath(contourLayers, settings, postprocessConfig);
+        const baseToolpath = settings.slicerMode === 'cylindrical'
+            ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
+            : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
+        const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, postprocessConfig);
         const toolpathEndTime = performance.now();
         const gcode = this.buildGcode(toolpath, settings);
         const endTime = performance.now();
@@ -419,9 +459,10 @@ export class Slicer {
 
         reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
         await this.yieldToMainThread();
-        const toolpath = settings.slicerMode === 'cylindrical'
-            ? this.buildCylindricalSpiralToolpath(contourLayers, settings, postprocessConfig)
-            : this.buildPlanarSpiralToolpath(contourLayers, settings, postprocessConfig);
+        const baseToolpath = settings.slicerMode === 'cylindrical'
+            ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
+            : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
+        const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, postprocessConfig);
         const toolpathEndTime = performance.now();
 
         reportSliceProgress(onProgress, 'gcode', 0, 1, 0.92, 'Encoding G-code...');
@@ -442,6 +483,26 @@ export class Slicer {
                 totalMs: endTime - startTime,
             },
         };
+    }
+
+    private async executeVaseBaseSliceAsync(
+        settings: VaseSlicerSettings,
+        onProgress?: SliceProgressReporter,
+    ): Promise<VaseBaseToolpath> {
+        this.lastSliceDebugSnapshot = null;
+        reportSliceProgress(onProgress, 'preparing', 0, 1, 0.0, 'Preparing slicer settings...');
+        await this.yieldToMainThread();
+
+        const contourLayers = await this.sampleSliceContoursGpuAsync(settings, onProgress);
+        reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
+        await this.yieldToMainThread();
+
+        const baseToolpath = settings.slicerMode === 'cylindrical'
+            ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
+            : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
+
+        reportSliceProgress(onProgress, 'finalizing', 1, 1, 1.0, 'Toolpath ready for export.');
+        return baseToolpath;
     }
 
     private getMergedSettings(next: Partial<VaseSlicerSettings>): VaseSlicerSettings {
@@ -724,19 +785,17 @@ export class Slicer {
         return this.decodeSliceBatchFields(pixels, width, gridSize, batchLayerCount, distanceRange, firstSampleY, sliceYStep);
     }
 
-    private buildPlanarSpiralToolpath(
+    private buildPlanarSpiralBaseToolpath(
         contourLayers: SliceContourLayer[],
         settings: VaseSlicerSettings,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
-    ): VaseToolpath {
-        return this.buildInterpolatedSpiralToolpath(contourLayers, settings, postprocessConfig);
+    ): VaseBaseToolpath {
+        return this.buildInterpolatedSpiralBaseToolpath(contourLayers, settings);
     }
 
-    private buildCylindricalSpiralToolpath(
+    private buildCylindricalSpiralBaseToolpath(
         contourLayers: SliceContourLayer[],
         settings: VaseSlicerSettings,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
-    ): VaseToolpath {
+    ): VaseBaseToolpath {
         const cylindricalLayers: SliceContourLayer[] = contourLayers.map((layer, layerIndex) => {
             const contour = this.sampleCylindricalContour(layer.contour, settings.pointsPerLayer);
             if (contour.length !== settings.pointsPerLayer) {
@@ -749,14 +808,13 @@ export class Slicer {
             };
         });
 
-        return this.buildInterpolatedSpiralToolpath(cylindricalLayers, settings, postprocessConfig);
+        return this.buildInterpolatedSpiralBaseToolpath(cylindricalLayers, settings);
     }
 
-    private buildInterpolatedSpiralToolpath(
+    private buildInterpolatedSpiralBaseToolpath(
         contourLayers: SliceContourLayer[],
         settings: VaseSlicerSettings,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
-    ): VaseToolpath {
+    ): VaseBaseToolpath {
         const layers = contourLayers.length;
         const perLayer = settings.pointsPerLayer;
         const modelHeightMm = this.getModelHeightMm(settings);
@@ -816,16 +874,30 @@ export class Slicer {
             }
         }
 
-        const postprocessed = applyToolpathPostprocess(points, settings, postprocessConfig);
+        return {
+            points,
+            layerCount: layers,
+            pointsPerLayer: perLayer,
+            estimatedHeight: this.getModelHeightMm(settings),
+        };
+    }
+
+    private finalizeSpiralToolpath(
+        baseToolpath: VaseBaseToolpath,
+        settings: VaseSlicerSettings,
+        postprocessConfig?: ToolpathPostprocessConfig | null,
+    ): VaseToolpath {
+        const basePoints = baseToolpath.points.map((point) => ({ ...point }));
+        const postprocessed = applyToolpathPostprocess(basePoints, settings, postprocessConfig);
         const optimizedPoints = this.optimizeToolpath(postprocessed.points, settings);
         this.recomputeExtrusion(optimizedPoints, settings);
         this.applyMinimumLayerTime(optimizedPoints, settings);
 
         return {
             points: optimizedPoints,
-            layerCount: layers,
-            pointsPerLayer: perLayer,
-            estimatedHeight: this.getModelHeightMm(settings),
+            layerCount: baseToolpath.layerCount,
+            pointsPerLayer: baseToolpath.pointsPerLayer,
+            estimatedHeight: baseToolpath.estimatedHeight,
             postprocessSummary: postprocessed.summary,
         };
     }

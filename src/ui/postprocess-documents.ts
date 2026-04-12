@@ -278,7 +278,7 @@ function normalizePostprocessDocument(document: ScriptApiDocumentPayload): Postp
 
 function buildDefaultPostprocessSource(scriptId: string, language: ToolpathPostprocessLanguage): string {
     const label = toScriptLabel(scriptId);
-    const header = `// ${label}\n// Mutate context.points in place or return a new array.\n// @control {"key":"strength","label":"Strength","min":0.0,"max":2.0,"step":0.05,"default":1.0,"section":"Script Parameters"}\n`;
+    const header = `// ${label}\n// Mutate context.points in place or return a new array.\n// Use point.metrics.shapeLayerProgress for smooth layer-normalized progress across the full print (0..1).\n// @control {"key":"strength","label":"Strength","min":0.0,"max":2.0,"step":0.05,"default":1.0,"section":"Script Parameters"}\n`;
     if (language === 'javascript') {
         return `${header}\nexport function transform(context) {\n    const strength = context.params.strength ?? 1.0;\n    return {\n        points: context.points.map((point) => ({\n            ...point,\n            extrusionScale: (point.extrusionScale ?? 1) * strength,\n        })),\n        notes: [\`Applied strength=\${strength.toFixed(2)}\`],\n    };\n}\n`;
     }

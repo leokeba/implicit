@@ -7,6 +7,9 @@
   "defaultFirstLayerPrintSpeedMmPerSec": 30,
   "defaultPrintSpeedMmPerSec": 80,
   "defaultTravelSpeedMmPerSec": 250,
+  "defaultMoonrakerUrl": "http://neptune:7125",
+  "defaultMoonrakerUploadPath": "",
+  "defaultMoonrakerAutoStartPrint": true,
   "startGcode": [
     ";Nozzle diameter = [nozzle_diameter]",
     ";Filament type = [filament_type]",
