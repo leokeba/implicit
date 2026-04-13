@@ -11,7 +11,8 @@ export function transform(context: any) {
         const waveOffsetMm = Math.sin(angle) * amplitudeMm;
         const normalX = localX / radius;
         const normalZ = localZ / radius;
-        const layerExtrusionBias = 0.85 + (0.3 * point.metrics.layerFilamentProgress);
+        const shapeProgress = Number(point.metrics?.shapeLayerProgress ?? point.metrics.layerFilamentProgress ?? 0.0);
+        const layerExtrusionBias = 0.85 + (0.3 * shapeProgress);
 
         return {
             ...point,

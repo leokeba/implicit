@@ -10,6 +10,7 @@ export function transform(context: any) {
     const amplitudeMm = Number(context.params?.amplitudeMm ?? 0.45);
     const cableCount = Math.max(1.0, Number(context.params?.cableCount ?? 6.0));
     const twistTurnsOverHeight = Number(context.params?.twistTurnsOverHeight ?? 2.4);
+    const layerCount = Math.max(1, Number(context.totals?.layerCount ?? 1));
 
     if (!Number.isFinite(amplitudeMm) || amplitudeMm === 0 || !Array.isArray(context.points)) {
         return {
@@ -22,9 +23,10 @@ export function transform(context: any) {
     const estimatedHeightMm = Math.max(EPSILON, Number(context.totals?.estimatedHeightMm ?? 0.0));
 
     const nextPoints = context.points.map((point: any, index: number) => {
-        const progress = Number(point.metrics?.layerFilamentProgress ?? 0.0);
+        const layerProgress = Number(point.metrics?.layerFilamentProgress ?? 0.0);
+        const shapeProgress = Number(point.metrics?.shapeLayerProgress ?? layerProgress);
         const heightProgress = clamp01(Number(point.y ?? 0.0) / estimatedHeightMm);
-        const phase = (progress * cableCount * TAU) + (heightProgress * twistTurnsOverHeight * TAU);
+        const phase = (shapeProgress * cableCount * layerCount * TAU) + (heightProgress * twistTurnsOverHeight * TAU);
         const offsetMm = Math.sin(phase) * amplitudeMm;
         const normal = normals[index] ?? { x: 1.0, z: 0.0 };
 

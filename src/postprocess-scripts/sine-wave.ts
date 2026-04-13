@@ -1,6 +1,7 @@
-// Garter Wave Knit
-// @control {"key":"amplitudeMm","label":"Amplitude (mm)","min":0.0,"max":1.2,"step":0.01,"default":0.32,"section":"Garter Wave","description":"Maximum horizontal displacement in millimeters."}
-// @control {"key":"wavesPerLayer","label":"Waves per layer","min":0.25,"max":18.0,"step":0.25,"default":5.0,"section":"Garter Wave","description":"Number of sinusoidal lobes around each layer."}
+// Sine Wave Knit
+// @control {"key":"amplitudeMm","label":"Amplitude (mm)","min":0.0,"max":1.2,"step":0.01,"default":0.32,"section":"Sine Wave","description":"Maximum horizontal displacement in millimeters."}
+// @control {"key":"wavesPerLayer","label":"Waves per layer","min":0.25,"max":18.0,"step":0.25,"default":5.0,"section":"Sine Wave","description":"Number of sinusoidal lobes around each layer."}
+// @control {"key":"layerPhaseShiftTurns","label":"Layer phase shift (turns)","min":0.0,"max":1.0,"step":0.01,"default":0.25,"section":"Sine Wave","description":"Phase offset applied per layer to avoid seam-locked stacking."}
 
 const TAU = Math.PI * 2.0;
 const EPSILON = 1e-6;
@@ -8,21 +9,22 @@ const EPSILON = 1e-6;
 export function transform(context: any) {
     const amplitudeMm = Number(context.params?.amplitudeMm ?? 0.32);
     const wavesPerLayer = Math.max(0.0, Number(context.params?.wavesPerLayer ?? 5.0));
+    const layerPhaseShiftTurns = Number(context.params?.layerPhaseShiftTurns ?? 0.25);
 
-    if (!Number.isFinite(amplitudeMm) || amplitudeMm === 0 || wavesPerLayer === 0 || !Array.isArray(context.points)) {
+    if (!Number.isFinite(amplitudeMm) || amplitudeMm === 0 || wavesPerLayer === 0 || !Number.isFinite(layerPhaseShiftTurns) || !Array.isArray(context.points)) {
         return {
             points: context.points,
-            notes: ['Garter wave bypassed (zero amplitude or invalid inputs)'],
+            notes: ['Sine wave bypassed (zero amplitude or invalid inputs)'],
         };
     }
 
     const normals = buildContourNormals(context.points, context.layers);
 
     const nextPoints = context.points.map((point: any, index: number) => {
-        const layerSign = point.layer % 2 === 0 ? 1.0 : -1.0;
-        const progress = Number(point.metrics?.layerFilamentProgress ?? 0.0);
-        const phase = progress * wavesPerLayer * TAU;
-        const horizontalOffsetMm = Math.sin(phase) * amplitudeMm * layerSign;
+        const layerIndex = Math.max(0, Number(point.metrics?.shapeLayerIndex ?? point.layer ?? 0));
+        const layerProgress = clamp01(Number(point.metrics?.layerPathProgress ?? point.metrics?.layerFilamentProgress ?? 0.0));
+        const phase = (layerProgress * wavesPerLayer * TAU) + (layerIndex * layerPhaseShiftTurns * TAU);
+        const horizontalOffsetMm = Math.cos(phase) * amplitudeMm;
         const normal = normals[index] ?? { x: 1.0, z: 0.0 };
 
         return {
@@ -35,7 +37,7 @@ export function transform(context: any) {
     return {
         points: nextPoints,
         notes: [
-            `Applied garter wave: amp=${amplitudeMm.toFixed(2)}mm waves/layer=${wavesPerLayer.toFixed(2)}`,
+            `Applied Sine wave: amp=${amplitudeMm.toFixed(2)}mm waves/layer=${wavesPerLayer.toFixed(2)} shift=${layerPhaseShiftTurns.toFixed(2)} turns/layer`,
         ],
     };
 }
@@ -70,8 +72,9 @@ function buildContourNormals(points: any[], layers: any[] | undefined): Array<{ 
         centerZ /= count;
 
         for (let i = start; i <= end; i++) {
-            const prevIndex = i > start ? i - 1 : i;
-            const nextIndex = i < end ? i + 1 : i;
+            // Layers are closed loops, so wrap tangent sampling at boundaries to avoid seam-normal artifacts.
+            const prevIndex = i > start ? i - 1 : end;
+            const nextIndex = i < end ? i + 1 : start;
             const prev = points[prevIndex] ?? points[i];
             const next = points[nextIndex] ?? points[i];
             const tangentX = Number(next?.x ?? 0.0) - Number(prev?.x ?? 0.0);
@@ -126,4 +129,8 @@ function buildLayerRangesFromPoints(points: any[]): Array<{ startIndex: number; 
 
     ranges.push({ startIndex: start, endIndex: points.length - 1 });
     return ranges;
+}
+
+function clamp01(value: number): number {
+    return Math.min(1.0, Math.max(0.0, value));
 }

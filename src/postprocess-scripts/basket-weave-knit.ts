@@ -1,10 +1,11 @@
 // Basket Weave Knit
-// @control {"key":"normalAmplitudeMm","label":"Normal amplitude (mm)","min":0.0,"max":1.6,"step":0.01,"default":0.34,"section":"Basket Weave","description":"Outward displacement strength in active normal blocks."}
-// @control {"key":"tangentAmplitudeMm","label":"Tangent amplitude (mm)","min":0.0,"max":1.6,"step":0.01,"default":0.24,"section":"Basket Weave","description":"Along-path displacement strength in active tangent blocks."}
+// @control {"key":"normalAmplitudeMm","label":"Normal amplitude (mm)","min":0.0,"max":2.6,"step":0.01,"default":0.34,"section":"Basket Weave","description":"Outward displacement strength in active normal blocks."}
+// @control {"key":"tangentAmplitudeMm","label":"Tangent amplitude (mm)","min":0.0,"max":2.6,"step":0.01,"default":0.24,"section":"Basket Weave","description":"Along-path displacement strength in active tangent blocks."}
 // @control {"key":"blockLayers","label":"Block layers","min":1.0,"max":24.0,"step":1.0,"default":3.0,"section":"Basket Weave","description":"How many layers before swapping weave direction."}
 // @control {"key":"blocksPerLayer","label":"Blocks per layer","min":2.0,"max":64.0,"step":1.0,"default":10.0,"section":"Basket Weave","description":"How many horizontal weave blocks around the perimeter."}
 
 const TAU = Math.PI * 2.0;
+const PI = Math.PI;
 const EPSILON = 1e-6;
 
 export function transform(context: any) {
@@ -12,6 +13,7 @@ export function transform(context: any) {
     const tangentAmplitudeMm = Number(context.params?.tangentAmplitudeMm ?? 0.24);
     const blockLayers = Math.max(1.0, Math.floor(Number(context.params?.blockLayers ?? 3.0)));
     const blocksPerLayer = Math.max(2.0, Number(context.params?.blocksPerLayer ?? 10.0));
+    const layerCount = Math.max(1, Number(context.totals?.layerCount ?? 1));
 
     if ((normalAmplitudeMm === 0 && tangentAmplitudeMm === 0) || !Array.isArray(context.points)) {
         return {
@@ -24,16 +26,17 @@ export function transform(context: any) {
 
     const nextPoints = context.points.map((point: any, index: number) => {
         const progress = clamp01(Number(point.metrics?.layerFilamentProgress ?? 0.0));
-        const layerGroup = Math.floor(Number(point.layer ?? 0) / blockLayers);
-        const angularBlock = Math.floor(progress * blocksPerLayer);
-        const blockParity = (layerGroup + angularBlock) % 2;
+        const shapeProgress = clamp01(Number(point.metrics?.shapeLayerProgress ?? progress));
+        const verticalBlockPhase = shapeProgress * (layerCount / blockLayers) * PI;
+        const angularBlockPhase = progress * blocksPerLayer * PI;
+        const weaveSelector = 0.5 + (0.5 * Math.sin(verticalBlockPhase + angularBlockPhase));
 
         const frame = frames[index] ?? { nx: 1.0, nz: 0.0, tx: 0.0, tz: 1.0 };
-        const blockPhase = progress * blocksPerLayer * TAU;
+        const blockPhase = shapeProgress * blocksPerLayer * layerCount * TAU;
         const pulse = Math.sin(blockPhase);
 
-        const normalWeight = blockParity === 0 ? 1.0 : 0.25;
-        const tangentWeight = blockParity === 1 ? 1.0 : 0.25;
+        const normalWeight = lerp(0.25, 1.0, weaveSelector);
+        const tangentWeight = lerp(1.0, 0.25, weaveSelector);
         const normalOffset = pulse * normalAmplitudeMm * normalWeight;
         const tangentOffset = pulse * tangentAmplitudeMm * tangentWeight;
 
@@ -144,4 +147,8 @@ function getLayerRanges(points: any[], layers: any[] | undefined): Array<{ start
 
 function clamp01(value: number): number {
     return Math.min(1.0, Math.max(0.0, value));
+}
+
+function lerp(a: number, b: number, t: number): number {
+    return a + ((b - a) * clamp01(t));
 }

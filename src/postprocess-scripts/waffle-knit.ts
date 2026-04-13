@@ -1,10 +1,11 @@
 // Waffle Knit
-// @control {"key":"normalAmplitudeMm","label":"Normal amplitude (mm)","min":0.0,"max":1.4,"step":0.01,"default":0.32,"section":"Waffle Pattern","description":"Outward/inward displacement magnitude."}
-// @control {"key":"tangentAmplitudeMm","label":"Tangent amplitude (mm)","min":0.0,"max":1.4,"step":0.01,"default":0.22,"section":"Waffle Pattern","description":"Along-contour displacement magnitude."}
+// @control {"key":"normalAmplitudeMm","label":"Normal amplitude (mm)","min":0.0,"max":3.4,"step":0.01,"default":0.32,"section":"Waffle Pattern","description":"Outward/inward displacement magnitude."}
+// @control {"key":"tangentAmplitudeMm","label":"Tangent amplitude (mm)","min":0.0,"max":3.4,"step":0.01,"default":0.22,"section":"Waffle Pattern","description":"Along-contour displacement magnitude."}
 // @control {"key":"normalWavesPerLayer","label":"Normal waves per layer","min":0.25,"max":24.0,"step":0.25,"default":6.0,"section":"Waffle Pattern","description":"Frequency of normal-direction waves."}
 // @control {"key":"tangentWavesPerLayer","label":"Tangent waves per layer","min":0.25,"max":24.0,"step":0.25,"default":9.0,"section":"Waffle Pattern","description":"Frequency of tangent-direction waves."}
 
 const TAU = Math.PI * 2.0;
+const PI = Math.PI;
 const QUARTER_TURN = Math.PI * 0.5;
 const EPSILON = 1e-6;
 
@@ -13,6 +14,7 @@ export function transform(context: any) {
     const tangentAmplitudeMm = Number(context.params?.tangentAmplitudeMm ?? 0.22);
     const normalWavesPerLayer = Math.max(0.0, Number(context.params?.normalWavesPerLayer ?? 6.0));
     const tangentWavesPerLayer = Math.max(0.0, Number(context.params?.tangentWavesPerLayer ?? 9.0));
+    const layerCount = Math.max(1, Number(context.totals?.layerCount ?? 1));
 
     if ((normalAmplitudeMm === 0 && tangentAmplitudeMm === 0) || !Array.isArray(context.points)) {
         return {
@@ -25,11 +27,14 @@ export function transform(context: any) {
 
     const nextPoints = context.points.map((point: any, index: number) => {
         const progress = clamp01(Number(point.metrics?.layerFilamentProgress ?? 0.0));
-        const layerSign = point.layer % 2 === 0 ? 1.0 : -1.0;
-        const normalPhase = progress * normalWavesPerLayer * TAU;
-        const tangentPhase = (progress * tangentWavesPerLayer * TAU) + (layerSign * QUARTER_TURN);
-        const normalOffset = Math.sin(normalPhase) * normalAmplitudeMm * layerSign;
-        const tangentOffset = Math.sin(tangentPhase) * tangentAmplitudeMm;
+        const shapeProgress = clamp01(Number(point.metrics?.shapeLayerProgress ?? progress));
+        const weaveBlend = 0.5 + (0.5 * Math.sin(shapeProgress * layerCount * PI));
+        const normalWeight = 0.45 + (0.55 * weaveBlend);
+        const tangentWeight = 0.45 + (0.55 * (1.0 - weaveBlend));
+        const normalPhase = shapeProgress * normalWavesPerLayer * layerCount * TAU;
+        const tangentPhase = (shapeProgress * tangentWavesPerLayer * layerCount * TAU) + QUARTER_TURN + ((weaveBlend - 0.5) * QUARTER_TURN);
+        const normalOffset = Math.sin(normalPhase) * normalAmplitudeMm * normalWeight;
+        const tangentOffset = Math.sin(tangentPhase) * tangentAmplitudeMm * tangentWeight;
         const frame = frames[index] ?? { nx: 1.0, nz: 0.0, tx: 0.0, tz: 1.0 };
 
         return {

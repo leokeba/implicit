@@ -6,6 +6,7 @@
 // @control {"key":"seed","label":"Seed","min":0.0,"max":999.0,"step":1.0,"default":17.0,"section":"Moss Pattern","description":"Changes deterministic noise layout without randomness at runtime."}
 
 const TAU = Math.PI * 2.0;
+const PI = Math.PI;
 const EPSILON = 1e-6;
 
 export function transform(context: any) {
@@ -14,6 +15,7 @@ export function transform(context: any) {
     const noiseAmount = clamp01(Number(context.params?.noiseAmount ?? 0.35));
     const noiseScale = Math.max(0.2, Number(context.params?.noiseScale ?? 2.4));
     const seed = Number(context.params?.seed ?? 17.0);
+    const layerCount = Math.max(1, Number(context.totals?.layerCount ?? 1));
 
     if (!Number.isFinite(baseAmplitudeMm) || baseAmplitudeMm === 0 || wavesPerLayer === 0 || !Array.isArray(context.points)) {
         return {
@@ -25,16 +27,17 @@ export function transform(context: any) {
     const normals = buildContourNormals(context.points, context.layers);
 
     const nextPoints = context.points.map((point: any, index: number) => {
-        const progress = clamp01(Number(point.metrics?.layerFilamentProgress ?? 0.0));
-        const layerSign = point.layer % 2 === 0 ? 1.0 : -1.0;
-        const phase = progress * wavesPerLayer * TAU;
+        const layerProgress = clamp01(Number(point.metrics?.layerFilamentProgress ?? 0.0));
+        const shapeProgress = clamp01(Number(point.metrics?.shapeLayerProgress ?? layerProgress));
+        const smoothLayerSign = Math.sin(shapeProgress * layerCount * PI);
+        const phase = shapeProgress * wavesPerLayer * layerCount * TAU;
 
         const noiseInputA = (Number(point.x ?? 0.0) * 0.11 * noiseScale) + (Number(point.z ?? 0.0) * 0.17 * noiseScale) + (point.layer * 0.31) + seed;
-        const noiseInputB = (progress * 13.7 * noiseScale) + (point.layer * 0.23) + (seed * 1.7);
+        const noiseInputB = (shapeProgress * 13.7 * noiseScale) + (point.layer * 0.23) + (seed * 1.7);
         const blendedNoise = (hashNoise(noiseInputA) * 0.65) + (hashNoise(noiseInputB) * 0.35);
         const modulation = 1.0 + ((blendedNoise * 2.0 - 1.0) * noiseAmount);
 
-        const offsetMm = Math.sin(phase) * baseAmplitudeMm * layerSign * modulation;
+        const offsetMm = Math.sin(phase) * baseAmplitudeMm * smoothLayerSign * modulation;
         const normal = normals[index] ?? { x: 1.0, z: 0.0 };
 
         return {
