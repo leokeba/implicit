@@ -2,6 +2,34 @@ float fresnelSchlick(float cosTheta, float f0) {
     return f0 + (1.0 - f0) * pow(1.0 - cosTheta, 5.0);
 }
 
+__MODIFIER_VIEW_GLSL__
+
+vec3 modifierViewPalette(float t) {
+    vec3 low = vec3(0.06, 0.12, 0.35);
+    vec3 mid = vec3(0.20, 0.78, 0.86);
+    vec3 high = vec3(0.98, 0.90, 0.25);
+    vec3 hot = vec3(0.96, 0.28, 0.20);
+
+    float a = smoothstep(0.0, 0.45, t);
+    float b = smoothstep(0.35, 0.8, t);
+    float c = smoothstep(0.7, 1.0, t);
+
+    vec3 color = mix(low, mid, a);
+    color = mix(color, high, b);
+    color = mix(color, hot, c);
+    return color;
+}
+
+vec3 shadeModifierView(vec3 hitPos, vec3 normal, vec3 viewDir) {
+    float rawValue = sampleModifierViewValue(hitPos);
+    float value = normalizeModifierViewValue(rawValue);
+    vec3 base = modifierViewPalette(value);
+    vec3 lightDir = normalize(vec3(0.9, 1.0, 0.6));
+    float diff = 0.25 + 0.75 * max(dot(normal, lightDir), 0.0);
+    float rim = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.0);
+    return base * diff + vec3(1.0) * rim * 0.12;
+}
+
 vec3 shadeShaded(vec3 normal, vec3 viewDir) {
     vec3 lightDir = normalize(vec3(0.9, 1.0, 0.6));
     float diff = max(dot(normal, lightDir), 0.0);
@@ -61,6 +89,10 @@ vec3 shadeByMode(int viewMode, vec3 hitPos, vec3 normal, vec3 rayDir) {
 
     if (viewMode == 2) {
         return shadeGlass(hitPos, normal, rayDir);
+    }
+
+    if (viewMode == 3) {
+        return shadeModifierView(hitPos, normal, -rayDir);
     }
 
     return shadeShaded(normal, -rayDir);

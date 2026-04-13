@@ -71,6 +71,6 @@ void main() {
         }
     }
 
-    float pulse = (uViewMode == 2) ? 0.0 : 0.02 * sin(uTime * 0.8);
+    float pulse = (uViewMode == 2 || uViewMode == 3) ? 0.0 : 0.02 * sin(uTime * 0.8);
     gl_FragColor = vec4(color + pulse, 1.0);
 }

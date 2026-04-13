@@ -275,13 +275,15 @@ export function getRendererVertexSource(): string {
 }
 
 export function composeRendererFragmentSource(): string {
+    const activeField = getSceneFieldDefinitions(activeSceneId)[0] ?? null;
     return activeSources.rendererFragmentTemplate
         .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
         .replace('__UTILS_GLSL__', activeSources.utils)
         .replace('__SCENE_GLSL__', activeSources.scene)
         .replace('__RAYMARCH_GLSL__', activeSources.raymarch)
         .replace('__ENVIRONMENT_GLSL__', activeSources.environment)
-        .replace('__MATERIALS_GLSL__', activeSources.materials);
+        .replace('__MATERIALS_GLSL__', activeSources.materials)
+        .replace('__MODIFIER_VIEW_GLSL__', buildModifierViewSource(activeField));
 }
 
 export function getSlicerVertexSource(): string {
@@ -398,6 +400,52 @@ function buildSceneFieldComponentSource(field: SceneFieldDefinition, componentIn
             return `float sampleSceneFieldComponent(vec3 p) { vec4 value = ${fnCall}; return ${componentSwizzle(componentIndex, 4)}; }`;
         default:
             return 'float sampleSceneFieldComponent(vec3 p) { return 0.0; }';
+    }
+}
+
+function buildModifierViewSource(field: SceneFieldDefinition | null): string {
+    if (!field) {
+        return [
+            'float sampleModifierViewValue(vec3 p) {',
+            '    return 0.0;',
+            '}',
+            '',
+            'float normalizeModifierViewValue(float value) {',
+            '    return clamp(value, 0.0, 1.0);',
+            '}',
+        ].join('\n');
+    }
+
+    const valueExpr = buildFieldScalarExpression(field, 'p');
+    const minValue = Number.isFinite(field.minValue) ? field.minValue : 0;
+    const maxValue = Number.isFinite(field.maxValue) ? field.maxValue : 1;
+
+    return [
+        `float sampleModifierViewValue(vec3 p) {`,
+        `    ${valueExpr}`,
+        `}`,
+        '',
+        'float normalizeModifierViewValue(float value) {',
+        `    float minValue = ${minValue.toFixed(6)};`,
+        `    float maxValue = ${maxValue.toFixed(6)};`,
+        '    float span = max(1e-6, maxValue - minValue);',
+        '    return clamp((value - minValue) / span, 0.0, 1.0);',
+        '}',
+    ].join('\n');
+}
+
+function buildFieldScalarExpression(field: SceneFieldDefinition, argName: string): string {
+    const fnCall = `${field.fn}(${argName})`;
+    switch (field.type) {
+        case 'vec2':
+            return `vec2 value = ${fnCall}; return value.x;`;
+        case 'vec3':
+            return `vec3 value = ${fnCall}; return value.x;`;
+        case 'vec4':
+            return `vec4 value = ${fnCall}; return value.x;`;
+        case 'float':
+        default:
+            return `return ${fnCall};`;
     }
 }
 

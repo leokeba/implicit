@@ -396,7 +396,7 @@ class Renderer {
     }
 
     public setViewMode(mode: number): void {
-        if (mode === 1 || mode === 2) {
+        if (mode === 1 || mode === 2 || mode === 3) {
             this.viewMode = mode;
             return;
         }

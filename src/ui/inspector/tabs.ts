@@ -12,6 +12,7 @@ export const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
     { value: '0', label: 'Shaded' },
     { value: '1', label: 'RGB Normals' },
     { value: '2', label: 'Glass' },
+    { value: '3', label: 'Modifier Values' },
 ];
 
 const SLICER_MODE_OPTIONS: InspectorFieldOption[] = [

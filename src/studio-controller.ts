@@ -241,6 +241,10 @@ export class StudioController {
             return 'Glass';
         }
 
+        if (viewMode === 3) {
+            return 'Modifier Values';
+        }
+
         return 'Shaded';
     }
 
