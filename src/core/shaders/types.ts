@@ -1,6 +1,9 @@
 export type SceneParamValue = number | boolean | string;
 export type SceneParamMap = Record<string, SceneParamValue>;
 export type SceneControlValueMap = Record<string, number>;
+export type SceneFieldType = 'float' | 'vec2' | 'vec3' | 'vec4';
+
+export type SceneFieldValue = number | [number, number] | [number, number, number] | [number, number, number, number];
 
 export interface SceneControlDefinition {
     key: string;
@@ -11,6 +14,16 @@ export interface SceneControlDefinition {
     step: number;
     defaultValue: number;
     section: string;
+    description?: string;
+}
+
+export interface SceneFieldDefinition {
+    key: string;
+    label: string;
+    fn: string;
+    type: SceneFieldType;
+    minValue: number;
+    maxValue: number;
     description?: string;
 }
 

@@ -1,9 +1,14 @@
 import {
+    composeSceneFieldSamplerFragmentSource,
     composeSlicerFragmentSource,
+    getSceneFieldDefinitions,
+    getSceneFieldSamplerVertexSource,
     getSlicerProgramSignature,
     getSlicerVertexSource,
     type SceneControlDefinition,
     type SceneControlValueMap,
+    type SceneFieldDefinition,
+    type SceneFieldValue,
 } from './shader-pipeline';
 import {
     applyToolpathPostprocess,
@@ -76,6 +81,7 @@ export interface ToolpathPoint {
     speedMmPerSec: number;
     layer: number;
     extrusionScale?: number;
+    sceneFields?: Record<string, SceneFieldValue>;
 }
 
 export interface VaseToolpath {
@@ -727,7 +733,9 @@ export class Slicer {
             : firstSampleY;
         const sliceYStep = nextSampleY - firstSampleY;
 
-        this.ensureGpuResources(width, height);
+        this.ensureRenderTarget(width, height);
+        this.ensureSlicerProgram();
+        this.ensureQuadBuffer();
 
         if (!this.gl || !this.program || !this.positionBuffer || !this.framebuffer || !this.renderTargetTexture) {
             throw new Error('Failed to initialize GPU contour slicing resources.');
@@ -888,6 +896,7 @@ export class Slicer {
         postprocessConfig?: ToolpathPostprocessConfig | null,
     ): VaseToolpath {
         const basePoints = baseToolpath.points.map((point) => ({ ...point }));
+        this.attachSceneFieldsToPoints(basePoints, settings);
         const postprocessed = applyToolpathPostprocess(basePoints, settings, postprocessConfig);
         const optimizedPoints = this.optimizeToolpath(postprocessed.points, settings);
         this.recomputeExtrusion(optimizedPoints, settings);
@@ -967,6 +976,174 @@ export class Slicer {
             const shift = findBestContourShift(previous, next, previousShift);
             layers[layerIndex].contour = rotateContour(next, shift);
             previousShift = shift;
+        }
+    }
+
+    private attachSceneFieldsToPoints(points: ToolpathPoint[], settings: VaseSlicerSettings): void {
+        if (points.length === 0) {
+            return;
+        }
+
+        const fieldDefinitions = getSceneFieldDefinitions();
+        if (fieldDefinitions.length === 0) {
+            return;
+        }
+
+        const sampledFields = this.sampleSceneFieldsGpu(points, settings, fieldDefinitions);
+        for (let index = 0; index < points.length; index++) {
+            const pointFields = sampledFields[index];
+            if (pointFields && Object.keys(pointFields).length > 0) {
+                points[index].sceneFields = pointFields;
+            }
+        }
+    }
+
+    private sampleSceneFieldsGpu(
+        points: ToolpathPoint[],
+        settings: VaseSlicerSettings,
+        fieldDefinitions: SceneFieldDefinition[],
+    ): Array<Record<string, SceneFieldValue>> {
+        const perPointFields = Array.from({ length: points.length }, () => ({} as Record<string, SceneFieldValue>));
+
+        for (const field of fieldDefinitions) {
+            const componentCount = getSceneFieldComponentCount(field);
+            const componentSamples = new Array<number[]>(componentCount);
+
+            for (let componentIndex = 0; componentIndex < componentCount; componentIndex++) {
+                componentSamples[componentIndex] = this.sampleSceneFieldComponentGpu(points, settings, field, componentIndex);
+            }
+
+            for (let pointIndex = 0; pointIndex < points.length; pointIndex++) {
+                const components = componentSamples.map((samples) => samples[pointIndex] ?? 0);
+                perPointFields[pointIndex][field.key] = buildSceneFieldValue(field, components);
+            }
+        }
+
+        return perPointFields;
+    }
+
+    private sampleSceneFieldComponentGpu(
+        points: ToolpathPoint[],
+        settings: VaseSlicerSettings,
+        field: SceneFieldDefinition,
+        componentIndex: number,
+    ): number[] {
+        const maxBatchSize = Math.max(1, this.getMaxTextureSize());
+        const samples = new Array<number>(points.length).fill(field.minValue);
+
+        for (let startIndex = 0; startIndex < points.length; startIndex += maxBatchSize) {
+            const batchCount = Math.min(maxBatchSize, points.length - startIndex);
+            const batchPoints = points.slice(startIndex, startIndex + batchCount);
+            const batchSamples = this.renderSceneFieldComponentBatch(batchPoints, settings, field, componentIndex);
+
+            for (let batchIndex = 0; batchIndex < batchCount; batchIndex++) {
+                samples[startIndex + batchIndex] = batchSamples[batchIndex] ?? field.minValue;
+            }
+        }
+
+        return samples;
+    }
+
+    private renderSceneFieldComponentBatch(
+        points: ToolpathPoint[],
+        settings: VaseSlicerSettings,
+        field: SceneFieldDefinition,
+        componentIndex: number,
+    ): number[] {
+        const pointCount = points.length;
+        if (pointCount === 0) {
+            return [];
+        }
+
+        const width = Math.min(pointCount, Math.max(1, this.getMaxTextureSize()));
+        const height = Math.max(1, Math.ceil(pointCount / width));
+
+        this.ensureRenderTarget(width, height);
+
+        if (!this.gl || !this.framebuffer || !this.renderTargetTexture) {
+            throw new Error('Failed to initialize GPU scene field sampling resources.');
+        }
+
+        const gl = this.gl;
+        const program = this.createProgram(
+            gl,
+            getSceneFieldSamplerVertexSource(),
+            composeSceneFieldSamplerFragmentSource(field, componentIndex),
+        );
+
+        const pointBuffer = gl.createBuffer();
+        if (!pointBuffer) {
+            gl.deleteProgram(program);
+            throw new Error('Failed to allocate scene field point buffer.');
+        }
+
+        try {
+            const packedPoints = new Float32Array(pointCount * 4);
+            for (let index = 0; index < pointCount; index++) {
+                const point = worldPointToScenePoint(points[index], settings);
+                const offset = index * 4;
+                packedPoints[offset] = point.x;
+                packedPoints[offset + 1] = point.y;
+                packedPoints[offset + 2] = point.z;
+                packedPoints[offset + 3] = index;
+            }
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, pointBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, packedPoints, gl.STATIC_DRAW);
+
+            gl.viewport(0, 0, width, height);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, this.framebuffer);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.renderTargetTexture, 0);
+
+            const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+            if (status !== gl.FRAMEBUFFER_COMPLETE) {
+                throw new Error('Scene field sampler framebuffer is incomplete.');
+            }
+
+            gl.useProgram(program);
+
+            const pointPositionLocation = gl.getAttribLocation(program, 'aPointPosition');
+            const pointIndexLocation = gl.getAttribLocation(program, 'aPointIndex');
+            if (pointPositionLocation < 0 || pointIndexLocation < 0) {
+                throw new Error(`Scene field sampler for '${field.label}' is missing required vertex attributes.`);
+            }
+
+            gl.enableVertexAttribArray(pointPositionLocation);
+            gl.vertexAttribPointer(pointPositionLocation, 3, gl.FLOAT, false, 16, 0);
+            gl.enableVertexAttribArray(pointIndexLocation);
+            gl.vertexAttribPointer(pointIndexLocation, 1, gl.FLOAT, false, 16, 12);
+
+            setProgramUniform2f(gl, program, 'uTextureSize', width, height);
+            setProgramUniform1f(gl, program, 'uFrameModulo', 0.0);
+            setProgramUniform1f(gl, program, 'uFramePeriod', 120.0);
+            setProgramUniform1f(gl, program, 'uMinY', settings.minY);
+            setProgramUniform1f(gl, program, 'uMaxY', settings.maxY);
+            setProgramUniform1f(gl, program, 'uScale', settings.modelScale);
+            setProgramUniform1f(gl, program, 'uMaxRadius', settings.maxRadius);
+            setProgramUniform1f(gl, program, 'uNozzleDiameter', settings.nozzleDiameter);
+            setProgramUniform1f(gl, program, 'uFlowRate', settings.flowRate);
+            setProgramUniform1f(gl, program, 'uLayerHeight', settings.layerHeight);
+            setProgramUniform1f(gl, program, 'uFieldMinValue', field.minValue);
+            setProgramUniform1f(gl, program, 'uFieldMaxValue', field.maxValue);
+            applySceneControlUniforms(gl, program, this.sceneControlDefinitions, this.sceneControlValues);
+
+            gl.clearColor(0, 0, 0, 0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.drawArrays(gl.POINTS, 0, pointCount);
+
+            const pixels = new Uint8Array(width * height * 4);
+            gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+            gl.disableVertexAttribArray(pointPositionLocation);
+            gl.disableVertexAttribArray(pointIndexLocation);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.bindBuffer(gl.ARRAY_BUFFER, null);
+            gl.useProgram(null);
+
+            return decodeSceneFieldComponentBatch(pixels, pointCount, field.minValue, field.maxValue);
+        } finally {
+            gl.deleteBuffer(pointBuffer);
+            gl.deleteProgram(program);
         }
     }
 
@@ -1341,42 +1518,11 @@ export class Slicer {
         return Math.max(0.01, Math.min(unclampedHeight, settings.maxPrintHeightMm));
     }
 
-    private ensureGpuResources(width: number, height: number): void {
+    private ensureRenderTarget(width: number, height: number): void {
         this.offscreenCanvas.width = width;
         this.offscreenCanvas.height = height;
 
         const gl = this.getOrCreateGl();
-
-        const nextSignature = getSlicerProgramSignature();
-        if (!this.program || this.programSignature !== nextSignature) {
-            const nextProgram = this.createProgram(gl, getSlicerVertexSource(), composeSlicerFragmentSource());
-            if (this.program) {
-                gl.deleteProgram(this.program);
-            }
-            this.program = nextProgram;
-            this.programSignature = nextSignature;
-            this.uniformLocations.clear();
-            this.positionLocation = gl.getAttribLocation(this.program, 'aPosition');
-        }
-
-        if (!this.positionBuffer) {
-            this.positionBuffer = gl.createBuffer();
-            if (!this.positionBuffer) {
-                throw new Error('Failed to create slicer quad buffer.');
-            }
-
-            gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
-            gl.bufferData(
-                gl.ARRAY_BUFFER,
-                new Float32Array([
-                    -1, -1,
-                    1, -1,
-                    -1, 1,
-                    1, 1,
-                ]),
-                gl.STATIC_DRAW
-            );
-        }
 
         if (!this.framebuffer) {
             this.framebuffer = gl.createFramebuffer();
@@ -1395,6 +1541,44 @@ export class Slicer {
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+
+    private ensureSlicerProgram(): void {
+        const gl = this.getOrCreateGl();
+
+        const nextSignature = getSlicerProgramSignature();
+        if (!this.program || this.programSignature !== nextSignature) {
+            const nextProgram = this.createProgram(gl, getSlicerVertexSource(), composeSlicerFragmentSource());
+            if (this.program) {
+                gl.deleteProgram(this.program);
+            }
+            this.program = nextProgram;
+            this.programSignature = nextSignature;
+            this.uniformLocations.clear();
+            this.positionLocation = gl.getAttribLocation(this.program, 'aPosition');
+        }
+    }
+
+    private ensureQuadBuffer(): void {
+        const gl = this.getOrCreateGl();
+        if (!this.positionBuffer) {
+            this.positionBuffer = gl.createBuffer();
+            if (!this.positionBuffer) {
+                throw new Error('Failed to create slicer quad buffer.');
+            }
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
+            gl.bufferData(
+                gl.ARRAY_BUFFER,
+                new Float32Array([
+                    -1, -1,
+                    1, -1,
+                    -1, 1,
+                    1, 1,
+                ]),
+                gl.STATIC_DRAW
+            );
+        }
     }
 
     private getSliceBatchCapacity(gridSize: number): number {
@@ -1558,6 +1742,102 @@ export class Slicer {
         this.uniformLocations.set(name, location);
         return location;
     }
+}
+
+function getSceneFieldComponentCount(field: SceneFieldDefinition): number {
+    switch (field.type) {
+        case 'vec2':
+            return 2;
+        case 'vec3':
+            return 3;
+        case 'vec4':
+            return 4;
+        case 'float':
+        default:
+            return 1;
+    }
+}
+
+function buildSceneFieldValue(field: SceneFieldDefinition, components: number[]): SceneFieldValue {
+    switch (field.type) {
+        case 'vec2':
+            return [components[0] ?? 0, components[1] ?? 0];
+        case 'vec3':
+            return [components[0] ?? 0, components[1] ?? 0, components[2] ?? 0];
+        case 'vec4':
+            return [components[0] ?? 0, components[1] ?? 0, components[2] ?? 0, components[3] ?? 0];
+        case 'float':
+        default:
+            return components[0] ?? 0;
+    }
+}
+
+function decodeSceneFieldComponentBatch(
+    pixels: Uint8Array,
+    pointCount: number,
+    minValue: number,
+    maxValue: number,
+): number[] {
+    const decoded = new Array<number>(pointCount).fill(minValue);
+    const span = Math.max(1e-6, maxValue - minValue);
+
+    for (let index = 0; index < pointCount; index++) {
+        const pixelOffset = index * 4;
+        const alpha = pixels[pixelOffset + 3] ?? 0;
+        if (alpha < 1) {
+            continue;
+        }
+
+        const packed = ((pixels[pixelOffset] ?? 0) * 256) + (pixels[pixelOffset + 1] ?? 0);
+        const normalized = packed / 65535;
+        decoded[index] = minValue + (normalized * span);
+    }
+
+    return decoded;
+}
+
+function setProgramUniform1f(
+    gl: WebGLRenderingContext,
+    program: WebGLProgram,
+    name: string,
+    value: number,
+): void {
+    const location = gl.getUniformLocation(program, name);
+    if (location !== null) {
+        gl.uniform1f(location, value);
+    }
+}
+
+function setProgramUniform2f(
+    gl: WebGLRenderingContext,
+    program: WebGLProgram,
+    name: string,
+    x: number,
+    y: number,
+): void {
+    const location = gl.getUniformLocation(program, name);
+    if (location !== null) {
+        gl.uniform2f(location, x, y);
+    }
+}
+
+function applySceneControlUniforms(
+    gl: WebGLRenderingContext,
+    program: WebGLProgram,
+    definitions: SceneControlDefinition[],
+    values: SceneControlValueMap,
+): void {
+    for (const control of definitions) {
+        setProgramUniform1f(gl, program, control.uniform, values[control.key] ?? control.defaultValue);
+    }
+}
+
+function worldPointToScenePoint(point: ToolpathPoint, settings: VaseSlicerSettings): { x: number; y: number; z: number } {
+    return {
+        x: (point.x - settings.centerX) / settings.modelScale,
+        y: settings.minY + (point.y / settings.modelScale),
+        z: (point.z - settings.centerZ) / settings.modelScale,
+    };
 }
 
 function extractContoursFromFieldWithDebug(field: number[][], bounds: SliceBounds): SliceContourExtractionDebug {

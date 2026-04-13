@@ -1,5 +1,7 @@
 import type {
     SceneControlDefinition,
+    SceneFieldDefinition,
+    SceneFieldType,
     SceneParamMap,
     SceneParamValue,
 } from './types';
@@ -54,6 +56,16 @@ interface SceneControlConfigFile {
     description?: unknown;
 }
 
+interface SceneFieldConfigFile {
+    key?: unknown;
+    label?: unknown;
+    fn?: unknown;
+    type?: unknown;
+    min?: unknown;
+    max?: unknown;
+    description?: unknown;
+}
+
 export function parseSceneControlDefinitions(sceneSource: string): SceneControlDefinition[] {
     const pattern = /^\s*\/\/\s*@control\s+(\{.+\})\s*$/gm;
     const controls: SceneControlDefinition[] = [];
@@ -73,6 +85,27 @@ export function parseSceneControlDefinitions(sceneSource: string): SceneControlD
     }
 
     return controls;
+}
+
+export function parseSceneFieldDefinitions(sceneSource: string): SceneFieldDefinition[] {
+    const pattern = /^\s*\/\/\s*@field\s+(\{.+\})\s*$/gm;
+    const fields: SceneFieldDefinition[] = [];
+    const seenKeys = new Set<string>();
+
+    let match: RegExpExecArray | null = pattern.exec(sceneSource);
+    while (match) {
+        const parsed = safeParseSceneFieldConfig(match[1] ?? '');
+        if (!parsed || seenKeys.has(parsed.key)) {
+            match = pattern.exec(sceneSource);
+            continue;
+        }
+
+        seenKeys.add(parsed.key);
+        fields.push(parsed);
+        match = pattern.exec(sceneSource);
+    }
+
+    return fields;
 }
 
 function sceneParamKeyFromMacroSuffix(macroSuffix: string): string {
@@ -142,6 +175,51 @@ function safeParseSceneControlConfig(rawPayload: string): SceneControlDefinition
         };
     } catch {
         return null;
+    }
+}
+
+function safeParseSceneFieldConfig(rawPayload: string): SceneFieldDefinition | null {
+    try {
+        const parsed = JSON.parse(rawPayload) as SceneFieldConfigFile;
+        const key = typeof parsed.key === 'string' ? normalizeSceneControlKey(parsed.key) : '';
+        if (!key) {
+            return null;
+        }
+
+        const fn = typeof parsed.fn === 'string' && parsed.fn.trim().length > 0
+            ? parsed.fn.trim()
+            : '';
+        const type = normalizeSceneFieldType(parsed.type);
+        const minValue = readFiniteNumber(parsed.min) ?? -1.0;
+        const maxValue = readFiniteNumber(parsed.max) ?? 1.0;
+        if (!fn || !type || maxValue <= minValue) {
+            return null;
+        }
+
+        return {
+            key,
+            label: typeof parsed.label === 'string' && parsed.label.trim().length > 0 ? parsed.label.trim() : toSceneLabel(key),
+            fn,
+            type,
+            minValue,
+            maxValue,
+            description: typeof parsed.description === 'string' && parsed.description.trim().length > 0 ? parsed.description.trim() : undefined,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function normalizeSceneFieldType(value: unknown): SceneFieldType | null {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    switch (normalized) {
+        case 'float':
+        case 'vec2':
+        case 'vec3':
+        case 'vec4':
+            return normalized as SceneFieldType;
+        default:
+            return null;
     }
 }
 

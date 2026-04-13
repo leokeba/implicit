@@ -1,5 +1,7 @@
 import ts from 'typescript';
 
+import { getSceneFieldDefinitions } from './shader-pipeline';
+import type { SceneFieldDefinition, SceneFieldValue } from './shaders/types';
 import type { ToolpathPoint, VaseSlicerSettings } from './slicer';
 
 export type ToolpathPostprocessLanguage = 'javascript' | 'typescript';
@@ -76,12 +78,14 @@ export interface ToolpathPostprocessMutablePoint {
 export interface ToolpathPostprocessPoint extends ToolpathPostprocessMutablePoint {
     e: number;
     metrics: ToolpathPostprocessPointMetrics;
+    sceneFields?: Readonly<Record<string, SceneFieldValue>>;
 }
 
 export interface ToolpathPostprocessContext {
     settings: VaseSlicerSettings;
     controls: PostprocessControlDefinition[];
     params: Record<string, number>;
+    sceneFieldDefinitions: SceneFieldDefinition[];
     layers: ToolpathPostprocessLayerSummary[];
     totals: {
         pointCount: number;
@@ -166,6 +170,7 @@ export function buildToolpathPostprocessContext(
     controls: PostprocessControlDefinition[] = [],
     parameterValues: Record<string, number> = {},
 ): ToolpathPostprocessContext {
+    const sceneFieldDefinitions = getSceneFieldDefinitions();
     const layerSummaries: ToolpathPostprocessLayerSummary[] = [];
     const segmentPath = new Array<number>(points.length).fill(0);
     const segmentFilament = new Array<number>(points.length).fill(0);
@@ -262,6 +267,7 @@ export function buildToolpathPostprocessContext(
             layer: point.layer,
             speedMmPerSec: point.speedMmPerSec,
             extrusionScale: point.extrusionScale,
+            sceneFields: point.sceneFields ? { ...point.sceneFields } : undefined,
             metrics: {
                 pointIndex: index,
                 layerPointIndex: layerPointIndex[index],
@@ -285,6 +291,7 @@ export function buildToolpathPostprocessContext(
         settings: { ...settings },
         controls: controls.map((control) => ({ ...control })),
         params: { ...parameterValues },
+        sceneFieldDefinitions: sceneFieldDefinitions.map((definition) => ({ ...definition })),
         layers: layerSummaries,
         totals: {
             pointCount: points.length,

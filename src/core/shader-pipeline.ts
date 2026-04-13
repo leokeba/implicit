@@ -2,11 +2,12 @@ import type {
     SceneControlDefinition,
     SceneControlValueMap,
     SceneDocument,
+    SceneFieldDefinition,
     SceneOption,
     SceneParamMap,
     SceneSlicerDefaults,
 } from './shaders/types';
-import { parseSceneControlDefinitions, parseSceneDefaultParams, readSceneNumberParam } from './shaders/scene-parser';
+import { parseSceneControlDefinitions, parseSceneDefaultParams, parseSceneFieldDefinitions, readSceneNumberParam } from './shaders/scene-parser';
 
 import defaultSceneSource from '../shaders/scenes/defaultScene.glsl?raw';
 import environmentSource from '../shaders/lib/environment.glsl?raw';
@@ -14,14 +15,20 @@ import materialsSource from '../shaders/lib/materials.glsl?raw';
 import raymarchSource from '../shaders/lib/raymarch.glsl?raw';
 import rendererFragmentTemplateSource from '../shaders/renderer.frag.glsl?raw';
 import rendererVertexSource from '../shaders/renderer.vert.glsl?raw';
+import sceneFieldSampleFragmentTemplateSource from '../shaders/scene-field-sample.frag.glsl?raw';
+import sceneFieldSampleVertexSource from '../shaders/scene-field-sample.vert.glsl?raw';
 import sdfPrimitivesSource from '../shaders/lib/sdf-primitives.glsl?raw';
 import slicerFragmentTemplateSource from '../shaders/slicer.frag.glsl?raw';
 import slicerVertexSource from '../shaders/slicer.vert.glsl?raw';
 import utilsSource from '../shaders/lib/utils.glsl?raw';
+
 export type {
     SceneControlDefinition,
     SceneControlValueMap,
     SceneDocument,
+    SceneFieldDefinition,
+    SceneFieldType,
+    SceneFieldValue,
     SceneOption,
     SceneParamMap,
     SceneParamValue,
@@ -62,6 +69,7 @@ interface ShaderSources {
 
 interface SceneEntry extends SceneDocument {
     controls: SceneControlDefinition[];
+    fields: SceneFieldDefinition[];
 }
 
 interface ShaderPipelineRuntimeState {
@@ -80,6 +88,7 @@ if (sceneEntries.length === 0) {
         fileName: 'defaultScene.glsl',
         source: defaultSceneSource,
         controls: parseSceneControlDefinitions(defaultSceneSource),
+        fields: parseSceneFieldDefinitions(defaultSceneSource),
     });
 }
 
@@ -144,6 +153,11 @@ export function getSceneControlDefinitions(sceneId: string = activeSceneId): Sce
     return entry?.controls.map((control) => ({ ...control })) ?? [];
 }
 
+export function getSceneFieldDefinitions(sceneId: string = activeSceneId): SceneFieldDefinition[] {
+    const entry = resolveSceneEntryById(sceneId);
+    return entry?.fields.map((field) => ({ ...field })) ?? [];
+}
+
 export function replaceSceneDocuments(documents: SceneDocument[]): SceneDocument[] {
     const nextEntries = buildSceneEntries(
         Object.fromEntries(
@@ -179,10 +193,12 @@ export function upsertSceneDocument(document: SceneDocument): SceneDocument {
         existing.fileName = normalized.fileName;
         existing.source = normalized.source;
         existing.controls = parseSceneControlDefinitions(normalized.source);
+        existing.fields = parseSceneFieldDefinitions(normalized.source);
     } else {
         sceneEntries.push({
             ...normalized,
             controls: parseSceneControlDefinitions(normalized.source),
+            fields: parseSceneFieldDefinitions(normalized.source),
         });
         sceneEntries.sort((left, right) => left.name.localeCompare(right.name));
     }
@@ -212,6 +228,7 @@ export function updateSceneSourceById(sceneId: string, source: string): boolean 
 
     entry.source = source;
     entry.controls = parseSceneControlDefinitions(source);
+    entry.fields = parseSceneFieldDefinitions(source);
     if (entry.id === activeSceneId) {
         activeSources = {
             ...activeSources,
@@ -278,6 +295,18 @@ export function composeSlicerFragmentSource(): string {
         .replace('__SCENE_GLSL__', activeSources.scene);
 }
 
+export function getSceneFieldSamplerVertexSource(): string {
+    return sceneFieldSampleVertexSource;
+}
+
+export function composeSceneFieldSamplerFragmentSource(field: SceneFieldDefinition, componentIndex: number): string {
+    return sceneFieldSampleFragmentTemplateSource
+        .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
+        .replace('__UTILS_GLSL__', activeSources.utils)
+        .replace('__SCENE_GLSL__', activeSources.scene)
+        .replace('__FIELD_COMPONENT_GLSL__', buildSceneFieldComponentSource(field, componentIndex));
+}
+
 export function getSlicerProgramSignature(): string {
     return `${activeSources.slicerVertex}::${composeSlicerFragmentSource()}`;
 }
@@ -342,6 +371,7 @@ function buildSceneEntries(modules: Record<string, string | { default: string }>
                 fileName: filename,
                 source,
                 controls: parseSceneControlDefinitions(source),
+                fields: parseSceneFieldDefinitions(source),
             };
         })
         .filter((entry) => entry.id.length > 0)
@@ -353,6 +383,38 @@ function buildSceneEntries(modules: Record<string, string | { default: string }>
         });
 
     return Array.from(deduped.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function buildSceneFieldComponentSource(field: SceneFieldDefinition, componentIndex: number): string {
+    const fnCall = `${field.fn}(p)`;
+    switch (field.type) {
+        case 'float':
+            return `float sampleSceneFieldComponent(vec3 p) { return ${fnCall}; }`;
+        case 'vec2':
+            return `float sampleSceneFieldComponent(vec3 p) { vec2 value = ${fnCall}; return ${componentSwizzle(componentIndex, 2)}; }`;
+        case 'vec3':
+            return `float sampleSceneFieldComponent(vec3 p) { vec3 value = ${fnCall}; return ${componentSwizzle(componentIndex, 3)}; }`;
+        case 'vec4':
+            return `float sampleSceneFieldComponent(vec3 p) { vec4 value = ${fnCall}; return ${componentSwizzle(componentIndex, 4)}; }`;
+        default:
+            return 'float sampleSceneFieldComponent(vec3 p) { return 0.0; }';
+    }
+}
+
+function componentSwizzle(componentIndex: number, componentCount: number): string {
+    const clampedIndex = Math.max(0, Math.min(componentCount - 1, Math.floor(componentIndex)));
+    switch (clampedIndex) {
+        case 0:
+            return 'value.x';
+        case 1:
+            return 'value.y';
+        case 2:
+            return 'value.z';
+        case 3:
+            return 'value.w';
+        default:
+            return '0.0';
+    }
 }
 
 function normalizeSceneDocument(document: SceneDocument): SceneDocument {

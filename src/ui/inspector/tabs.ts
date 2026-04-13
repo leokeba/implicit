@@ -260,7 +260,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                 ],
             },
         ],
-        note: 'Scripts may declare // @control { ... } parameters. Use context.params plus point.metrics.layerFilamentMm, layerFilamentProgress, spiralFilamentMm, and spiralFilamentProgress in transform(context).',
+        note: 'Scripts may declare // @control { ... } parameters. Use context.params plus point.metrics.layerFilamentMm, layerFilamentProgress, spiralFilamentMm, spiralFilamentProgress, and any active scene shader @field samples exposed on point.sceneFields in transform(context).',
         actions: [
             { id: 'createPostprocessScript', label: 'New Script' },
             { id: 'revertPostprocessScript', label: 'Revert', tone: 'secondary' },
