@@ -6,6 +6,7 @@ import {
     type SceneControlValueMap,
     type ShaderSourceUpdates,
 } from './shader-pipeline';
+import { snapToNearestOptionValue } from './control-options';
 import type {
     AnimationParams,
     CameraState,
@@ -942,6 +943,11 @@ function buildSceneControlValueMap(definitions: SceneControlDefinition[], values
 
     for (const definition of definitions) {
         const rawValue = values[definition.key] ?? definition.defaultValue;
+        if (definition.options && definition.options.length > 0) {
+            next[definition.key] = snapToNearestOptionValue(rawValue, definition.options);
+            continue;
+        }
+
         next[definition.key] = Math.min(definition.max, Math.max(definition.min, rawValue));
     }
 

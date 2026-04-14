@@ -1,5 +1,6 @@
 import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
 import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
+import { snapToNearestOptionValue } from './core/control-options';
 import Renderer from './core/renderer';
 import type { AnimationParams, RaymarchParams, ViewportParams } from './core/renderer';
 import {
@@ -664,6 +665,12 @@ function buildSceneControlValueMap(
 }
 
 function clampSceneControlValue(value: number, definition: SceneControlDefinition): number {
+    if (definition.options && definition.options.length > 0) {
+        const fallback = definition.options[0]?.value ?? definition.defaultValue;
+        const safe = Number.isFinite(value) ? value : fallback;
+        return snapToNearestOptionValue(safe, definition.options);
+    }
+
     const safe = Number.isFinite(value) ? value : definition.defaultValue;
     return Math.min(definition.max, Math.max(definition.min, safe));
 }

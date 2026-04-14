@@ -162,6 +162,8 @@ export type InspectorFieldSchema =
     | (NumberFieldBase & { target: 'slicer'; key: NumericSlicerKey })
     | (NumberFieldBase & { target: 'sceneControl'; key: string })
     | (NumberFieldBase & { target: 'postprocessControl'; key: string })
+    | (SelectFieldBase & { target: 'sceneControl'; key: string; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'postprocessControl'; key: string; options: InspectorFieldOption[] })
     | (NumberFieldBase & { target: 'command'; key: 'benchmarkIterations' | 'benchmarkWarmups' })
     | (SelectFieldBase & { target: 'scene'; optionsSource: 'sceneOptions' })
     | (SelectFieldBase & { target: 'viewMode'; options: InspectorFieldOption[] })

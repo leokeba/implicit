@@ -1,6 +1,6 @@
-import type { SceneControlDefinition } from '../../core/shader-pipeline';
-import type { PostprocessControlDefinition } from '../../core/toolpath-postprocess';
 import type { InspectorSectionSchema } from './types';
+import type { PostprocessControlDefinition } from '../../core/toolpath-postprocess';
+import type { SceneControlDefinition } from '../../core/shader-pipeline';
 
 export function buildSceneControlSections(definitions: SceneControlDefinition[]): InspectorSectionSchema[] {
     const bySection = new Map<string, SceneControlDefinition[]>();
@@ -19,14 +19,28 @@ export function buildSceneControlSections(definitions: SceneControlDefinition[])
             ? sectionDefinitions.map((definition) => definition.description).filter(Boolean).join(' ')
             : 'Controls declared by the active scene shader.',
         fields: sectionDefinitions.map((definition) => ({
-            kind: 'number' as const,
-            target: 'sceneControl' as const,
-            key: definition.key,
-            id: `scene-control-${definition.key}`,
-            label: definition.label,
-            step: String(definition.step),
-            min: String(definition.min),
-            max: String(definition.max),
+            ...(definition.options && definition.options.length > 0
+                ? {
+                    kind: 'select' as const,
+                    target: 'sceneControl' as const,
+                    key: definition.key,
+                    id: `scene-control-${definition.key}`,
+                    label: definition.label,
+                    options: definition.options.map((option) => ({
+                        value: String(option.value),
+                        label: option.label,
+                    })),
+                }
+                : {
+                    kind: 'number' as const,
+                    target: 'sceneControl' as const,
+                    key: definition.key,
+                    id: `scene-control-${definition.key}`,
+                    label: definition.label,
+                    step: String(definition.step),
+                    min: String(definition.min),
+                    max: String(definition.max),
+                }),
         })),
     }));
 }
@@ -48,14 +62,28 @@ export function buildPostprocessControlSections(definitions: PostprocessControlD
             ? sectionDefinitions.map((definition) => definition.description).filter(Boolean).join(' ')
             : 'Controls declared by the active postprocess script.',
         fields: sectionDefinitions.map((definition) => ({
-            kind: 'number' as const,
-            target: 'postprocessControl' as const,
-            key: definition.key,
-            id: `postprocess-control-${definition.key}`,
-            label: definition.label,
-            step: String(definition.step),
-            min: String(definition.min),
-            max: String(definition.max),
+            ...(definition.options && definition.options.length > 0
+                ? {
+                    kind: 'select' as const,
+                    target: 'postprocessControl' as const,
+                    key: definition.key,
+                    id: `postprocess-control-${definition.key}`,
+                    label: definition.label,
+                    options: definition.options.map((option) => ({
+                        value: String(option.value),
+                        label: option.label,
+                    })),
+                }
+                : {
+                    kind: 'number' as const,
+                    target: 'postprocessControl' as const,
+                    key: definition.key,
+                    id: `postprocess-control-${definition.key}`,
+                    label: definition.label,
+                    step: String(definition.step),
+                    min: String(definition.min),
+                    max: String(definition.max),
+                }),
         })),
     }));
 }

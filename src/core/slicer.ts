@@ -15,6 +15,7 @@ import {
     type ToolpathPostprocessConfig,
     type ToolpathPostprocessSummary,
 } from './toolpath-postprocess';
+import { snapToNearestOptionValue } from './control-options';
 import {
     buildExcludeObjectDefineLine,
     buildOrcaMetadataHeader,
@@ -2862,6 +2863,11 @@ function buildSceneControlValueMap(definitions: SceneControlDefinition[], values
 
     for (const definition of definitions) {
         const rawValue = values[definition.key] ?? definition.defaultValue;
+        if (definition.options && definition.options.length > 0) {
+            next[definition.key] = snapToNearestOptionValue(rawValue, definition.options);
+            continue;
+        }
+
         next[definition.key] = clamp(rawValue, definition.min, definition.max);
     }
 

@@ -1,7 +1,11 @@
+import type { NumericControlOption } from '../control-options';
+
 export type SceneParamValue = number | boolean | string;
 export type SceneParamMap = Record<string, SceneParamValue>;
 export type SceneControlValueMap = Record<string, number>;
 export type SceneFieldType = 'float' | 'vec2' | 'vec3' | 'vec4';
+
+export type SceneControlOption = NumericControlOption;
 
 export type SceneFieldValue = number | [number, number] | [number, number, number] | [number, number, number, number];
 
@@ -15,6 +19,7 @@ export interface SceneControlDefinition {
     defaultValue: number;
     section: string;
     description?: string;
+    options?: SceneControlOption[];
 }
 
 export interface SceneFieldDefinition {

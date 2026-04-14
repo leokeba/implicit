@@ -1,7 +1,7 @@
 // Oscillating Normal Pattern
 // @control {"key":"amplitudeMm","label":"Amplitude (mm)","min":0.0,"max":2.0,"step":0.01,"default":0.35,"section":"Oscillation","description":"Maximum normal-direction displacement."}
-// @control {"key":"sourceMode","label":"Source mode (0=filament, 1=layer-normalized)","min":0.0,"max":1.0,"step":1.0,"default":0.0,"section":"Oscillation","description":"Choose modulation source domain."}
-// @control {"key":"waveMode","label":"Wave mode (0=sine,1=square,2=triangle,3=ramp up,4=ramp down,5=cosine,6=pulse)","min":0.0,"max":6.0,"step":1.0,"default":0.0,"section":"Oscillation","description":"Waveform shape used for modulation."}
+// @control {"key":"sourceMode","label":"Source mode","default":0.0,"options":["Filament distance","Layer normalized"],"section":"Oscillation","description":"Choose modulation source domain."}
+// @control {"key":"waveMode","label":"Wave mode","default":0.0,"options":["Sine","Square","Triangle","Ramp up","Ramp down","Cosine","Pulse"],"section":"Oscillation","description":"Waveform shape used for modulation."}
 // @control {"key":"frequency","label":"Frequency","min":0.01,"max":200.0,"step":0.01,"default":6.0,"section":"Oscillation","description":"Filament source: cycles/100mm. Layer-normalized source: cycles/layer."}
 // @control {"key":"phaseTurns","label":"Phase offset (turns)","min":-4.0,"max":4.0,"step":0.01,"default":0.0,"section":"Oscillation","description":"Global phase offset in turns."}
 // @control {"key":"pulseDutyCycle","label":"Pulse duty cycle","min":0.01,"max":0.99,"step":0.01,"default":0.5,"section":"Oscillation","description":"Only used by pulse mode: fraction of each cycle at +1 state."}

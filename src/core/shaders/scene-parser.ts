@@ -5,6 +5,11 @@ import type {
     SceneParamMap,
     SceneParamValue,
 } from './types';
+import {
+    inferOptionStep,
+    parseNumericControlOptions,
+    snapToNearestOptionValue,
+} from '../control-options';
 
 export function parseSceneDefaultParams(sceneSource: string): SceneParamMap {
     const params: SceneParamMap = {};
@@ -54,6 +59,7 @@ interface SceneControlConfigFile {
     default?: unknown;
     section?: unknown;
     description?: unknown;
+    options?: unknown;
 }
 
 interface SceneFieldConfigFile {
@@ -149,15 +155,29 @@ function safeParseSceneControlConfig(rawPayload: string): SceneControlDefinition
             return null;
         }
 
-        const min = readFiniteNumber(parsed.min);
-        const max = readFiniteNumber(parsed.max);
-        const step = readFiniteNumber(parsed.step);
+        const options = parseNumericControlOptions(parsed.options);
+        const hasOptions = options.length > 0;
+
+        let min = readFiniteNumber(parsed.min);
+        let max = readFiniteNumber(parsed.max);
+        let step = readFiniteNumber(parsed.step);
+
+        if (hasOptions) {
+            min = Math.min(...options.map((option) => option.value));
+            max = Math.max(...options.map((option) => option.value));
+            step = inferOptionStep(options);
+        }
+
         if (min === null || max === null || step === null || max <= min || step <= 0) {
             return null;
         }
 
-        const fallbackDefault = min + (max - min) * 0.5;
-        const defaultValue = clampSceneControlValue(readFiniteNumber(parsed.default) ?? fallbackDefault, min, max);
+        const fallbackDefault = hasOptions
+            ? options[0]?.value ?? min
+            : min + (max - min) * 0.5;
+        const defaultValue = hasOptions
+            ? snapToNearestOptionValue(readFiniteNumber(parsed.default) ?? fallbackDefault, options)
+            : clampSceneControlValue(readFiniteNumber(parsed.default) ?? fallbackDefault, min, max);
         const uniform = typeof parsed.uniform === 'string' && parsed.uniform.trim().length > 0
             ? parsed.uniform.trim()
             : `uScene${key.charAt(0).toUpperCase()}${key.slice(1)}`;
@@ -172,6 +192,7 @@ function safeParseSceneControlConfig(rawPayload: string): SceneControlDefinition
             defaultValue,
             section: typeof parsed.section === 'string' && parsed.section.trim().length > 0 ? parsed.section.trim() : 'Scene Parameters',
             description: typeof parsed.description === 'string' && parsed.description.trim().length > 0 ? parsed.description.trim() : undefined,
+            options: hasOptions ? options : undefined,
         };
     } catch {
         return null;

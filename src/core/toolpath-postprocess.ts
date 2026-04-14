@@ -1,5 +1,11 @@
 import ts from 'typescript';
 
+import {
+    inferOptionStep,
+    parseNumericControlOptions,
+    snapToNearestOptionValue,
+    type NumericControlOption,
+} from './control-options';
 import { getSceneFieldDefinitions } from './shader-pipeline';
 import type { SceneFieldDefinition, SceneFieldValue } from './shaders/types';
 import type { ToolpathPoint, VaseSlicerSettings } from './slicer';
@@ -24,6 +30,7 @@ export interface PostprocessControlDefinition {
     defaultValue: number;
     section: string;
     description?: string;
+    options?: NumericControlOption[];
 }
 
 export interface ToolpathPostprocessSummary {
@@ -119,6 +126,7 @@ interface PostprocessControlConfigFile {
     default?: unknown;
     section?: unknown;
     description?: unknown;
+    options?: unknown;
 }
 
 const compiledTransformCache = new Map<string, ToolpathTransform>();
@@ -343,8 +351,14 @@ export function buildPostprocessParameterValues(
 
 export function clampPostprocessControlValue(
     value: number,
-    definition: Pick<PostprocessControlDefinition, 'min' | 'max'>,
+    definition: Pick<PostprocessControlDefinition, 'min' | 'max' | 'options'>,
 ): number {
+    if (definition.options && definition.options.length > 0) {
+        const fallback = definition.options[0]?.value ?? 0;
+        const safe = Number.isFinite(value) ? value : fallback;
+        return snapToNearestOptionValue(safe, definition.options);
+    }
+
     return Math.min(definition.max, Math.max(definition.min, value));
 }
 
@@ -510,15 +524,31 @@ function safeParsePostprocessControlConfig(rawPayload: string): PostprocessContr
             return null;
         }
 
-        const min = readFiniteNumber(parsed.min);
-        const max = readFiniteNumber(parsed.max);
-        const step = readFiniteNumber(parsed.step);
+        const options = parseNumericControlOptions(parsed.options);
+        const hasOptions = options.length > 0;
+
+        let min = readFiniteNumber(parsed.min);
+        let max = readFiniteNumber(parsed.max);
+        let step = readFiniteNumber(parsed.step);
+
+        if (hasOptions) {
+            min = Math.min(...options.map((option) => option.value));
+            max = Math.max(...options.map((option) => option.value));
+            step = inferOptionStep(options);
+        }
+
         if (min === null || max === null || step === null || max <= min || step <= 0) {
             return null;
         }
 
-        const fallbackDefault = min + (max - min) * 0.5;
-        const defaultValue = clampPostprocessControlValue(readFiniteNumber(parsed.default) ?? fallbackDefault, { min, max });
+        const fallbackDefault = hasOptions
+            ? options[0]?.value ?? min
+            : min + (max - min) * 0.5;
+        const defaultValue = clampPostprocessControlValue(readFiniteNumber(parsed.default) ?? fallbackDefault, {
+            min,
+            max,
+            options: hasOptions ? options : undefined,
+        });
         return {
             key,
             label: typeof parsed.label === 'string' && parsed.label.trim().length > 0 ? parsed.label.trim() : toPostprocessLabel(key),
@@ -528,6 +558,7 @@ function safeParsePostprocessControlConfig(rawPayload: string): PostprocessContr
             defaultValue,
             section: typeof parsed.section === 'string' && parsed.section.trim().length > 0 ? parsed.section.trim() : 'Script Parameters',
             description: typeof parsed.description === 'string' && parsed.description.trim().length > 0 ? parsed.description.trim() : undefined,
+            options: hasOptions ? options : undefined,
         };
     } catch {
         return null;

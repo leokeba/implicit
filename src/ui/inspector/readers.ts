@@ -51,6 +51,8 @@ export function readFieldOptions(field: InspectorFieldSchema, state: InspectorSc
     }
 
     if (
+        field.target === 'sceneControl' ||
+        field.target === 'postprocessControl' ||
         field.target === 'viewMode' ||
         field.target === 'slicerMode' ||
         field.target === 'slicerBoolean' ||
