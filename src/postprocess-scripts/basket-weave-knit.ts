@@ -3,6 +3,8 @@
 // @control {"key":"tangentAmplitudeMm","label":"Tangent amplitude (mm)","min":0.0,"max":2.6,"step":0.01,"default":0.24,"section":"Basket Weave","description":"Along-path displacement strength in active tangent blocks."}
 // @control {"key":"blockLayers","label":"Block layers","min":1.0,"max":24.0,"step":1.0,"default":3.0,"section":"Basket Weave","description":"How many layers before swapping weave direction."}
 // @control {"key":"blocksPerLayer","label":"Blocks per layer","min":2.0,"max":64.0,"step":1.0,"default":10.0,"section":"Basket Weave","description":"How many horizontal weave blocks around the perimeter."}
+// @control {"key":"sceneFieldInfluence","label":"Scene field influence","min":0.0,"max":1.0,"step":0.05,"default":1.0,"section":"Basket Weave","description":"Blend between uniform weave amplitude and the active scene field sample named noise."}
+// @control {"key":"sceneFieldDepth","label":"Scene field depth","min":0.0,"max":2.0,"step":0.05,"default":1.0,"section":"Basket Weave","description":"How strongly the noise field expands/compresses weave amplitude around baseline."}
 
 const TAU = Math.PI * 2.0;
 const PI = Math.PI;
@@ -13,6 +15,8 @@ export function transform(context: any) {
     const tangentAmplitudeMm = Number(context.params?.tangentAmplitudeMm ?? 0.24);
     const blockLayers = Math.max(1.0, Math.floor(Number(context.params?.blockLayers ?? 3.0)));
     const blocksPerLayer = Math.max(2.0, Number(context.params?.blocksPerLayer ?? 10.0));
+    const sceneFieldInfluence = clamp01(Number(context.params?.sceneFieldInfluence ?? 1.0));
+    const sceneFieldDepth = Math.max(0.0, Number(context.params?.sceneFieldDepth ?? 1.0));
     const layerCount = Math.max(1, Number(context.totals?.layerCount ?? 1));
 
     if ((normalAmplitudeMm === 0 && tangentAmplitudeMm === 0) || !Array.isArray(context.points)) {
@@ -23,6 +27,9 @@ export function transform(context: any) {
     }
 
     const frames = buildContourFrames(context.points, context.layers);
+    let sceneFieldCount = 0;
+    let sceneFieldMin = Number.POSITIVE_INFINITY;
+    let sceneFieldMax = Number.NEGATIVE_INFINITY;
 
     const nextPoints = context.points.map((point: any, index: number) => {
         const progress = clamp01(Number(point.metrics?.layerFilamentProgress ?? 0.0));
@@ -35,10 +42,21 @@ export function transform(context: any) {
         const blockPhase = shapeProgress * blocksPerLayer * layerCount * TAU;
         const pulse = Math.sin(blockPhase);
 
+        const sceneNoise = clamp01(readScalarSceneField(point.sceneFields?.noise, 1.0));
+        if (typeof point.sceneFields?.noise === 'number' && Number.isFinite(point.sceneFields.noise)) {
+            sceneFieldCount += 1;
+            sceneFieldMin = Math.min(sceneFieldMin, sceneNoise);
+            sceneFieldMax = Math.max(sceneFieldMax, sceneNoise);
+        }
+
+        const centeredNoise = (sceneNoise * 2.0) - 1.0;
+        const noisyScale = Math.max(0.0, 1.0 + (centeredNoise * sceneFieldDepth));
+        const amplitudeScale = lerp(1.0, noisyScale, sceneFieldInfluence);
+
         const normalWeight = lerp(0.25, 1.0, weaveSelector);
         const tangentWeight = lerp(1.0, 0.25, weaveSelector);
-        const normalOffset = pulse * normalAmplitudeMm * normalWeight;
-        const tangentOffset = pulse * tangentAmplitudeMm * tangentWeight;
+        const normalOffset = pulse * normalAmplitudeMm * normalWeight * amplitudeScale;
+        const tangentOffset = pulse * tangentAmplitudeMm * tangentWeight * amplitudeScale;
 
         return {
             ...point,
@@ -50,9 +68,16 @@ export function transform(context: any) {
     return {
         points: nextPoints,
         notes: [
-            `Applied basket weave: normalAmp=${normalAmplitudeMm.toFixed(2)}mm tangentAmp=${tangentAmplitudeMm.toFixed(2)}mm`,
+            `Applied basket weave: normalAmp=${normalAmplitudeMm.toFixed(2)}mm tangentAmp=${tangentAmplitudeMm.toFixed(2)}mm fieldMix=${sceneFieldInfluence.toFixed(2)} fieldDepth=${sceneFieldDepth.toFixed(2)}`,
+            sceneFieldCount > 0
+                ? `Scene field noise samples: count=${sceneFieldCount} range=${sceneFieldMin.toFixed(3)}..${sceneFieldMax.toFixed(3)}`
+                : 'Scene field noise samples missing on points (using fallback=1.0).',
         ],
     };
+}
+
+function readScalarSceneField(value: unknown, fallback: number): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 function buildContourFrames(points: any[], layers: any[] | undefined): Array<{ nx: number; nz: number; tx: number; tz: number }> {

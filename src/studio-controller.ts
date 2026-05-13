@@ -620,6 +620,8 @@ export class StudioController {
             nozzleDiameter: this.slicerSettings.nozzleDiameter,
             flowRate: this.slicerSettings.flowRate,
             layerHeight: this.slicerSettings.layerHeight,
+            lineWidth: this.slicerSettings.lineWidth,
+            firstLayerLineWidth: this.slicerSettings.firstLayerLineWidth,
         });
     }
 

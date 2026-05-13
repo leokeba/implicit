@@ -771,6 +771,8 @@ export class Slicer {
         this.setUniform1f('uNozzleDiameter', settings.nozzleDiameter);
         this.setUniform1f('uFlowRate', settings.flowRate);
         this.setUniform1f('uLayerHeight', settings.layerHeight);
+        this.setUniform1f('uLineWidth', settings.lineWidth);
+        this.setUniform1f('uFirstLayerLineWidth', settings.firstLayerLineWidth);
         this.setUniform2f('uSliceMin', bounds.minX, bounds.minZ);
         this.setUniform2f('uSliceMax', bounds.maxX, bounds.maxZ);
         this.setUniform1f('uSliceY', firstSampleY);
@@ -1124,6 +1126,8 @@ export class Slicer {
             setProgramUniform1f(gl, program, 'uNozzleDiameter', settings.nozzleDiameter);
             setProgramUniform1f(gl, program, 'uFlowRate', settings.flowRate);
             setProgramUniform1f(gl, program, 'uLayerHeight', settings.layerHeight);
+            setProgramUniform1f(gl, program, 'uLineWidth', settings.lineWidth);
+            setProgramUniform1f(gl, program, 'uFirstLayerLineWidth', settings.firstLayerLineWidth);
             setProgramUniform1f(gl, program, 'uFieldMinValue', field.minValue);
             setProgramUniform1f(gl, program, 'uFieldMaxValue', field.maxValue);
             applySceneControlUniforms(gl, program, this.sceneControlDefinitions, this.sceneControlValues);

@@ -39,4 +39,6 @@ export interface SceneSlicerUniformState {
     nozzleDiameter: number;
     flowRate: number;
     layerHeight: number;
+    lineWidth: number;
+    firstLayerLineWidth: number;
 }

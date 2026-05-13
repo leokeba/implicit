@@ -55,6 +55,8 @@ class Renderer {
     private nozzleDiameterLocation: WebGLUniformLocation | null;
     private flowRateLocation: WebGLUniformLocation | null;
     private uiLightThemeLocation: WebGLUniformLocation | null;
+    private lineWidthLocation: WebGLUniformLocation | null;
+    private firstLayerLineWidthLocation: WebGLUniformLocation | null;
     private startTimeMs: number;
     private lastRenderTimeMs: number;
     private renderedFrameCount: number;
@@ -111,6 +113,8 @@ class Renderer {
         this.nozzleDiameterLocation = null;
         this.flowRateLocation = null;
         this.uiLightThemeLocation = null;
+        this.lineWidthLocation = null;
+        this.firstLayerLineWidthLocation = null;
         this.startTimeMs = 0;
         this.lastRenderTimeMs = 0;
         this.renderedFrameCount = 0;
@@ -137,6 +141,8 @@ class Renderer {
             nozzleDiameter: 0.4,
             flowRate: 1.0,
             layerHeight: 0.2,
+            lineWidth: 0.42,
+            firstLayerLineWidth: 0.5,
         };
         this.raymarchParams = {
             maxSteps: 128,
@@ -378,6 +384,14 @@ class Renderer {
             gl.uniform1f(this.flowRateLocation, this.slicerUniformState.flowRate);
         }
 
+        if (this.lineWidthLocation) {
+            gl.uniform1f(this.lineWidthLocation, this.slicerUniformState.lineWidth);
+        }
+
+        if (this.firstLayerLineWidthLocation) {
+            gl.uniform1f(this.firstLayerLineWidthLocation, this.slicerUniformState.firstLayerLineWidth);
+        }
+
         if (this.uiLightThemeLocation) {
             gl.uniform1f(this.uiLightThemeLocation, this.uiLightTheme);
         }
@@ -418,6 +432,8 @@ class Renderer {
             nozzleDiameter: this.clampFloat(next.nozzleDiameter ?? this.slicerUniformState.nozzleDiameter, 0.2, 1.2),
             flowRate: this.clampFloat(next.flowRate ?? this.slicerUniformState.flowRate, 0.01, 5.0),
             layerHeight: this.clampFloat(next.layerHeight ?? this.slicerUniformState.layerHeight, 0.05, 1.0),
+            lineWidth: this.clampFloat(next.lineWidth ?? this.slicerUniformState.lineWidth, 0.2, 1.2),
+            firstLayerLineWidth: this.clampFloat(next.firstLayerLineWidth ?? this.slicerUniformState.firstLayerLineWidth, 0.2, 1.2),
         };
 
         if (this.slicerUniformState.maxY <= this.slicerUniformState.minY) {
@@ -794,6 +810,8 @@ class Renderer {
         this.maxRadiusLocation = this.gl.getUniformLocation(this.program, 'uMaxRadius');
         this.nozzleDiameterLocation = this.gl.getUniformLocation(this.program, 'uNozzleDiameter');
         this.flowRateLocation = this.gl.getUniformLocation(this.program, 'uFlowRate');
+        this.lineWidthLocation = this.gl.getUniformLocation(this.program, 'uLineWidth');
+        this.firstLayerLineWidthLocation = this.gl.getUniformLocation(this.program, 'uFirstLayerLineWidth');
         this.uiLightThemeLocation = this.gl.getUniformLocation(this.program, 'uUiLightTheme');
         this.sceneUniformLocations.clear();
     }

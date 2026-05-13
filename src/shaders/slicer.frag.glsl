@@ -10,6 +10,8 @@ uniform float uMaxRadius;
 uniform float uNozzleDiameter;
 uniform float uFlowRate;
 uniform float uLayerHeight;
+uniform float uLineWidth;
+uniform float uFirstLayerLineWidth;
 uniform vec2 uSliceMin;
 uniform vec2 uSliceMax;
 uniform float uSliceY;

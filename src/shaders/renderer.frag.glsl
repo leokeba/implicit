@@ -24,6 +24,8 @@ uniform float uMaxRadius;
 uniform float uNozzleDiameter;
 uniform float uFlowRate;
 uniform float uLayerHeight;
+uniform float uLineWidth;
+uniform float uFirstLayerLineWidth;
 uniform float uUiLightTheme;
 
 __SDF_PRIMITIVES_GLSL__
