@@ -1,0 +1,18 @@
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Implicit primary logo</title>
+  <desc id="desc">A layered contour mark for Implicit.</desc>
+  <defs>
+    <linearGradient id="bg" x1="24" y1="24" x2="216" y2="216" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#13243F"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="52" y1="44" x2="204" y2="196" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#93C5FD"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+  <rect x="24" y="24" width="192" height="192" rx="42" fill="url(#bg)"/>
+  <path d="M120 64C89.072 64 64 89.072 64 120C64 150.928 89.072 176 120 176C150.928 176 176 150.928 176 120" stroke="url(#accent)" stroke-width="8" stroke-linecap="round"/>
+  <path d="M120 82C99.013 82 82 99.013 82 120C82 140.987 99.013 158 120 158C140.987 158 158 140.987 158 120" stroke="#DCEBFF" stroke-opacity="0.92" stroke-width="8" stroke-linecap="round"/>
+  <path d="M120 100C108.954 100 100 108.954 100 120C100 131.046 108.954 140 120 140C131.046 140 140 131.046 140 120" stroke="#7DD3FC" stroke-width="8" stroke-linecap="round"/>
+</svg>
