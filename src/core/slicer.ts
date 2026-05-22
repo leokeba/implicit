@@ -839,48 +839,102 @@ export class Slicer {
         let prevY = 0;
         let prevZ = 0;
 
-        for (let layerIndex = 0; layerIndex < layers; layerIndex++) {
-            const contour = layerIndex === 0
-                ? contourLayers[0].contour
-                : contourLayers[Math.min(layerIndex - 1, layers - 1)].contour;
-            const nextContour = layerIndex === 0
-                ? contour
-                : contourLayers[Math.min(layerIndex, layers - 1)].contour;
-            const startY = layerIndex === 0
-                ? Math.min(modelHeightMm, settings.layerHeight)
-                : Math.min(modelHeightMm, settings.layerHeight * layerIndex);
-            const endY = Math.min(modelHeightMm, settings.layerHeight * (layerIndex + 1));
-            const layerBlendDivisor = Math.max(1, perLayer - 1);
+        // Layer 0 stays flat at Y = layerHeight (first-layer adhesion).
+        // Layers 1+ form a single continuous helix: each sample step advances
+        // Y by layerHeight/perLayer and the contour blend by 1/perLayer, so
+        // the wrap from k=perLayer-1 of revolution N to k=0 of revolution N+1
+        // is a uniform perimeter step with no flat-Y segment and no XZ
+        // jump-back.
+        const totalPoints = layers * perLayer;
+        for (let n = 0; n < totalPoints; n++) {
+            const layerIndex = Math.floor(n / perLayer);
+            const k = n % perLayer;
 
+            let sampleX: number;
+            let sampleZ: number;
+            let y: number;
+            let segmentExtrusionPerMm: number;
+
+            if (layerIndex === 0) {
+                const contour = contourLayers[0].contour;
+                const point = contour[k] ?? contour[contour.length - 1];
+                sampleX = point.x;
+                sampleZ = point.z;
+                y = Math.min(modelHeightMm, settings.layerHeight);
+                segmentExtrusionPerMm = firstLayerExtrusionPerMm;
+            } else {
+                // spiralT advances by 1/perLayer per sample; at n=perLayer it is 1/perLayer
+                // (one sample-step into revolution 1), and at n=totalPoints-1 it is layers-1.
+                const spiralT = (n - perLayer + 1) / perLayer;
+                const layerLow = Math.min(Math.max(0, Math.floor(spiralT)), layers - 2);
+                const layerHigh = Math.min(layerLow + 1, layers - 1);
+                const blend = spiralT - layerLow;
+                const lowContour = contourLayers[layerLow].contour;
+                const highContour = contourLayers[layerHigh].contour;
+                const lowPoint = lowContour[k] ?? lowContour[lowContour.length - 1];
+                const highPoint = highContour[k] ?? highContour[highContour.length - 1];
+                sampleX = lerp(lowPoint.x, highPoint.x, blend);
+                sampleZ = lerp(lowPoint.z, highPoint.z, blend);
+                y = Math.min(modelHeightMm, settings.layerHeight * (1 + spiralT));
+                segmentExtrusionPerMm = layerIndex === 1
+                    ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, blend)
+                    : extrusionPerMm;
+            }
+
+            const x = settings.centerX + (sampleX * settings.modelScale);
+            const z = settings.centerZ + (sampleZ * settings.modelScale);
+
+            if (points.length > 0) {
+                const segment = Math.hypot(x - prevX, y - prevY, z - prevZ);
+                eAcc += segment * segmentExtrusionPerMm;
+            }
+
+            points.push({
+                x,
+                y,
+                z,
+                e: eAcc,
+                speedMmPerSec: layerIndex === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
+                layer: layerIndex,
+            });
+
+            prevX = x;
+            prevY = y;
+            prevZ = z;
+        }
+
+        // Top cap: one revolution at constant top Y, tracing the actual top
+        // contour (not the helix-interpolated last revolution, which would pull
+        // the path back toward the previous layer). Extrusion ramps from full
+        // down to 0 across the revolution so the print finishes evenly without
+        // a dimple. The cap is tagged with its own layer index so
+        // applyMinimumLayerTime treats it as a single revolution and gives it
+        // the same speed as the helix layer below — not 2× faster from sharing
+        // a group.
+        if (layers >= 2 && perLayer >= 3) {
+            const topContour = contourLayers[layers - 1].contour;
+            const topY = Math.min(modelHeightMm, settings.layerHeight * layers);
+            const topLayerIndex = layers;
+            const divisor = Math.max(1, perLayer - 1);
             for (let k = 0; k < perLayer; k++) {
-                const blend = k / layerBlendDivisor;
-                const currentPoint = contour[k] ?? contour[contour.length - 1];
-                const nextPoint = nextContour[k] ?? nextContour[nextContour.length - 1];
-                const sampleX = layerIndex === 0 ? currentPoint.x : lerp(currentPoint.x, nextPoint.x, blend);
-                const sampleZ = layerIndex === 0 ? currentPoint.z : lerp(currentPoint.z, nextPoint.z, blend);
-                const y = layerIndex === 0 ? startY : lerp(startY, endY, blend);
-                const x = settings.centerX + (sampleX * settings.modelScale);
-                const z = settings.centerZ + (sampleZ * settings.modelScale);
-
-                if (points.length > 0) {
-                    const segment = Math.hypot(x - prevX, y - prevY, z - prevZ);
-                    const segmentExtrusionPerMm = layerIndex === 0
-                        ? firstLayerExtrusionPerMm
-                        : (layerIndex === 1 ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, blend) : extrusionPerMm);
-                    eAcc += segment * segmentExtrusionPerMm;
-                }
-
+                const sample = topContour[k] ?? topContour[topContour.length - 1];
+                const x = settings.centerX + (sample.x * settings.modelScale);
+                const z = settings.centerZ + (sample.z * settings.modelScale);
+                const progress = k / divisor;
+                const extrusionScale = Math.max(0, Math.pow(1 - progress, 1.2));
+                const segment = Math.hypot(x - prevX, topY - prevY, z - prevZ);
+                eAcc += segment * extrusionPerMm * extrusionScale;
                 points.push({
                     x,
-                    y,
+                    y: topY,
                     z,
                     e: eAcc,
-                    speedMmPerSec: layerIndex === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
-                    layer: layerIndex,
+                    speedMmPerSec: settings.printSpeedMmPerSec,
+                    layer: topLayerIndex,
+                    extrusionScale,
                 });
-
                 prevX = x;
-                prevY = y;
+                prevY = topY;
                 prevZ = z;
             }
         }
@@ -1465,8 +1519,13 @@ export class Slicer {
                 if (layer === 1) {
                     lines.push(`M106 S${configuredFanPwm}`);
                 }
-                lines.push('; FEATURE: Outer wall');
-                lines.push(';TYPE:Outer wall');
+                if (layer >= toolpath.layerCount) {
+                    lines.push('; FEATURE: Top surface');
+                    lines.push(';TYPE:Top surface');
+                } else {
+                    lines.push('; FEATURE: Outer wall');
+                    lines.push(';TYPE:Outer wall');
+                }
             }
 
             lines.push(
@@ -1475,32 +1534,6 @@ export class Slicer {
         }
 
         const lastPoint = toolpath.points[toolpath.points.length - 1];
-        const topLayerPoints = toolpath.points.filter((point) => point.layer === lastPoint.layer);
-        if (topLayerPoints.length >= 3) {
-            const taperTurns = 1.25;
-            const taperSegmentCount = Math.max(12, Math.round(topLayerPoints.length * taperTurns));
-            const topHeight = Math.max(0.0, lastPoint.y);
-            const topExtrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
-            const taperFeedrate = mmPerSecToFeedrate(Math.max(8, settings.printSpeedMmPerSec * 0.8));
-
-            lines.push('; FEATURE: Top taper');
-            lines.push(';TYPE:Top surface');
-
-            let taperPrevX = lastPoint.x;
-            let taperPrevZ = lastPoint.z;
-            for (let step = 1; step <= taperSegmentCount; step++) {
-                const target = topLayerPoints[(step - 1) % topLayerPoints.length];
-                const segment = Math.hypot(target.x - taperPrevX, target.z - taperPrevZ);
-                const progress = step / taperSegmentCount;
-                const taperFactor = Math.pow(1.0 - progress, 1.2);
-                const extrusionDelta = Math.max(0, segment * topExtrusionPerMm * taperFactor);
-                lines.push(
-                    `G1 F${taperFeedrate.toFixed(0)} X${target.x.toFixed(3)} Y${target.z.toFixed(3)} Z${topHeight.toFixed(3)} E${extrusionDelta.toFixed(5)}`
-                );
-                taperPrevX = target.x;
-                taperPrevZ = target.z;
-            }
-        }
 
         lines.push('G1 F1200 E-1.20000');
         lines.push('; FEATURE: Travel');
