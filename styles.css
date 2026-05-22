@@ -102,6 +102,15 @@ textarea {
     var(--bg);
 }
 
+.app-root.viewer-fullscreen {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.app-root.viewer-fullscreen > .app-topbar,
+.app-root.viewer-fullscreen > .status-strip {
+  display: none;
+}
+
 .app-topbar {
   display: grid;
   grid-template-columns: auto 1fr auto;
@@ -249,6 +258,22 @@ h1 {
   min-height: 0;
 }
 
+.app-root.viewer-fullscreen .workspace-stack {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.app-root.viewer-fullscreen .workspace-shell {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-root.viewer-fullscreen .workspace-editor-slot,
+.app-root.viewer-fullscreen .editor-dock-resizer,
+.app-root.viewer-fullscreen .dock-resizer,
+.app-root.viewer-fullscreen #controls,
+.app-root.viewer-fullscreen .document-editor-panel {
+  display: none;
+}
+
 .app-root.editor-visible .workspace-stack {
   grid-template-rows: minmax(0, 1fr) minmax(220px, var(--editor-height, 320px));
 }
@@ -327,6 +352,10 @@ h1 {
   padding: 8px;
 }
 
+.app-root.viewer-fullscreen .workspace-main {
+  padding: 0;
+}
+
 .viewport-stage {
   position: relative;
   height: 100%;
@@ -335,6 +364,10 @@ h1 {
   background: var(--surface-canvas);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+}
+
+.app-root.viewer-fullscreen .viewport-stage {
+  border: 0;
 }
 
 .viewport-toolbar {

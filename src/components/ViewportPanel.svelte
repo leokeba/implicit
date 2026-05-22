@@ -2,9 +2,11 @@
     export let actionPending: boolean;
     export let inspectorCollapsed: boolean;
     export let editorVisible: boolean;
+    export let viewerFullscreen: boolean;
     export let onResetView: () => void;
     export let onToggleInspector: () => void | Promise<void>;
     export let onToggleEditor: () => void | Promise<void>;
+    export let onToggleViewerFullscreen: () => void | Promise<void>;
     export let onGenerateVaseGcode: () => void | Promise<void>;
     export let generateActionLabel: string;
 </script>
@@ -15,6 +17,9 @@
             <div class="viewport-command-surface">
                 <div class="viewport-toolbar-actions">
                     <button class="chrome-button" type="button" disabled={actionPending} on:click={onGenerateVaseGcode}>{generateActionLabel}</button>
+                    <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={viewerFullscreen} on:click={onToggleViewerFullscreen}>
+                        {viewerFullscreen ? 'Exit Preview' : 'Expand Preview'}
+                    </button>
                     <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={editorVisible} on:click={onToggleEditor}>
                         {editorVisible ? 'Hide Editor' : 'Show Editor'}
                     </button>

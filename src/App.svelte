@@ -162,6 +162,7 @@
     let postprocessAutoUpdate = false;
     let postprocessAutoUpdateTimer: number | null = null;
     let postprocessAutoUpdatePending = false;
+    let viewerFullscreen = false;
 
     function buildSliceSignature(): string {
         return JSON.stringify({
@@ -506,6 +507,11 @@
         }
 
         workspace.toggleEditor();
+        await resizeViewportAfterLayout();
+    }
+
+    async function toggleViewerFullscreen(): Promise<void> {
+        viewerFullscreen = !viewerFullscreen;
         await resizeViewportAfterLayout();
     }
 
@@ -1286,6 +1292,15 @@
         }
     }
 
+    function handleWindowKeydown(event: KeyboardEvent): void {
+        if (event.key !== 'Escape' || !viewerFullscreen) {
+            return;
+        }
+
+        event.preventDefault();
+        void toggleViewerFullscreen();
+    }
+
     const inspectorHandlers: InspectorSchemaHandlers = {
         commitViewMode,
         commitScene,
@@ -1476,7 +1491,9 @@
 
 </script>
 
-<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible}>
+<svelte:window on:keydown={handleWindowKeydown} />
+
+<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible} class:viewer-fullscreen={viewerFullscreen}>
     <TopBar
         {sceneOptions}
         {sceneId}
@@ -1547,9 +1564,11 @@
                 actionPending={$status.actionPending}
                 inspectorCollapsed={$workspace.inspectorCollapsed}
                 editorVisible={$workspace.editorVisible}
+                {viewerFullscreen}
                 onResetView={resetView}
                 onToggleInspector={toggleInspector}
                 onToggleEditor={toggleEditor}
+                onToggleViewerFullscreen={toggleViewerFullscreen}
                 onGenerateVaseGcode={generateVaseGcode}
                 generateActionLabel={generateActionLabel}
             />
