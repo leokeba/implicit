@@ -1,6 +1,7 @@
+import { getActiveSceneId, getSceneDefaultParams } from '../core/shader-pipeline';
+
 import type { ToolpathPostprocessConfig } from '../core/toolpath-postprocess';
 import type { VaseSlicerSettings } from '../core/slicer';
-import { getActiveSceneId } from '../core/shader-pipeline';
 
 export interface MoonrakerUploadOptions {
     baseUrl: string;
@@ -48,7 +49,8 @@ export function buildSlicerFilename(
     const printerSlug = slugifyForFilename(settings.printerModelId, 'printer');
     const nozzleSlug = buildNozzleSlug(settings.nozzleDiameter);
     const postprocessSlug = buildPostprocessSlug(postprocessConfig);
-    const parts = [modelSlug, printerSlug, nozzleSlug, postprocessSlug, stamp].filter(Boolean);
+    const sceneSuffixSlug = buildSceneSuffixSlug();
+    const parts = [modelSlug, printerSlug, nozzleSlug, postprocessSlug, sceneSuffixSlug, stamp].filter(Boolean);
     return `${parts.join('-')}.gcode`;
 }
 
@@ -208,4 +210,44 @@ function buildPostprocessSlug(config?: ToolpathPostprocessConfig | null): string
 
     const patternSlug = slugifyForFilename(config.scriptId || config.scriptName, 'postprocess');
     return `${patternSlug}`;
+}
+
+function buildSceneSuffixSlug(): string | null {
+    const params = getSceneDefaultParams();
+    const template = typeof params.gcodeSuffix === 'string' ? params.gcodeSuffix.trim() : '';
+    if (!template) {
+        return null;
+    }
+
+    const partIndex = readSceneIntegerParam(params.partIndex);
+    const partCount = readSceneIntegerParam(params.partCount);
+    const resolved = interpolateSceneSuffixTemplate(template, partIndex, partCount);
+    const slug = slugifyForFilename(resolved, '');
+    return slug || null;
+}
+
+function interpolateSceneSuffixTemplate(template: string, partIndex: number | null, partCount: number | null): string {
+    const safeIndex = partIndex ?? 0;
+    const safePart = safeIndex + 1;
+    const safeCount = Math.max(partCount ?? safePart, safePart, 1);
+    const padWidth = Math.max(String(safeCount).length, 2);
+
+    return template
+        .replaceAll('{index}', String(safeIndex))
+        .replaceAll('{indexPad}', padInteger(safeIndex, padWidth))
+        .replaceAll('{part}', String(safePart))
+        .replaceAll('{part1}', padInteger(safePart, padWidth))
+        .replaceAll('{count}', padInteger(safeCount, padWidth));
+}
+
+function readSceneIntegerParam(value: unknown): number | null {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return null;
+    }
+
+    return Math.max(0, Math.floor(value));
+}
+
+function padInteger(value: number, width: number): string {
+    return Math.max(0, Math.floor(value)).toString().padStart(width, '0');
 }
