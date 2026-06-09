@@ -79,6 +79,7 @@
     let editorTheme = oneDark;
     let themeMediaQuery: MediaQueryList | null = null;
     let handleThemeChange: ((event: MediaQueryListEvent) => void) | null = null;
+    let panelElement: HTMLElement | null = null;
 
     function syncEditorTheme(matchesDark: boolean): void {
         editorTheme = matchesDark ? oneDark : lightEditorTheme;
@@ -98,31 +99,52 @@
 
         if (typeof themeMediaQuery.addEventListener === 'function') {
             themeMediaQuery.addEventListener('change', handleThemeChange);
-            return;
+        } else {
+            themeMediaQuery.addListener(handleThemeChange);
         }
 
-        themeMediaQuery.addListener(handleThemeChange);
+        document.addEventListener('keydown', handleEditorKeydown);
     });
 
     onDestroy(() => {
+        document.removeEventListener('keydown', handleEditorKeydown);
+
         if (!themeMediaQuery || !handleThemeChange) {
             return;
         }
 
         if (typeof themeMediaQuery.removeEventListener === 'function') {
             themeMediaQuery.removeEventListener('change', handleThemeChange);
-            return;
+        } else {
+            themeMediaQuery.removeListener(handleThemeChange);
         }
-
-        themeMediaQuery.removeListener(handleThemeChange);
     });
 
     $: languageExtension = language === 'glsl'
         ? cpp()
         : javascript({ typescript: language === 'typescript' });
+
+    function handleEditorKeydown(event: KeyboardEvent): void {
+        if (!panelElement) {
+            return;
+        }
+
+        const activeElement = document.activeElement;
+        if (!(activeElement instanceof HTMLElement) || !panelElement.contains(activeElement) || !activeElement.closest('.cm-editor')) {
+            return;
+        }
+
+        const isSaveShortcut = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's';
+        if (!isSaveShortcut || !dirty || savePending || !source) {
+            return;
+        }
+
+        event.preventDefault();
+        void onSave();
+    }
 </script>
 
-<section class="scene-editor-shell" aria-label={panelLabel}>
+<section class="scene-editor-shell" aria-label={panelLabel} bind:this={panelElement}>
     <button class="scene-editor-resizer" type="button" aria-label={`Resize ${panelLabel.toLowerCase()}`} on:pointerdown={onStartResize}></button>
 
     <header class="scene-editor-header">

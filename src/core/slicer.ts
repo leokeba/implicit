@@ -324,6 +324,10 @@ export class Slicer {
         };
     }
 
+    public normalizeVaseSettings(next: Partial<VaseSlicerSettings>): VaseSlicerSettings {
+        return this.getMergedSettings(next);
+    }
+
     public generateVaseGcode(next: Partial<VaseSlicerSettings>, pipeline?: ResolvedPipelineStep[]): VaseSliceResult {
         const settings = this.getMergedSettings(next);
         const result = this.executeVaseSlice(settings, pipeline);

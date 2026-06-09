@@ -22,6 +22,7 @@
         type SceneConfigView,
         type SceneOverrides,
         type SceneRegistrySyncResult,
+        type SlicerSettingsUpdateResult,
         type StudioController,
     } from './studio-controller';
     import {
@@ -675,24 +676,27 @@
     }
 
     function updateSlicerNumber(key: NumericSlicerKey, value: number): void {
-        studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
-        refreshConfig();
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>));
     }
 
     function updateSlicerBoolean(key: BooleanSlicerKey, value: boolean): void {
-        studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
-        refreshConfig();
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>));
     }
 
     function updateSlicerString(key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'>, value: string): void {
-        studio.updateSlicerParams({ [key]: value });
-        refreshConfig();
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ [key]: value }));
     }
 
     function updateSlicerMode(value: string): void {
         const nextMode = value as VaseSlicerSettings['slicerMode'];
-        studio.updateSlicerParams({ slicerMode: nextMode });
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ slicerMode: nextMode }));
+    }
+
+    function applySlicerSettingsUpdate(result: SlicerSettingsUpdateResult): void {
         refreshConfig();
+        if (result.validationMessage) {
+            status.setWorkspaceStatus(result.validationMessage);
+        }
     }
 
     function selectPostprocessScript(scriptId: string): void {

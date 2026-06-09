@@ -115,6 +115,11 @@ export interface SceneChangeResult {
     workspaceStatus: string;
 }
 
+export interface SlicerSettingsUpdateResult {
+    settings: VaseSlicerSettings;
+    validationMessage: string | null;
+}
+
 export interface SceneRegistrySyncResult {
     ok: boolean;
     sceneId: string;
@@ -417,9 +422,14 @@ export class StudioController {
         this.renderer.updateAnimationParams(next);
     }
 
-    public updateSlicerParams(next: Partial<VaseSlicerSettings>): void {
+    public updateSlicerParams(next: Partial<VaseSlicerSettings>): SlicerSettingsUpdateResult {
         this.overrides.slicer = { ...this.overrides.slicer, ...next };
+        const requestedSettings = { ...this.resolvedSettings, ...next };
         this.resolveConfiguration();
+        return {
+            settings: { ...this.resolvedSettings },
+            validationMessage: buildSlicerSettingsValidationMessage(requestedSettings, this.resolvedSettings),
+        };
     }
 
     public updateUniformValue(key: string, value: number): void {
@@ -636,11 +646,11 @@ export class StudioController {
             }
         }
 
-        this.resolvedSettings = {
+        this.resolvedSettings = this.slicer.normalizeVaseSettings({
             ...settings,
             ...preprocessSlicer,
             ...this.overrides.slicer,
-        };
+        });
         if (this.resolvedSettings.maxY <= this.resolvedSettings.minY) {
             this.resolvedSettings.maxY = this.resolvedSettings.minY + Math.max(0.001, this.resolvedSettings.layerHeight);
         }
@@ -887,6 +897,26 @@ export class StudioController {
             message: result.ok ? result.message : 'Ready',
         };
     }
+}
+
+function buildSlicerSettingsValidationMessage(
+    requested: Partial<VaseSlicerSettings>,
+    actual: VaseSlicerSettings,
+): string | null {
+    const requestedMaxRadius = requested.maxRadius;
+    if (typeof requestedMaxRadius !== 'number' || !Number.isFinite(requestedMaxRadius)) {
+        return null;
+    }
+
+    if (Math.abs(requestedMaxRadius - actual.maxRadius) <= 1e-9) {
+        return null;
+    }
+
+    if (requestedMaxRadius > actual.maxRadius) {
+        return `Slice half-extent is limited to ${actual.maxRadius.toFixed(1)} SDF units in the current slicer. Requested ${requestedMaxRadius.toFixed(2)}; using ${actual.maxRadius.toFixed(2)}.`;
+    }
+
+    return `Slice half-extent must be at least ${actual.maxRadius.toFixed(1)} SDF units. Requested ${requestedMaxRadius.toFixed(2)}; using ${actual.maxRadius.toFixed(2)}.`;
 }
 
 function clampScalarValue(value: number, spec: ScalarControlSpec): number {
