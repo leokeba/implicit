@@ -3,6 +3,7 @@
     import {
         commitFieldValue,
         isFieldDisabled,
+        normalizeNumberFieldValue,
         readFieldOptions,
         readFieldValue,
         triggerInspectorAction,
@@ -75,7 +76,13 @@
                                 max={field.max}
                                 value={Number(readFieldValue(field, state))}
                                 disabled={isFieldDisabled(field, state)}
-                                on:change={(event) => commitFieldValue(field, (event.currentTarget as HTMLInputElement).value, handlers)}
+                                on:change={(event) => {
+                                    const input = event.currentTarget as HTMLInputElement;
+                                    const attemptedValue = input.value;
+                                    const normalizedValue = normalizeNumberFieldValue(field, attemptedValue);
+                                    input.value = normalizedValue;
+                                    commitFieldValue(field, attemptedValue, handlers);
+                                }}
                             >
                         {/if}
                     </div>

@@ -81,6 +81,11 @@ export interface PresetChangeResult {
     workspaceStatus: string;
 }
 
+export interface SlicerSettingsUpdateResult {
+    settings: VaseSlicerSettings;
+    validationMessage: string | null;
+}
+
 export interface SceneRegistrySyncResult {
     ok: boolean;
     sceneId: string;
@@ -434,9 +439,14 @@ export class StudioController {
         };
     }
 
-    public updateSlicerParams(next: Partial<VaseSlicerSettings>): void {
-        this.slicerSettings = { ...this.slicerSettings, ...next };
+    public updateSlicerParams(next: Partial<VaseSlicerSettings>): SlicerSettingsUpdateResult {
+        const requestedSettings = { ...this.slicerSettings, ...next };
+        this.slicerSettings = this.slicer.normalizeVaseSettings(requestedSettings);
         this.syncSceneSlicerUniforms();
+        return {
+            settings: { ...this.slicerSettings },
+            validationMessage: buildSlicerSettingsValidationMessage(requestedSettings, this.slicerSettings),
+        };
     }
 
     public setToolpathPostprocessConfig(config: ToolpathPostprocessConfig | null): void {
@@ -651,6 +661,26 @@ export class StudioController {
         };
     }
 
+}
+
+function buildSlicerSettingsValidationMessage(
+    requested: Partial<VaseSlicerSettings>,
+    actual: VaseSlicerSettings,
+): string | null {
+    const requestedMaxRadius = requested.maxRadius;
+    if (typeof requestedMaxRadius !== 'number' || !Number.isFinite(requestedMaxRadius)) {
+        return null;
+    }
+
+    if (Math.abs(requestedMaxRadius - actual.maxRadius) <= 1e-9) {
+        return null;
+    }
+
+    if (requestedMaxRadius > actual.maxRadius) {
+        return `Slice half-extent is limited to ${actual.maxRadius.toFixed(1)} SDF units in the current slicer. Requested ${requestedMaxRadius.toFixed(2)}; using ${actual.maxRadius.toFixed(2)}.`;
+    }
+
+    return `Slice half-extent must be at least ${actual.maxRadius.toFixed(1)} SDF units. Requested ${requestedMaxRadius.toFixed(2)}; using ${actual.maxRadius.toFixed(2)}.`;
 }
 
 function buildSceneControlValueMap(

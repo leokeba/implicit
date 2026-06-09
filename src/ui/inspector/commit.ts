@@ -6,6 +6,18 @@ function coerceNumber(rawValue: string): number {
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
+export function normalizeNumberFieldValue(field: Extract<InspectorFieldSchema, { kind: 'number' }>, rawValue: string): string {
+    const parsed = coerceNumber(rawValue);
+    const min = Number(field.min);
+    const max = Number(field.max);
+    const clamped = Math.min(
+        Number.isFinite(max) ? max : parsed,
+        Math.max(Number.isFinite(min) ? min : parsed, parsed),
+    );
+
+    return String(clamped);
+}
+
 export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, handlers: InspectorSchemaHandlers): void {
     switch (field.target) {
         case 'scene':

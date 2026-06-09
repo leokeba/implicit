@@ -16,7 +16,7 @@
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
     import ViewportPanel from './components/ViewportPanel.svelte';
-    import { type SceneRegistrySyncResult, type StudioController } from './studio-controller';
+    import { type SceneRegistrySyncResult, type SlicerSettingsUpdateResult, type StudioController } from './studio-controller';
     import {
         type BooleanSlicerKey,
         type ControlTabId,
@@ -332,8 +332,8 @@
         }
 
         if (snapshot.slicerSettings && typeof snapshot.slicerSettings === 'object') {
-            slicerSettings = { ...slicerSettings, ...snapshot.slicerSettings };
-            studio.updateSlicerParams(snapshot.slicerSettings);
+            const result = studio.updateSlicerParams(snapshot.slicerSettings);
+            slicerSettings = result.settings;
         }
 
         if (snapshot.sceneControlValues && typeof snapshot.sceneControlValues === 'object') {
@@ -626,24 +626,27 @@
     }
 
     function updateSlicerNumber(key: NumericSlicerKey, value: number): void {
-        slicerSettings = { ...slicerSettings, [key]: value } as VaseSlicerSettings;
-        studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>));
     }
 
     function updateSlicerBoolean(key: BooleanSlicerKey, value: boolean): void {
-        slicerSettings = { ...slicerSettings, [key]: value } as VaseSlicerSettings;
-        studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>));
     }
 
     function updateSlicerString(key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'>, value: string): void {
-        slicerSettings = { ...slicerSettings, [key]: value };
-        studio.updateSlicerParams({ [key]: value });
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ [key]: value }));
     }
 
     function updateSlicerMode(value: string): void {
         const nextMode = value as VaseSlicerSettings['slicerMode'];
-        slicerSettings = { ...slicerSettings, slicerMode: nextMode };
-        studio.updateSlicerParams({ slicerMode: nextMode });
+        applySlicerSettingsUpdate(studio.updateSlicerParams({ slicerMode: nextMode }));
+    }
+
+    function applySlicerSettingsUpdate(result: SlicerSettingsUpdateResult): void {
+        slicerSettings = result.settings;
+        if (result.validationMessage) {
+            status.setWorkspaceStatus(result.validationMessage);
+        }
     }
 
     function commitPostprocessScript(scriptId: string): void {
