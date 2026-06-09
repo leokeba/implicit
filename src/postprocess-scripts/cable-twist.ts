@@ -1,10 +1,13 @@
 // Cable Twist Knit
-// @control {"key":"amplitudeMm","label":"Amplitude (mm)","min":0.0,"max":1.6,"step":0.01,"default":0.45,"section":"Cable Pattern","description":"Maximum outward displacement for cable ridges."}
-// @control {"key":"cableCount","label":"Cable count","min":1.0,"max":24.0,"step":1.0,"default":6.0,"section":"Cable Pattern","description":"How many cable ribs repeat around each layer."}
-// @control {"key":"twistTurnsOverHeight","label":"Twist turns over height","min":0.0,"max":12.0,"step":0.05,"default":2.4,"section":"Cable Pattern","description":"How many full phase rotations occur from bottom to top."}
 
 const TAU = Math.PI * 2.0;
 const EPSILON = 1e-6;
+
+export const controls = {
+    amplitudeMm: { default: 0.45, min: 0.0, max: 1.6, step: 0.01, label: 'Amplitude (mm)', section: 'Cable Pattern', description: 'Maximum outward displacement for cable ridges.' },
+    cableCount: { default: 6.0, min: 1.0, max: 24.0, step: 1.0, label: 'Cable count', section: 'Cable Pattern', description: 'How many cable ribs repeat around each layer.' },
+    twistTurnsOverHeight: { default: 2.4, min: 0.0, max: 12.0, step: 0.05, label: 'Twist turns over height', section: 'Cable Pattern', description: 'How many full phase rotations occur from bottom to top.' },
+};
 
 export function transform(context: any) {
     const amplitudeMm = Number(context.params?.amplitudeMm ?? 0.45);

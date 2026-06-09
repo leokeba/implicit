@@ -1,10 +1,13 @@
 <script lang="ts">
     import SliceDebugView from './SliceDebugView.svelte';
     import {
+        canResetField,
         commitFieldValue,
         isFieldDisabled,
+        isFieldOverridden,
         readFieldOptions,
         readFieldValue,
+        resetFieldOverride,
         triggerInspectorAction,
         type InspectorSchemaHandlers,
         type InspectorSchemaState,
@@ -34,8 +37,19 @@
             <p class="group-caption">{section.caption}</p>
             <div class="field-grid">
                 {#each section.fields as field}
-                    <div class:field-row-textarea={field.kind === 'textarea'} class="field-row">
-                        <label for={field.id}>{field.label}</label>
+                    {@const overridden = isFieldOverridden(field, state)}
+                    <div class:field-row-textarea={field.kind === 'textarea'} class:field-row-overridden={overridden} class="field-row">
+                        <label for={field.id}>
+                            {field.label}
+                            {#if overridden && canResetField(field)}
+                                <button
+                                    class="field-override-reset"
+                                    type="button"
+                                    title="Override active. Reset to scene-defined value."
+                                    on:click={() => resetFieldOverride(field, handlers)}
+                                >&#8634;</button>
+                            {/if}
+                        </label>
 
                         {#if field.kind === 'select'}
                             <select

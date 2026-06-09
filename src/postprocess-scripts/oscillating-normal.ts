@@ -1,15 +1,18 @@
 // Oscillating Normal Pattern
-// @control {"key":"amplitudeMm","label":"Amplitude (mm)","min":0.0,"max":2.0,"step":0.01,"default":0.35,"section":"Oscillation","description":"Maximum normal-direction displacement."}
-// @control {"key":"sourceMode","label":"Source mode","default":0.0,"options":["Filament distance","Layer normalized"],"section":"Oscillation","description":"Choose modulation source domain."}
-// @control {"key":"waveMode","label":"Wave mode","default":0.0,"options":["Sine","Square","Triangle","Ramp up","Ramp down","Cosine","Pulse"],"section":"Oscillation","description":"Waveform shape used for modulation."}
-// @control {"key":"frequency","label":"Frequency","min":0.01,"max":200.0,"step":0.01,"default":6.0,"section":"Oscillation","description":"Filament source: cycles/100mm. Layer-normalized source: cycles/layer."}
-// @control {"key":"phaseTurns","label":"Phase offset (turns)","min":-4.0,"max":4.0,"step":0.01,"default":0.0,"section":"Oscillation","description":"Global phase offset in turns."}
-// @control {"key":"pulseDutyCycle","label":"Pulse duty cycle","min":0.01,"max":0.99,"step":0.01,"default":0.5,"section":"Oscillation","description":"Only used by pulse mode: fraction of each cycle at +1 state."}
-// @control {"key":"sceneFieldInfluence","label":"Scene field influence","min":0.0,"max":1.0,"step":0.05,"default":1.0,"section":"Oscillation","description":"Blend between uniform amplitude and the active scene field sample named noise."}
-// @control {"key":"sceneFieldDepth","label":"Scene field depth","min":0.0,"max":2.0,"step":0.05,"default":1.0,"section":"Oscillation","description":"How strongly the noise field expands/compresses amplitude around the baseline."}
 
 const TAU = Math.PI * 2.0;
 const EPSILON = 1e-6;
+
+export const controls = {
+    amplitudeMm: { default: 0.35, min: 0.0, max: 2.0, step: 0.01, label: 'Amplitude (mm)', section: 'Oscillation', description: 'Maximum normal-direction displacement.' },
+    sourceMode: { default: 0.0, options: ['Filament distance', 'Layer normalized'], label: 'Source mode', section: 'Oscillation', description: 'Choose modulation source domain.' },
+    waveMode: { default: 0.0, options: ['Sine', 'Square', 'Triangle', 'Ramp up', 'Ramp down', 'Cosine', 'Pulse'], label: 'Wave mode', section: 'Oscillation', description: 'Waveform shape used for modulation.' },
+    frequency: { default: 6.0, min: 0.01, max: 200.0, step: 0.01, label: 'Frequency', section: 'Oscillation', description: 'Filament source: cycles/100mm. Layer-normalized source: cycles/layer.' },
+    phaseTurns: { default: 0.0, min: -4.0, max: 4.0, step: 0.01, label: 'Phase offset (turns)', section: 'Oscillation', description: 'Global phase offset in turns.' },
+    pulseDutyCycle: { default: 0.5, min: 0.01, max: 0.99, step: 0.01, label: 'Pulse duty cycle', section: 'Oscillation', description: 'Only used by pulse mode: fraction of each cycle at +1 state.' },
+    sceneFieldInfluence: { default: 1.0, min: 0.0, max: 1.0, step: 0.05, label: 'Scene field influence', section: 'Oscillation', description: 'Blend between uniform amplitude and the active scene field sample named noise.' },
+    sceneFieldDepth: { default: 1.0, min: 0.0, max: 2.0, step: 0.05, label: 'Scene field depth', section: 'Oscillation', description: 'How strongly the noise field expands/compresses amplitude around the baseline.' },
+};
 
 export function transform(context: any) {
     const amplitudeMm = Number(context.params?.amplitudeMm ?? 0.35);

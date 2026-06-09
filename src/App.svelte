@@ -2,21 +2,28 @@
     import { onDestroy, onMount, tick } from 'svelte';
 
     import type { AnimationParams, RaymarchParams, ViewportParams } from './core/renderer';
-    import type { SceneDocument } from './core/shader-pipeline';
+    import {
+        SCENE_GLSL_FILE,
+        type SceneBundle,
+    } from './core/shader-pipeline';
     import type { VaseSlicerSettings } from './core/slicer';
     import {
-        buildPostprocessParameterValues,
-        clampPostprocessControlValue,
-        parsePostprocessControlDefinitions,
-        type PostprocessControlDefinition,
-        type ToolpathPostprocessConfig,
-    } from './core/toolpath-postprocess';
+        listPostprocessScripts,
+        setPostprocessScripts,
+        upsertPostprocessScript,
+        type PostprocessScriptDocument,
+    } from './core/postprocess-registry';
     import DocumentEditorPanel from './components/DocumentEditorPanel.svelte';
     import InspectorPanel from './components/InspectorPanel.svelte';
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
     import ViewportPanel from './components/ViewportPanel.svelte';
-    import { type SceneRegistrySyncResult, type StudioController } from './studio-controller';
+    import {
+        type SceneConfigView,
+        type SceneOverrides,
+        type SceneRegistrySyncResult,
+        type StudioController,
+    } from './studio-controller';
     import {
         type BooleanSlicerKey,
         type ControlTabId,
@@ -25,28 +32,25 @@
         type NumericSlicerKey,
     } from './ui/inspector-schema';
     import {
-        createSceneDocument,
-        hasDirtySceneDocuments,
+        areSceneBundlesEqual,
         loadSceneRepository,
-        reloadFilesystemSceneDocuments,
-        saveSceneDocuments,
-        type SceneDocumentStorageMode,
+        reloadFilesystemScenes,
+        saveSceneFile,
+        type SceneStorageMode,
     } from './ui/scene-documents';
     import {
+        arePostprocessCollectionsEqual,
         createPostprocessDocument,
-        getBundledPostprocessDocuments,
-        hasDirtyPostprocessDocuments,
         loadPostprocessRepository,
         reloadFilesystemPostprocessDocuments,
         savePostprocessDocument,
-        type PostprocessScriptDocument,
-        type PostprocessScriptStorageMode,
+        type PostprocessStorageMode,
     } from './ui/postprocess-documents';
     import {
-        arePostprocessCollectionsEqual,
-        areSceneCollectionsEqual,
-        buildSceneTemplate,
+        buildSceneGlslTemplate,
+        buildSceneManifestTemplate,
         formatEta,
+        toSceneId,
     } from './app/helpers';
     import { createStatusModel } from './ui/status-model';
     import { createWorkspaceStore } from './ui/workspace-store';
@@ -59,8 +63,6 @@
     const snapshot = studio.getSnapshot();
 
     let sceneOptions = snapshot.sceneOptions;
-    let sceneControlDefinitions = snapshot.sceneControlDefinitions;
-    let sceneControlValues = snapshot.sceneControlValues;
     let printerModels = snapshot.printerModels;
     let filamentProfiles = snapshot.filamentProfiles;
     let sceneId = snapshot.sceneId;
@@ -68,41 +70,35 @@
     let raymarchParams = snapshot.raymarchParams;
     let viewportParams = snapshot.viewportParams;
     let animationParams = snapshot.animationParams;
-    let slicerSettings = snapshot.slicerSettings;
-    const bundledSceneDocuments = studio.getSceneDocuments();
-    const bundledPostprocessDocuments = getBundledPostprocessDocuments();
-    let sceneDocuments = bundledSceneDocuments;
-    let persistedSceneDocuments = bundledSceneDocuments;
-    let sceneEditorMode: SceneDocumentStorageMode = 'browser';
+    let config: SceneConfigView = snapshot.config;
+
+    // Scene folder documents.
+    let sceneBundles: SceneBundle[] = studio.getSceneBundles();
+    let persistedSceneBundles: SceneBundle[] = sceneBundles;
+    let sceneStorageMode: SceneStorageMode = 'bundled';
     let sceneEditorStatus = 'Scene editor ready.';
     let sceneEditorSavePending = false;
-    let activeSceneDocument: SceneDocument | null = sceneDocuments[0] ?? null;
-    let persistedActiveSceneDocument: SceneDocument | null = persistedSceneDocuments[0] ?? null;
-    let sceneEditorDirty = false;
-    let sceneEditorModeLabel = 'Browser Drafts';
-    let postprocessDocuments = bundledPostprocessDocuments;
-    let persistedPostprocessDocuments = bundledPostprocessDocuments;
-    let postprocessMode: PostprocessScriptStorageMode = 'browser';
+    let activeSceneFileName: string = SCENE_GLSL_FILE;
+
+    // Generic postprocess script documents (editing targets).
+    let postprocessDocuments: PostprocessScriptDocument[] = listPostprocessScripts();
+    let persistedPostprocessDocuments = postprocessDocuments;
+    let postprocessMode: PostprocessStorageMode = 'bundled';
     let postprocessStatus = 'Postprocess scripts ready.';
     let postprocessSavePending = false;
-    let activePostprocessScriptId = bundledPostprocessDocuments[0]?.id ?? '';
-    let postprocessEnabled = false;
-    let activePostprocessDocument: PostprocessScriptDocument | null = postprocessDocuments[0] ?? null;
-    let persistedActivePostprocessDocument: PostprocessScriptDocument | null = persistedPostprocessDocuments[0] ?? null;
-    let postprocessDirty = false;
-    let postprocessModeLabel = 'Browser Drafts';
-    let activePostprocessConfig: ToolpathPostprocessConfig | null = null;
-    let postprocessControlDefinitions: PostprocessControlDefinition[] = [];
-    let postprocessControlValueState: Record<string, Record<string, number>> = {};
-    let postprocessControlValues: Record<string, number> = {};
+    let activePostprocessScriptId = postprocessDocuments[0]?.id ?? '';
     let editorDocumentMode: 'scene' | 'postprocess' = 'scene';
+    let postprocessAutoUpdate = false;
+
+    // Session overrides per scene, persisted in the runtime snapshot.
+    let sceneOverridesBySceneId: Record<string, Partial<SceneOverrides>> = {};
 
     const workspace = createWorkspaceStore({
         activeSceneLabel: studio.getSceneLabel(sceneId),
         activeViewModeLabel: studio.getViewModeLabel(viewMode),
     });
     const status = createStatusModel();
-    const APP_RUNTIME_STORAGE_KEY = 'implicit.runtimeState.v1';
+    const APP_RUNTIME_STORAGE_KEY = 'implicit.runtimeState.v2';
     const PRINTER_TARGET_STORAGE_KEY = 'implicit.printerTarget.v1';
 
     interface PrinterTarget {
@@ -127,13 +123,11 @@
         raymarchParams?: Partial<RaymarchParams>;
         viewportParams?: Partial<ViewportParams>;
         animationParams?: Partial<AnimationParams>;
-        slicerSettings?: Partial<VaseSlicerSettings>;
-        sceneControlValues?: Record<string, number>;
         activePostprocessScriptId?: string;
-        postprocessEnabled?: boolean;
         postprocessAutoUpdate?: boolean;
-        postprocessControlValueState?: Record<string, Record<string, number>>;
         editorDocumentMode?: 'scene' | 'postprocess';
+        activeSceneFileName?: string;
+        sceneOverrides?: Record<string, Partial<SceneOverrides>>;
     }
 
     let resizeCleanup: (() => void) | null = null;
@@ -159,22 +153,31 @@
     let hasGeneratedArtifactForCurrentState = false;
     let generateActionLabel = 'Generate';
     let showDownloadButton = false;
-    let postprocessAutoUpdate = false;
     let postprocessAutoUpdateTimer: number | null = null;
     let postprocessAutoUpdatePending = false;
     let viewerFullscreen = false;
 
+    function refreshConfig(): void {
+        config = studio.getConfigView();
+    }
+
     function buildSliceSignature(): string {
         return JSON.stringify({
             sceneId,
-            sceneSource: activeSceneDocument?.source ?? '',
-            sceneControlValues,
-            slicerSettings,
+            sceneGlsl: activeSceneBundle?.files[SCENE_GLSL_FILE] ?? '',
+            uniformValues: config.uniformValues,
+            settings: config.settings,
         });
     }
 
-    function buildPostprocessSignature(config: ToolpathPostprocessConfig | null): string {
-        return JSON.stringify(config ?? null);
+    function buildPostprocessSignature(view: SceneConfigView): string {
+        return JSON.stringify(view.pipeline.map((step) => ({
+            name: step.name,
+            scriptId: step.scriptId,
+            enabled: step.enabled,
+            params: step.params,
+            error: step.error,
+        })));
     }
 
     function readPrinterTarget(): PrinterTarget {
@@ -277,13 +280,13 @@
         }
     }
 
-    function persistRuntimeSnapshot(snapshot: AppRuntimeSnapshot): void {
+    function persistRuntimeSnapshot(runtimeSnapshot: AppRuntimeSnapshot): void {
         if (typeof window === 'undefined') {
             return;
         }
 
         try {
-            window.sessionStorage.setItem(APP_RUNTIME_STORAGE_KEY, JSON.stringify(snapshot));
+            window.sessionStorage.setItem(APP_RUNTIME_STORAGE_KEY, JSON.stringify(runtimeSnapshot));
         } catch {
             // Ignore storage write failures.
         }
@@ -296,88 +299,89 @@
             raymarchParams,
             viewportParams,
             animationParams,
-            slicerSettings,
-            sceneControlValues,
             activePostprocessScriptId,
-            postprocessEnabled,
             postprocessAutoUpdate,
-            postprocessControlValueState,
             editorDocumentMode,
+            activeSceneFileName,
+            sceneOverrides: {
+                ...sceneOverridesBySceneId,
+                [sceneId]: studio.exportOverrides(),
+            },
         };
     }
 
-    function restoreRuntimeSnapshot(snapshot: AppRuntimeSnapshot): void {
-        if (typeof snapshot.sceneId === 'string' && sceneOptions.some((option) => option.id === snapshot.sceneId)) {
-            commitScene(snapshot.sceneId);
+    function restoreRuntimeSnapshot(runtimeSnapshot: AppRuntimeSnapshot): void {
+        if (runtimeSnapshot.sceneOverrides && typeof runtimeSnapshot.sceneOverrides === 'object') {
+            sceneOverridesBySceneId = runtimeSnapshot.sceneOverrides;
         }
 
-        if (typeof snapshot.viewMode === 'number') {
-            viewMode = snapshot.viewMode;
-            studio.setViewMode(snapshot.viewMode);
+        if (typeof runtimeSnapshot.sceneId === 'string' && sceneOptions.some((option) => option.id === runtimeSnapshot.sceneId)) {
+            commitScene(runtimeSnapshot.sceneId);
         }
 
-        if (snapshot.raymarchParams && typeof snapshot.raymarchParams === 'object') {
-            raymarchParams = { ...raymarchParams, ...snapshot.raymarchParams };
-            studio.updateRaymarchParams(snapshot.raymarchParams);
+        const restoredOverrides = sceneOverridesBySceneId[sceneId];
+        if (restoredOverrides) {
+            studio.restoreOverrides(restoredOverrides);
+            refreshConfig();
         }
 
-        if (snapshot.viewportParams && typeof snapshot.viewportParams === 'object') {
-            viewportParams = { ...viewportParams, ...snapshot.viewportParams };
-            studio.updateViewportParams(snapshot.viewportParams);
+        if (typeof runtimeSnapshot.viewMode === 'number') {
+            viewMode = runtimeSnapshot.viewMode;
+            studio.setViewMode(runtimeSnapshot.viewMode);
         }
 
-        if (snapshot.animationParams && typeof snapshot.animationParams === 'object') {
-            animationParams = { ...animationParams, ...snapshot.animationParams };
-            studio.updateAnimationParams(snapshot.animationParams);
+        if (runtimeSnapshot.raymarchParams && typeof runtimeSnapshot.raymarchParams === 'object') {
+            raymarchParams = { ...raymarchParams, ...runtimeSnapshot.raymarchParams };
+            studio.updateRaymarchParams(runtimeSnapshot.raymarchParams);
         }
 
-        if (snapshot.slicerSettings && typeof snapshot.slicerSettings === 'object') {
-            slicerSettings = { ...slicerSettings, ...snapshot.slicerSettings };
-            studio.updateSlicerParams(snapshot.slicerSettings);
+        if (runtimeSnapshot.viewportParams && typeof runtimeSnapshot.viewportParams === 'object') {
+            viewportParams = { ...viewportParams, ...runtimeSnapshot.viewportParams };
+            studio.updateViewportParams(runtimeSnapshot.viewportParams);
         }
 
-        if (snapshot.sceneControlValues && typeof snapshot.sceneControlValues === 'object') {
-            for (const definition of sceneControlDefinitions) {
-                const value = snapshot.sceneControlValues[definition.key];
-                if (typeof value !== 'number' || Number.isNaN(value)) {
-                    continue;
-                }
-
-                updateSceneControlValue(definition.key, value);
-            }
+        if (runtimeSnapshot.animationParams && typeof runtimeSnapshot.animationParams === 'object') {
+            animationParams = { ...animationParams, ...runtimeSnapshot.animationParams };
+            studio.updateAnimationParams(runtimeSnapshot.animationParams);
         }
 
-        if (typeof snapshot.activePostprocessScriptId === 'string'
-            && postprocessDocuments.some((document) => document.id === snapshot.activePostprocessScriptId)) {
-            activePostprocessScriptId = snapshot.activePostprocessScriptId;
+        if (typeof runtimeSnapshot.activePostprocessScriptId === 'string'
+            && postprocessDocuments.some((document) => document.id === runtimeSnapshot.activePostprocessScriptId)) {
+            activePostprocessScriptId = runtimeSnapshot.activePostprocessScriptId;
         }
 
-        if (typeof snapshot.postprocessEnabled === 'boolean') {
-            postprocessEnabled = snapshot.postprocessEnabled;
+        if (typeof runtimeSnapshot.postprocessAutoUpdate === 'boolean') {
+            postprocessAutoUpdate = runtimeSnapshot.postprocessAutoUpdate;
         }
 
-        if (typeof snapshot.postprocessAutoUpdate === 'boolean') {
-            postprocessAutoUpdate = snapshot.postprocessAutoUpdate;
+        if (runtimeSnapshot.editorDocumentMode === 'scene' || runtimeSnapshot.editorDocumentMode === 'postprocess') {
+            editorDocumentMode = runtimeSnapshot.editorDocumentMode;
         }
 
-        if (snapshot.postprocessControlValueState && typeof snapshot.postprocessControlValueState === 'object') {
-            postprocessControlValueState = snapshot.postprocessControlValueState;
-        }
-
-        if (snapshot.editorDocumentMode === 'scene' || snapshot.editorDocumentMode === 'postprocess') {
-            editorDocumentMode = snapshot.editorDocumentMode;
+        if (typeof runtimeSnapshot.activeSceneFileName === 'string') {
+            activeSceneFileName = runtimeSnapshot.activeSceneFileName;
         }
     }
 
     $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
     $: studio.setToolpathOverlayVisible($workspace.overlayVisible);
-    $: activeSceneDocument = sceneDocuments.find((document) => document.id === sceneId) ?? null;
-    $: persistedActiveSceneDocument = persistedSceneDocuments.find((document) => document.id === sceneId) ?? null;
+    $: activeSceneBundle = sceneBundles.find((bundle) => bundle.id === sceneId) ?? null;
+    $: persistedActiveSceneBundle = persistedSceneBundles.find((bundle) => bundle.id === sceneId) ?? null;
+    $: sceneFileNames = activeSceneBundle ? sortSceneFileNames(Object.keys(activeSceneBundle.files)) : [];
+    $: if (activeSceneBundle && !(activeSceneFileName in activeSceneBundle.files)) {
+        activeSceneFileName = SCENE_GLSL_FILE in activeSceneBundle.files ? SCENE_GLSL_FILE : (sceneFileNames[0] ?? SCENE_GLSL_FILE);
+    }
+    $: activeSceneSource = activeSceneBundle?.files[activeSceneFileName] ?? null;
     $: sceneEditorDirty = Boolean(
-        activeSceneDocument &&
-            (!persistedActiveSceneDocument || activeSceneDocument.source !== persistedActiveSceneDocument.source)
+        activeSceneBundle && activeSceneSource !== null &&
+            activeSceneSource !== (persistedActiveSceneBundle?.files[activeSceneFileName] ?? null)
     );
-    $: sceneEditorModeLabel = sceneEditorMode === 'filesystem' ? 'Folder Sync' : 'Browser Drafts';
+    $: sceneEditorModeLabel = sceneStorageMode === 'filesystem' ? 'Folder Sync' : 'Bundled (read-only save)';
+    $: sceneEditorLanguage = activeSceneFileName.endsWith('.glsl')
+        ? 'glsl' as const
+        : activeSceneFileName.endsWith('.js')
+            ? 'javascript' as const
+            : 'typescript' as const;
     $: if (!postprocessDocuments.some((document) => document.id === activePostprocessScriptId)) {
         activePostprocessScriptId = postprocessDocuments[0]?.id ?? '';
     }
@@ -387,25 +391,10 @@
         activePostprocessDocument &&
             (!persistedActivePostprocessDocument || activePostprocessDocument.source !== persistedActivePostprocessDocument.source)
     );
-    $: postprocessModeLabel = postprocessMode === 'filesystem' ? 'Folder Sync' : 'Browser Drafts';
-    $: postprocessControlDefinitions = parsePostprocessControlDefinitions(activePostprocessDocument?.source ?? '');
-    $: postprocessControlValues = activePostprocessDocument
-        ? buildPostprocessParameterValues(postprocessControlDefinitions, postprocessControlValueState[activePostprocessDocument.id])
-        : {};
-    $: activePostprocessConfig = activePostprocessDocument
-        ? {
-            enabled: postprocessEnabled,
-            scriptId: activePostprocessDocument.id,
-            scriptName: activePostprocessDocument.name,
-            language: activePostprocessDocument.language,
-            source: activePostprocessDocument.source,
-            parameterValues: postprocessControlValues,
-        }
-        : null;
-    $: studio.setToolpathPostprocessConfig(activePostprocessConfig);
+    $: postprocessModeLabel = postprocessMode === 'filesystem' ? 'Folder Sync' : 'Bundled (read-only save)';
     $: printerConfigured = printerTarget.baseUrl.trim().length > 0;
     $: currentSliceSignature = buildSliceSignature();
-    $: currentPostprocessSignature = buildPostprocessSignature(activePostprocessConfig);
+    $: currentPostprocessSignature = buildPostprocessSignature(config);
     $: hasGeneratedArtifactForCurrentSlice = Boolean(
         generatedGcodeArtifact && generatedGcodeArtifact.sliceSignature === currentSliceSignature
     );
@@ -420,22 +409,29 @@
     $: showDownloadButton = hasGeneratedArtifactForCurrentState;
     $: inspectorState = {
         sceneOptions,
-        sceneControlDefinitions,
-        sceneControlValues,
+        uniformControls: config.uniformControls,
+        uniformValues: config.uniformValues,
+        paramControls: config.paramControls,
+        paramValues: config.paramValues,
+        pipeline: config.pipeline,
+        overriddenSlicerKeys: config.overriddenSlicerKeys,
+        overriddenUniformKeys: config.overriddenUniformKeys,
+        overriddenParamKeys: config.overriddenParamKeys,
+        overrideCount: config.overrideCount,
+        printerOverridden: config.printerOverridden,
+        filamentOverridden: config.filamentOverridden,
+        manifestError: config.manifestError,
+        preprocessError: config.preprocessError,
         printerModels,
         filamentProfiles,
         postprocessDocuments,
-        postprocessControlDefinitions,
-        postprocessControlValues,
         sceneId,
         viewMode,
         raymarchParams,
         viewportParams,
         animationParams,
-        slicerSettings,
+        slicerSettings: config.settings,
         activePostprocessScriptId,
-        postprocessEnabled,
-        postprocessSource: activePostprocessDocument?.source ?? '',
         postprocessStatus,
         postprocessDirty,
         postprocessStorageLabel: postprocessModeLabel,
@@ -469,6 +465,20 @@
         import.meta.hot.dispose(() => {
             persistRuntimeSnapshot(captureRuntimeSnapshot());
         });
+    }
+
+    function sortSceneFileNames(fileNames: string[]): string[] {
+        const priority = (name: string): number => {
+            if (name === SCENE_GLSL_FILE) {
+                return 0;
+            }
+            if (name === 'scene.ts' || name === 'scene.js') {
+                return 1;
+            }
+            return 2;
+        };
+
+        return fileNames.slice().sort((left, right) => priority(left) - priority(right) || left.localeCompare(right));
     }
 
     async function resizeViewportAfterLayout(): Promise<void> {
@@ -532,46 +542,85 @@
     }
 
     function commitScene(nextSceneId: string): void {
+        if (nextSceneId !== sceneId) {
+            sceneOverridesBySceneId = {
+                ...sceneOverridesBySceneId,
+                [sceneId]: studio.exportOverrides(),
+            };
+        }
+
         status.setShaderStatus('compiling', 'Compiling...');
-        const result = studio.changeScene(nextSceneId);
+        const result = studio.changeScene(nextSceneId, sceneOverridesBySceneId[nextSceneId] ?? null);
         sceneId = result.sceneId;
-        slicerSettings = result.settings;
-        sceneControlDefinitions = result.sceneControlDefinitions;
-        sceneControlValues = result.sceneControlValues;
+        config = result.config;
         status.applySceneChange(result);
     }
 
     function applySceneRegistryResult(result: SceneRegistrySyncResult): void {
         sceneOptions = result.sceneOptions;
         sceneId = result.sceneId;
-        slicerSettings = result.settings;
-        sceneControlDefinitions = result.sceneControlDefinitions;
-        sceneControlValues = result.sceneControlValues;
+        config = result.config;
         status.setShaderStatus(result.ok ? 'ok' : 'error', result.shaderMessage);
     }
 
-    function updateSceneDocumentSource(value: string): void {
-        if (!activeSceneDocument) {
+    function updateSceneFileSource(value: string): void {
+        if (!activeSceneBundle) {
             return;
         }
 
-        sceneDocuments = sceneDocuments.map((document) =>
-            document.id === activeSceneDocument.id
-                ? { ...document, source: value }
-                : document
+        const targetSceneId = activeSceneBundle.id;
+        const targetFileName = activeSceneFileName;
+        sceneBundles = sceneBundles.map((bundle) =>
+            bundle.id === targetSceneId
+                ? { ...bundle, files: { ...bundle.files, [targetFileName]: value } }
+                : bundle
         );
 
-        const result = studio.updateSceneDocumentSource(activeSceneDocument.id, value);
+        const result = studio.updateSceneFile(targetSceneId, targetFileName, value);
         applySceneRegistryResult(result);
-        sceneEditorStatus = result.ok ? 'Live preview updated.' : 'Shader compile failed. Fix the scene and save again.';
+        sceneEditorStatus = result.ok ? 'Live preview updated.' : 'Compile failed. Fix the scene and save again.';
     }
 
-    function updateSceneControlValue(controlKey: string, value: number): void {
-        sceneControlValues = {
-            ...sceneControlValues,
-            [controlKey]: value,
-        };
-        studio.updateSceneControlValue(controlKey, value);
+    function selectSceneFile(fileName: string): void {
+        activeSceneFileName = fileName;
+    }
+
+    function updateUniformValue(key: string, value: number): void {
+        studio.updateUniformValue(key, value);
+        refreshConfig();
+    }
+
+    function updateParamValue(key: string, value: number): void {
+        studio.updateParamValue(key, value);
+        refreshConfig();
+    }
+
+    function updateStepParam(stepIndex: number, key: string, value: number): void {
+        studio.updateStepParam(stepIndex, key, value);
+        refreshConfig();
+        schedulePostprocessAutoUpdate();
+    }
+
+    function setStepEnabled(stepIndex: number, enabled: boolean): void {
+        studio.setStepEnabled(stepIndex, enabled);
+        refreshConfig();
+        schedulePostprocessAutoUpdate();
+    }
+
+    function resetFieldOverride(scope: 'slicer' | 'uniform' | 'param', key: string): void {
+        studio.resetOverride(scope, key);
+        refreshConfig();
+    }
+
+    function resetStepParamOverride(stepIndex: number, key: string): void {
+        studio.resetStepParamOverride(stepIndex, key);
+        refreshConfig();
+        schedulePostprocessAutoUpdate();
+    }
+
+    function resetAllOverrides(): void {
+        status.setWorkspaceStatus(studio.resetAllOverrides());
+        refreshConfig();
     }
 
     function updateRaymarchField(key: keyof RaymarchParams, value: number): void {
@@ -595,7 +644,7 @@
 
     function commitPrinterModel(printerModelId: string): void {
         const result = studio.changePrinterModel(printerModelId);
-        slicerSettings = result.settings;
+        config = result.config;
         status.applyPresetChange(result);
         void applyPrinterModelConnectionDefaults(printerModelId);
     }
@@ -621,48 +670,38 @@
 
     function commitFilamentProfile(filamentProfileId: string): void {
         const result = studio.changeFilamentProfile(filamentProfileId);
-        slicerSettings = result.settings;
+        config = result.config;
         status.applyPresetChange(result);
     }
 
     function updateSlicerNumber(key: NumericSlicerKey, value: number): void {
-        slicerSettings = { ...slicerSettings, [key]: value } as VaseSlicerSettings;
         studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
+        refreshConfig();
     }
 
     function updateSlicerBoolean(key: BooleanSlicerKey, value: boolean): void {
-        slicerSettings = { ...slicerSettings, [key]: value } as VaseSlicerSettings;
         studio.updateSlicerParams({ [key]: value } as Partial<VaseSlicerSettings>);
+        refreshConfig();
     }
 
     function updateSlicerString(key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'>, value: string): void {
-        slicerSettings = { ...slicerSettings, [key]: value };
         studio.updateSlicerParams({ [key]: value });
+        refreshConfig();
     }
 
     function updateSlicerMode(value: string): void {
         const nextMode = value as VaseSlicerSettings['slicerMode'];
-        slicerSettings = { ...slicerSettings, slicerMode: nextMode };
         studio.updateSlicerParams({ slicerMode: nextMode });
+        refreshConfig();
     }
 
-    function commitPostprocessScript(scriptId: string): void {
+    function selectPostprocessScript(scriptId: string): void {
         activePostprocessScriptId = scriptId;
         const nextDocument = postprocessDocuments.find((document) => document.id === scriptId);
         postprocessStatus = nextDocument
-            ? `Active postprocess script: ${nextDocument.name}.`
-            : 'No active postprocess script selected.';
+            ? `Editing postprocess script: ${nextDocument.name}.`
+            : 'No postprocess script selected.';
         status.setWorkspaceStatus(postprocessStatus);
-        schedulePostprocessAutoUpdate();
-    }
-
-    function updatePostprocessEnabled(value: boolean): void {
-        postprocessEnabled = value;
-        postprocessStatus = value
-            ? `Postprocess enabled${activePostprocessDocument ? `: ${activePostprocessDocument.name}.` : '.'}`
-            : 'Postprocess disabled.';
-        status.setWorkspaceStatus(postprocessStatus);
-        schedulePostprocessAutoUpdate();
     }
 
     function updatePostprocessAutoUpdate(value: boolean): void {
@@ -684,34 +723,14 @@
             return;
         }
 
+        const nextDocument = { ...activePostprocessDocument, source: value };
         postprocessDocuments = postprocessDocuments.map((document) =>
-            document.id === activePostprocessDocument.id
-                ? { ...document, source: value }
-                : document
+            document.id === nextDocument.id ? nextDocument : document
         );
+        upsertPostprocessScript(nextDocument);
+        studio.refreshConfiguration();
+        refreshConfig();
         postprocessStatus = 'Postprocess script updated locally. Save to persist changes.';
-        schedulePostprocessAutoUpdate();
-    }
-
-    function updatePostprocessControlValue(controlKey: string, value: number): void {
-        if (!activePostprocessDocument) {
-            return;
-        }
-
-        const definition = postprocessControlDefinitions.find((candidate) => candidate.key === controlKey);
-        if (!definition) {
-            return;
-        }
-
-        const nextScriptValues = {
-            ...(postprocessControlValueState[activePostprocessDocument.id] ?? {}),
-            [definition.key]: clampPostprocessControlValue(value, definition),
-        };
-
-        postprocessControlValueState = {
-            ...postprocessControlValueState,
-            [activePostprocessDocument.id]: nextScriptValues,
-        };
         schedulePostprocessAutoUpdate();
     }
 
@@ -837,7 +856,7 @@
         reportProgress({
             percent: 12,
             phaseLabel: 'Postprocess',
-            detail: 'Applying updated postprocess script and controls...',
+            detail: 'Applying updated postprocess pipeline...',
         });
         await tick();
 
@@ -966,56 +985,38 @@
         });
     }
 
-    function toggleOverlay(): void {
-        const nextVisible = !$workspace.overlayVisible;
-        workspace.setOverlayVisible(nextVisible);
-        status.setWorkspaceStatus(nextVisible ? 'Toolpath overlay enabled.' : 'Toolpath overlay hidden.');
+    function mergeSceneBundle(target: SceneBundle[], nextBundle: SceneBundle): SceneBundle[] {
+        const merged = target.some((bundle) => bundle.id === nextBundle.id)
+            ? target.map((bundle) => (bundle.id === nextBundle.id ? nextBundle : bundle))
+            : [...target, nextBundle];
+        return merged.sort((left, right) => left.id.localeCompare(right.id));
     }
 
-    function mergePersistedSceneDocument(nextDocument: SceneDocument): void {
-        const nextPersisted = persistedSceneDocuments.some((document) => document.id === nextDocument.id)
-            ? persistedSceneDocuments.map((document) => (document.id === nextDocument.id ? nextDocument : document))
-            : [...persistedSceneDocuments, nextDocument];
-        persistedSceneDocuments = nextPersisted.sort((left, right) => left.name.localeCompare(right.name));
-    }
+    async function saveActiveSceneFile(): Promise<void> {
+        if (!activeSceneBundle || !sceneEditorDirty || sceneEditorSavePending) {
+            return;
+        }
 
-    function mergePersistedPostprocessDocument(nextDocument: PostprocessScriptDocument): void {
-        const nextPersisted = persistedPostprocessDocuments.some((document) => document.id === nextDocument.id)
-            ? persistedPostprocessDocuments.map((document) => (document.id === nextDocument.id ? nextDocument : document))
-            : [...persistedPostprocessDocuments, nextDocument];
-        persistedPostprocessDocuments = nextPersisted.sort((left, right) => left.name.localeCompare(right.name));
-    }
-
-    async function saveActiveSceneDocument(): Promise<void> {
-        if (!activeSceneDocument || !sceneEditorDirty || sceneEditorSavePending) {
+        if (sceneStorageMode !== 'filesystem') {
+            sceneEditorStatus = 'Run the dev server to save scene files to disk.';
+            status.setWorkspaceStatus(sceneEditorStatus);
             return;
         }
 
         sceneEditorSavePending = true;
-        sceneEditorStatus = sceneEditorMode === 'filesystem' ? 'Saving scene to folder...' : 'Saving scene to browser storage...';
+        sceneEditorStatus = `Saving ${activeSceneFileName} to src/scenes/${activeSceneBundle.id}...`;
 
         try {
-            const nextDocuments = await saveSceneDocuments(
-                sceneEditorMode,
-                activeSceneDocument,
-                bundledSceneDocuments,
-                sceneDocuments
+            const savedBundle = await saveSceneFile(
+                activeSceneBundle.id,
+                activeSceneFileName,
+                activeSceneBundle.files[activeSceneFileName] ?? ''
             );
 
-            sceneDocuments = nextDocuments;
-            if (sceneEditorMode === 'filesystem') {
-                const savedDocument = nextDocuments.find((document) => document.id === activeSceneDocument.id);
-                if (savedDocument) {
-                    mergePersistedSceneDocument(savedDocument);
-                }
-            } else {
-                persistedSceneDocuments = nextDocuments;
-            }
-
-            applySceneRegistryResult(studio.syncSceneDocuments(sceneDocuments));
-            sceneEditorStatus = sceneEditorMode === 'filesystem'
-                ? `Saved ${activeSceneDocument.fileName} to src/shaders/scenes.`
-                : `Saved ${activeSceneDocument.name} to browser storage.`;
+            sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
+            persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
+            applySceneRegistryResult(studio.syncSceneBundles(sceneBundles));
+            sceneEditorStatus = `Saved ${activeSceneFileName} to src/scenes/${savedBundle.id}.`;
             status.setWorkspaceStatus(sceneEditorStatus);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Scene save failed.';
@@ -1026,25 +1027,18 @@
         }
     }
 
-    function revertActiveSceneDocument(): void {
-        if (!activeSceneDocument) {
+    function revertActiveSceneFile(): void {
+        if (!activeSceneBundle || !persistedActiveSceneBundle) {
             return;
         }
 
-        const persisted = persistedSceneDocuments.find((document) => document.id === activeSceneDocument.id);
-        if (!persisted) {
+        const persistedSource = persistedActiveSceneBundle.files[activeSceneFileName];
+        if (typeof persistedSource !== 'string') {
             return;
         }
 
-        sceneDocuments = sceneDocuments.map((document) =>
-            document.id === activeSceneDocument.id
-                ? { ...document, source: persisted.source }
-                : document
-        );
-
-        const result = studio.updateSceneDocumentSource(activeSceneDocument.id, persisted.source);
-        applySceneRegistryResult(result);
-        sceneEditorStatus = `Reverted ${persisted.fileName} to the last saved version.`;
+        updateSceneFileSource(persistedSource);
+        sceneEditorStatus = `Reverted ${activeSceneFileName} to the last saved version.`;
         status.setWorkspaceStatus(sceneEditorStatus);
     }
 
@@ -1053,32 +1047,27 @@
             return;
         }
 
+        if (postprocessMode !== 'filesystem') {
+            postprocessStatus = 'Run the dev server to save postprocess scripts to disk.';
+            status.setWorkspaceStatus(postprocessStatus);
+            return;
+        }
+
         postprocessSavePending = true;
-        postprocessStatus = postprocessMode === 'filesystem'
-            ? 'Saving postprocess script to folder...'
-            : 'Saving postprocess script to browser storage...';
+        postprocessStatus = 'Saving postprocess script to folder...';
 
         try {
-            const nextDocuments = await savePostprocessDocument(
-                postprocessMode,
-                activePostprocessDocument,
-                bundledPostprocessDocuments,
-                postprocessDocuments,
-            );
-
-            postprocessDocuments = nextDocuments;
-            if (postprocessMode === 'filesystem') {
-                const savedDocument = nextDocuments.find((document) => document.id === activePostprocessDocument.id);
-                if (savedDocument) {
-                    mergePersistedPostprocessDocument(savedDocument);
-                }
-            } else {
-                persistedPostprocessDocuments = nextDocuments;
-            }
-
-            postprocessStatus = postprocessMode === 'filesystem'
-                ? `Saved ${activePostprocessDocument.fileName} to src/postprocess-scripts.`
-                : `Saved ${activePostprocessDocument.name} to browser storage.`;
+            const savedDocument = await savePostprocessDocument(activePostprocessDocument);
+            postprocessDocuments = postprocessDocuments
+                .map((document) => (document.id === savedDocument.id ? savedDocument : document))
+                .sort((left, right) => left.name.localeCompare(right.name));
+            persistedPostprocessDocuments = persistedPostprocessDocuments.some((document) => document.id === savedDocument.id)
+                ? persistedPostprocessDocuments.map((document) => (document.id === savedDocument.id ? savedDocument : document))
+                : [...persistedPostprocessDocuments, savedDocument].sort((left, right) => left.name.localeCompare(right.name));
+            upsertPostprocessScript(savedDocument);
+            studio.refreshConfiguration();
+            refreshConfig();
+            postprocessStatus = `Saved ${savedDocument.fileName} to src/postprocess-scripts.`;
             status.setWorkspaceStatus(postprocessStatus);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Postprocess save failed.';
@@ -1090,22 +1079,12 @@
     }
 
     function revertActivePostprocessDocument(): void {
-        if (!activePostprocessDocument) {
+        if (!activePostprocessDocument || !persistedActivePostprocessDocument) {
             return;
         }
 
-        const persisted = persistedPostprocessDocuments.find((document) => document.id === activePostprocessDocument.id);
-        if (!persisted) {
-            return;
-        }
-
-        postprocessDocuments = postprocessDocuments.map((document) =>
-            document.id === activePostprocessDocument.id
-                ? { ...document, source: persisted.source }
-                : document
-        );
-
-        postprocessStatus = `Reverted ${persisted.fileName} to the last saved version.`;
+        updatePostprocessSource(persistedActivePostprocessDocument.source);
+        postprocessStatus = `Reverted ${persistedActivePostprocessDocument.fileName} to the last saved version.`;
         status.setWorkspaceStatus(postprocessStatus);
     }
 
@@ -1124,12 +1103,12 @@
 
         const nextDocument = createPostprocessDocument(postprocessDocuments, 'typescript', requestedName);
         postprocessDocuments = [...postprocessDocuments, nextDocument].sort((left, right) => left.name.localeCompare(right.name));
+        upsertPostprocessScript(nextDocument);
         activePostprocessScriptId = nextDocument.id;
-        postprocessEnabled = true;
         editorDocumentMode = 'postprocess';
         workspace.selectTab('postprocess');
         workspace.setEditorVisible(true);
-        postprocessStatus = `Created ${nextDocument.fileName}. Save it to persist the new script.`;
+        postprocessStatus = `Created ${nextDocument.fileName}. Reference it from a scene manifest with usePostprocess('${nextDocument.id}').`;
         status.setWorkspaceStatus(postprocessStatus);
 
         if (postprocessMode === 'filesystem') {
@@ -1142,28 +1121,105 @@
             return;
         }
 
-        const requestedName = window.prompt('Scene name', activeSceneDocument ? `${activeSceneDocument.name} Variant` : 'New Scene');
+        const requestedName = window.prompt('Scene name', 'New Scene');
         if (requestedName === null) {
             return;
         }
 
-        const nextDocument = createSceneDocument(
-            sceneDocuments,
-            activeSceneDocument?.source ?? buildSceneTemplate(requestedName),
-            requestedName
-        );
+        const existingIds = new Set(sceneBundles.map((bundle) => bundle.id));
+        let nextSceneId = toSceneId(requestedName);
+        let suffix = 2;
+        while (existingIds.has(nextSceneId)) {
+            nextSceneId = `${toSceneId(requestedName)}_${suffix}`;
+            suffix += 1;
+        }
 
-        sceneDocuments = [...sceneDocuments, nextDocument].sort((left, right) => left.name.localeCompare(right.name));
-        applySceneRegistryResult(studio.syncSceneDocuments(sceneDocuments));
+        const glslSource = buildSceneGlslTemplate(requestedName);
+        const manifestSource = buildSceneManifestTemplate(requestedName);
+
+        if (sceneStorageMode === 'filesystem') {
+            try {
+                await saveSceneFile(nextSceneId, SCENE_GLSL_FILE, glslSource);
+                const savedBundle = await saveSceneFile(nextSceneId, 'scene.ts', manifestSource);
+                sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
+                persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
+            } catch (error) {
+                const message = error instanceof Error ? error.message : 'Scene creation failed.';
+                sceneEditorStatus = message;
+                status.setWorkspaceStatus(message);
+                return;
+            }
+        } else {
+            const newBundle: SceneBundle = {
+                id: nextSceneId,
+                name: requestedName.trim() || nextSceneId,
+                files: { [SCENE_GLSL_FILE]: glslSource, 'scene.ts': manifestSource },
+            };
+            sceneBundles = mergeSceneBundle(sceneBundles, newBundle);
+        }
+
+        applySceneRegistryResult(studio.syncSceneBundles(sceneBundles));
         editorDocumentMode = 'scene';
         workspace.selectTab('scene');
         workspace.setEditorVisible(true);
-        commitScene(nextDocument.id);
-        sceneEditorStatus = `Created ${nextDocument.fileName}. Save it to persist the new scene.`;
+        commitScene(nextSceneId);
+        activeSceneFileName = SCENE_GLSL_FILE;
+        sceneEditorStatus = sceneStorageMode === 'filesystem'
+            ? `Created src/scenes/${nextSceneId}/ with scene.glsl and scene.ts.`
+            : `Created scene '${nextSceneId}' in memory. Run the dev server to persist it.`;
         status.setWorkspaceStatus(sceneEditorStatus);
         await resizeViewportAfterLayout();
+    }
 
-        await saveActiveSceneDocument();
+    async function createSceneFile(): Promise<void> {
+        if (typeof window === 'undefined' || !activeSceneBundle) {
+            return;
+        }
+
+        const suggestion = 'scene.ts' in activeSceneBundle.files ? 'helper.ts' : 'scene.ts';
+        const requestedFileName = window.prompt('New scene file name (.glsl, .ts, .js)', suggestion);
+        if (requestedFileName === null) {
+            return;
+        }
+
+        const fileName = requestedFileName.trim();
+        if (!/^[a-z0-9][a-z0-9 _.()-]*\.(glsl|ts|js)$/i.test(fileName)) {
+            sceneEditorStatus = `Invalid scene file name: ${fileName}`;
+            status.setWorkspaceStatus(sceneEditorStatus);
+            return;
+        }
+
+        if (fileName in activeSceneBundle.files) {
+            activeSceneFileName = fileName;
+            return;
+        }
+
+        const initialSource = fileName === 'scene.ts'
+            ? buildSceneManifestTemplate(activeSceneBundle.name)
+            : `// ${fileName}\n`;
+
+        const targetSceneId = activeSceneBundle.id;
+        sceneBundles = sceneBundles.map((bundle) =>
+            bundle.id === targetSceneId
+                ? { ...bundle, files: { ...bundle.files, [fileName]: initialSource } }
+                : bundle
+        );
+        applySceneRegistryResult(studio.updateSceneFile(targetSceneId, fileName, initialSource));
+        activeSceneFileName = fileName;
+
+        if (sceneStorageMode === 'filesystem') {
+            try {
+                const savedBundle = await saveSceneFile(targetSceneId, fileName, initialSource);
+                sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
+                persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
+                sceneEditorStatus = `Created src/scenes/${targetSceneId}/${fileName}.`;
+            } catch (error) {
+                sceneEditorStatus = error instanceof Error ? error.message : 'Scene file creation failed.';
+            }
+        } else {
+            sceneEditorStatus = `Created ${fileName} in memory. Run the dev server to persist it.`;
+        }
+        status.setWorkspaceStatus(sceneEditorStatus);
     }
 
     function resetInspectorWidth(): void {
@@ -1304,7 +1360,13 @@
     const inspectorHandlers: InspectorSchemaHandlers = {
         commitViewMode,
         commitScene,
-        updateSceneControlValue,
+        updateUniformValue,
+        updateParamValue,
+        updateStepParam,
+        setStepEnabled,
+        resetFieldOverride,
+        resetStepParamOverride,
+        resetAllOverrides,
         updateViewportField,
         resetView,
         updateRaymarchField,
@@ -1315,11 +1377,8 @@
         commitPrinterModel,
         updateSlicerString,
         commitFilamentProfile,
-        commitPostprocessScript,
-        updatePostprocessEnabled,
+        selectPostprocessScript,
         updatePostprocessAutoUpdate,
-        updatePostprocessSource,
-        updatePostprocessControlValue,
         createPostprocessScript: createAndActivatePostprocessScript,
         savePostprocessScript: saveActivePostprocessDocument,
         revertPostprocessScript: revertActivePostprocessDocument,
@@ -1358,27 +1417,23 @@
 
         let disposed = false;
 
-        const refreshFilesystemScenes = async (silent: boolean = false): Promise<void> => {
-            if (sceneEditorMode !== 'filesystem' || hasDirtySceneDocuments(sceneDocuments, persistedSceneDocuments)) {
+        const refreshFilesystemScenes = async (): Promise<void> => {
+            if (sceneStorageMode !== 'filesystem' || sceneEditorDirty) {
                 return;
             }
 
-            const nextDocuments = await reloadFilesystemSceneDocuments();
-            if (!nextDocuments || areSceneCollectionsEqual(nextDocuments, persistedSceneDocuments)) {
+            const nextBundles = await reloadFilesystemScenes();
+            if (!nextBundles || areSceneBundlesEqual(nextBundles, persistedSceneBundles)) {
                 return;
             }
 
-            persistedSceneDocuments = nextDocuments;
-            sceneDocuments = nextDocuments;
-            applySceneRegistryResult(studio.syncSceneDocuments(nextDocuments));
-            if (!silent) {
-                sceneEditorStatus = 'Scene folder updated from disk.';
-                status.setWorkspaceStatus(sceneEditorStatus);
-            }
+            persistedSceneBundles = nextBundles;
+            sceneBundles = nextBundles;
+            applySceneRegistryResult(studio.syncSceneBundles(nextBundles));
         };
 
-        const refreshFilesystemPostprocessScripts = async (silent: boolean = false): Promise<void> => {
-            if (postprocessMode !== 'filesystem' || hasDirtyPostprocessDocuments(postprocessDocuments, persistedPostprocessDocuments)) {
+        const refreshFilesystemPostprocessScripts = async (): Promise<void> => {
+            if (postprocessMode !== 'filesystem' || postprocessDirty) {
                 return;
             }
 
@@ -1389,46 +1444,51 @@
 
             persistedPostprocessDocuments = nextDocuments;
             postprocessDocuments = nextDocuments;
-            if (!silent) {
-                postprocessStatus = 'Postprocess folder updated from disk.';
-                status.setWorkspaceStatus(postprocessStatus);
-            }
+            setPostprocessScripts(nextDocuments);
+            studio.refreshConfiguration();
+            refreshConfig();
         };
 
         void (async () => {
             try {
-                const [repository, postprocessRepository] = await Promise.all([
-                    loadSceneRepository(bundledSceneDocuments),
-                    loadPostprocessRepository(bundledPostprocessDocuments),
+                const [sceneRepository, postprocessRepository] = await Promise.all([
+                    loadSceneRepository(),
+                    loadPostprocessRepository(),
                 ]);
                 if (disposed) {
                     return;
                 }
 
-                sceneEditorMode = repository.mode;
-                persistedSceneDocuments = repository.documents;
-                sceneDocuments = repository.documents;
-                applySceneRegistryResult(studio.syncSceneDocuments(repository.documents));
+                sceneStorageMode = sceneRepository.mode;
+                if (sceneRepository.scenes) {
+                    persistedSceneBundles = sceneRepository.scenes;
+                    sceneBundles = sceneRepository.scenes;
+                    applySceneRegistryResult(studio.syncSceneBundles(sceneRepository.scenes));
+                }
 
                 postprocessMode = postprocessRepository.mode;
                 persistedPostprocessDocuments = postprocessRepository.documents;
                 postprocessDocuments = postprocessRepository.documents;
-                activePostprocessScriptId = postprocessRepository.documents[0]?.id ?? activePostprocessScriptId;
+                if (postprocessRepository.mode === 'filesystem') {
+                    setPostprocessScripts(postprocessRepository.documents);
+                    studio.refreshConfiguration();
+                    refreshConfig();
+                }
 
                 studio.init();
                 printerTarget = readPrinterTarget();
                 if (!printerTarget.baseUrl.trim()) {
-                    await applyPrinterModelConnectionDefaults(slicerSettings.printerModelId);
+                    await applyPrinterModelConnectionDefaults(config.settings.printerModelId);
                 }
                 await refreshPrinterAvailability();
                 status.setShaderStatus('ready', 'Ready');
-                sceneEditorStatus = repository.mode === 'filesystem'
-                    ? 'Editing scene files directly from src/shaders/scenes.'
-                    : 'Editing bundled defaults with browser-backed drafts.';
+                sceneEditorStatus = sceneRepository.mode === 'filesystem'
+                    ? 'Editing scene folders directly from src/scenes.'
+                    : 'Editing bundled scenes in memory; run the dev server to save changes.';
                 status.setWorkspaceStatus(sceneEditorStatus);
                 postprocessStatus = postprocessRepository.mode === 'filesystem'
                     ? 'Editing postprocess files directly from src/postprocess-scripts.'
-                    : 'Editing bundled postprocess scripts with browser-backed drafts.';
+                    : 'Editing bundled postprocess scripts in memory; run the dev server to save changes.';
 
                 const runtimeSnapshot = readRuntimeSnapshot();
                 if (runtimeSnapshot) {
@@ -1437,15 +1497,15 @@
                 runtimeSnapshotHydrated = true;
                 persistRuntimeSnapshot(captureRuntimeSnapshot());
 
-                if (repository.mode === 'filesystem') {
+                if (sceneRepository.mode === 'filesystem') {
                     sceneRepositoryPollHandle = window.setInterval(() => {
-                        void refreshFilesystemScenes(true);
+                        void refreshFilesystemScenes();
                     }, 1200);
                 }
 
                 if (postprocessRepository.mode === 'filesystem') {
                     postprocessRepositoryPollHandle = window.setInterval(() => {
-                        void refreshFilesystemPostprocessScripts(true);
+                        void refreshFilesystemPostprocessScripts();
                     }, 1200);
                 }
 
@@ -1500,8 +1560,8 @@
         {viewMode}
         {printerModels}
         {filamentProfiles}
-        printerModelId={slicerSettings.printerModelId}
-        filamentProfileId={slicerSettings.filamentProfileId}
+        printerModelId={config.settings.printerModelId}
+        filamentProfileId={config.settings.filamentProfileId}
         shaderStatusMode={$status.shaderStatusMode}
         shaderStatusText={$status.shaderStatusText}
         actionPending={$status.actionPending}
@@ -1526,25 +1586,28 @@
                         dirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
                         savePending={editorDocumentMode === 'postprocess' ? postprocessSavePending : sceneEditorSavePending}
                         statusText={editorDocumentMode === 'postprocess' ? postprocessStatus : sceneEditorStatus}
-                        documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneDocument?.name ?? null}
-                        documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneDocument?.fileName ?? null}
-                        source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneDocument?.source ?? null}
+                        documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneBundle?.name ?? null}
+                        documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneFileName}
+                        source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneSource}
                         helperText={editorDocumentMode === 'postprocess'
-                            ? (postprocessMode === 'filesystem'
-                                ? 'Saving writes directly into src/postprocess-scripts so VS Code and exports stay in sync.'
-                                : 'Saving keeps bundled script defaults and stores overrides or new scripts in browser storage.')
-                            : (sceneEditorMode === 'filesystem'
-                                ? 'Saving writes directly into src/shaders/scenes so VS Code and the viewport stay in sync.'
-                                : 'Saving keeps bundled scene defaults and stores overrides or new scenes in browser storage.')}
+                            ? 'Generic toolpath scripts referenced from scene manifests with usePostprocess(id).'
+                            : 'scene.glsl defines the surface; scene.ts orchestrates uniforms, slicing, and the postprocess pipeline.'}
                         createLabel={editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene'}
-                        saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save Scene'}
+                        saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save File'}
                         hideLabel="Hide Editor"
                         switchLabel={editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script'}
-                        language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : 'glsl'}
-                        onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneDocumentSource}
+                        language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : sceneEditorLanguage}
+                        fileOptions={editorDocumentMode === 'scene'
+                            ? sceneFileNames.map((fileName) => ({ value: fileName, label: fileName }))
+                            : postprocessDocuments.map((document) => ({ value: document.id, label: document.fileName }))}
+                        activeFileOption={editorDocumentMode === 'scene' ? activeSceneFileName : activePostprocessScriptId}
+                        onSelectFileOption={editorDocumentMode === 'scene' ? selectSceneFile : selectPostprocessScript}
+                        addFileLabel={editorDocumentMode === 'scene' ? 'Add File' : null}
+                        onAddFile={createSceneFile}
+                        onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneFileSource}
                         onCreate={editorDocumentMode === 'postprocess' ? createAndActivatePostprocessScript : createAndActivateScene}
-                        onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneDocument}
-                        onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneDocument}
+                        onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneFile}
+                        onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneFile}
                         onSwitchDocument={switchEditorDocument}
                         onClose={toggleEditor}
                         onStartResize={startEditorResize}
@@ -1595,25 +1658,28 @@
                 dirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
                 savePending={editorDocumentMode === 'postprocess' ? postprocessSavePending : sceneEditorSavePending}
                 statusText={editorDocumentMode === 'postprocess' ? postprocessStatus : sceneEditorStatus}
-                documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneDocument?.name ?? null}
-                documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneDocument?.fileName ?? null}
-                source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneDocument?.source ?? null}
+                documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneBundle?.name ?? null}
+                documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneFileName}
+                source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneSource}
                 helperText={editorDocumentMode === 'postprocess'
-                    ? (postprocessMode === 'filesystem'
-                        ? 'Saving writes directly into src/postprocess-scripts so VS Code and exports stay in sync.'
-                        : 'Saving keeps bundled script defaults and stores overrides or new scripts in browser storage.')
-                    : (sceneEditorMode === 'filesystem'
-                        ? 'Saving writes directly into src/shaders/scenes so VS Code and the viewport stay in sync.'
-                        : 'Saving keeps bundled scene defaults and stores overrides or new scenes in browser storage.')}
+                    ? 'Generic toolpath scripts referenced from scene manifests with usePostprocess(id).'
+                    : 'scene.glsl defines the surface; scene.ts orchestrates uniforms, slicing, and the postprocess pipeline.'}
                 createLabel={editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene'}
-                saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save Scene'}
+                saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save File'}
                 hideLabel="Hide Editor"
                 switchLabel={editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script'}
-                language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : 'glsl'}
-                onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneDocumentSource}
+                language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : sceneEditorLanguage}
+                fileOptions={editorDocumentMode === 'scene'
+                    ? sceneFileNames.map((fileName) => ({ value: fileName, label: fileName }))
+                    : postprocessDocuments.map((document) => ({ value: document.id, label: document.fileName }))}
+                activeFileOption={editorDocumentMode === 'scene' ? activeSceneFileName : activePostprocessScriptId}
+                onSelectFileOption={editorDocumentMode === 'scene' ? selectSceneFile : selectPostprocessScript}
+                addFileLabel={editorDocumentMode === 'scene' ? 'Add File' : null}
+                onAddFile={createSceneFile}
+                onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneFileSource}
                 onCreate={editorDocumentMode === 'postprocess' ? createAndActivatePostprocessScript : createAndActivateScene}
-                onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneDocument}
-                onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneDocument}
+                onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneFile}
+                onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneFile}
                 onSwitchDocument={switchEditorDocument}
                 onClose={toggleEditor}
                 onStartResize={startEditorResize}

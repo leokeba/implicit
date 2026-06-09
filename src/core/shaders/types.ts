@@ -20,6 +20,8 @@ export interface SceneControlDefinition {
     section: string;
     description?: string;
     options?: SceneControlOption[];
+    /** False for fixed manifest values that should not render a slider. */
+    hasControl?: boolean;
 }
 
 export interface SceneFieldDefinition {

@@ -1,11 +1,12 @@
 import type { AnimationParams, RaymarchParams, ViewportParams } from '../../core/renderer';
-import type { SceneControlDefinition, SceneControlValueMap, SceneOption } from '../../core/shader-pipeline';
+import type { SceneControlDefinition, SceneOption } from '../../core/shader-pipeline';
 import type { SliceDebugSnapshot, VaseSlicerSettings } from '../../core/slicer';
 
 import type { FilamentProfile } from '../../core/filament-profiles';
-import type { PostprocessControlDefinition } from '../../core/toolpath-postprocess';
-import type { PostprocessScriptDocument } from '../postprocess-documents';
+import type { PostprocessScriptDocument } from '../../core/postprocess-registry';
 import type { PrinterModel } from '../../core/printer-models';
+import type { PipelineStepView } from '../../studio-controller';
+import type { ScalarControlSpec } from '../../scene-runtime';
 
 export type ControlTabId = 'scene' | 'camera' | 'render' | 'print' | 'machine' | 'material' | 'postprocess' | 'output';
 
@@ -52,13 +53,22 @@ export type PrinterConnectionStringKey = 'baseUrl' | 'apiKey' | 'uploadPath';
 
 export interface InspectorSchemaState {
     sceneOptions: SceneOption[];
-    sceneControlDefinitions: SceneControlDefinition[];
-    sceneControlValues: SceneControlValueMap;
+    uniformControls: SceneControlDefinition[];
+    uniformValues: Record<string, number>;
+    paramControls: ScalarControlSpec[];
+    paramValues: Record<string, number>;
+    pipeline: PipelineStepView[];
+    overriddenSlicerKeys: string[];
+    overriddenUniformKeys: string[];
+    overriddenParamKeys: string[];
+    overrideCount: number;
+    printerOverridden: boolean;
+    filamentOverridden: boolean;
+    manifestError: string | null;
+    preprocessError: string | null;
     printerModels: PrinterModel[];
     filamentProfiles: FilamentProfile[];
     postprocessDocuments: PostprocessScriptDocument[];
-    postprocessControlDefinitions: PostprocessControlDefinition[];
-    postprocessControlValues: Record<string, number>;
     sceneId: string;
     viewMode: number;
     raymarchParams: RaymarchParams;
@@ -66,8 +76,6 @@ export interface InspectorSchemaState {
     animationParams: AnimationParams;
     slicerSettings: VaseSlicerSettings;
     activePostprocessScriptId: string;
-    postprocessEnabled: boolean;
-    postprocessSource: string;
     postprocessStatus: string;
     postprocessDirty: boolean;
     postprocessStorageLabel: string;
@@ -93,7 +101,13 @@ export interface InspectorSchemaState {
 export interface InspectorSchemaHandlers {
     commitViewMode: (viewMode: number) => void;
     commitScene: (sceneId: string) => void;
-    updateSceneControlValue: (controlKey: string, value: number) => void;
+    updateUniformValue: (key: string, value: number) => void;
+    updateParamValue: (key: string, value: number) => void;
+    updateStepParam: (stepIndex: number, key: string, value: number) => void;
+    setStepEnabled: (stepIndex: number, enabled: boolean) => void;
+    resetFieldOverride: (scope: 'slicer' | 'uniform' | 'param', key: string) => void;
+    resetStepParamOverride: (stepIndex: number, key: string) => void;
+    resetAllOverrides: () => void;
     updateViewportField: (key: keyof ViewportParams, value: number) => void;
     resetView: () => void;
     updateRaymarchField: (key: keyof RaymarchParams, value: number) => void;
@@ -104,11 +118,8 @@ export interface InspectorSchemaHandlers {
     commitPrinterModel: (printerModelId: string) => void;
     updateSlicerString: (key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'>, value: string) => void;
     commitFilamentProfile: (filamentProfileId: string) => void;
-    commitPostprocessScript: (scriptId: string) => void;
-    updatePostprocessEnabled: (value: boolean) => void;
+    selectPostprocessScript: (scriptId: string) => void;
     updatePostprocessAutoUpdate: (value: boolean) => void;
-    updatePostprocessSource: (value: string) => void;
-    updatePostprocessControlValue: (controlKey: string, value: number) => void;
     createPostprocessScript: () => void | Promise<void>;
     savePostprocessScript: () => void | Promise<void>;
     revertPostprocessScript: () => void;
@@ -160,10 +171,13 @@ export type InspectorFieldSchema =
     | (NumberFieldBase & { target: 'viewport'; key: keyof ViewportParams })
     | (NumberFieldBase & { target: 'animation'; key: keyof AnimationParams })
     | (NumberFieldBase & { target: 'slicer'; key: NumericSlicerKey })
-    | (NumberFieldBase & { target: 'sceneControl'; key: string })
-    | (NumberFieldBase & { target: 'postprocessControl'; key: string })
-    | (SelectFieldBase & { target: 'sceneControl'; key: string; options: InspectorFieldOption[] })
-    | (SelectFieldBase & { target: 'postprocessControl'; key: string; options: InspectorFieldOption[] })
+    | (NumberFieldBase & { target: 'uniform'; key: string })
+    | (SelectFieldBase & { target: 'uniform'; key: string; options: InspectorFieldOption[] })
+    | (NumberFieldBase & { target: 'sceneParam'; key: string })
+    | (SelectFieldBase & { target: 'sceneParam'; key: string; options: InspectorFieldOption[] })
+    | (NumberFieldBase & { target: 'stepControl'; stepIndex: number; key: string })
+    | (SelectFieldBase & { target: 'stepControl'; stepIndex: number; key: string; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'stepEnabled'; stepIndex: number; options: InspectorFieldOption[] })
     | (NumberFieldBase & { target: 'command'; key: 'benchmarkIterations' | 'benchmarkWarmups' })
     | (SelectFieldBase & { target: 'scene'; optionsSource: 'sceneOptions' })
     | (SelectFieldBase & { target: 'viewMode'; options: InspectorFieldOption[] })
@@ -172,12 +186,10 @@ export type InspectorFieldSchema =
     | (SelectFieldBase & { target: 'printerModel'; optionsSource: 'printerModels' })
     | (SelectFieldBase & { target: 'filamentProfile'; optionsSource: 'filamentProfiles' })
     | (SelectFieldBase & { target: 'postprocessScript'; optionsSource: 'postprocessDocuments' })
-    | (SelectFieldBase & { target: 'postprocessEnabled'; options: InspectorFieldOption[] })
     | (SelectFieldBase & { target: 'postprocessAutoUpdate'; options: InspectorFieldOption[] })
     | (SelectFieldBase & { target: 'printerConnectionAutoStart'; options: InspectorFieldOption[] })
     | (TextFieldBase & { target: 'printerConnection'; key: PrinterConnectionStringKey })
-    | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> })
-    | (TextareaFieldBase & { target: 'postprocessText' });
+    | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> });
 
 export interface InspectorSummaryItemSchema {
     label: string;
@@ -192,7 +204,7 @@ export interface InspectorSectionSchema {
 }
 
 export interface InspectorActionSchema {
-    id: 'resetView' | 'generateVaseGcode' | 'downloadGeneratedGcode' | 'sendVaseGcodeToPrinter' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript';
+    id: 'resetView' | 'generateVaseGcode' | 'downloadGeneratedGcode' | 'sendVaseGcodeToPrinter' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript' | 'resetAllOverrides';
     label: string;
     tone?: 'secondary';
     disabledWhenPending?: boolean;

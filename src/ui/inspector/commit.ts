@@ -27,10 +27,7 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
             handlers.commitFilamentProfile(rawValue);
             return;
         case 'postprocessScript':
-            handlers.commitPostprocessScript(rawValue);
-            return;
-        case 'postprocessEnabled':
-            handlers.updatePostprocessEnabled(rawValue === 'true');
+            handlers.selectPostprocessScript(rawValue);
             return;
         case 'postprocessAutoUpdate':
             handlers.updatePostprocessAutoUpdate(rawValue === 'true');
@@ -41,11 +38,17 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
         case 'printerConnection':
             handlers.updatePrinterConnectionString(field.key, rawValue);
             return;
-        case 'sceneControl':
-            handlers.updateSceneControlValue(field.key, coerceNumber(rawValue));
+        case 'uniform':
+            handlers.updateUniformValue(field.key, coerceNumber(rawValue));
             return;
-        case 'postprocessControl':
-            handlers.updatePostprocessControlValue(field.key, coerceNumber(rawValue));
+        case 'sceneParam':
+            handlers.updateParamValue(field.key, coerceNumber(rawValue));
+            return;
+        case 'stepControl':
+            handlers.updateStepParam(field.stepIndex, field.key, coerceNumber(rawValue));
+            return;
+        case 'stepEnabled':
+            handlers.setStepEnabled(field.stepIndex, rawValue === 'true');
             return;
         case 'viewport':
             handlers.updateViewportField(field.key, coerceNumber(rawValue));
@@ -70,8 +73,29 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
         case 'slicerText':
             handlers.updateSlicerString(field.key, rawValue);
             return;
-        case 'postprocessText':
-            handlers.updatePostprocessSource(rawValue);
+    }
+}
+
+export function resetFieldOverride(field: InspectorFieldSchema, handlers: InspectorSchemaHandlers): void {
+    switch (field.target) {
+        case 'slicer':
+        case 'slicerText':
+        case 'slicerBoolean':
+            handlers.resetFieldOverride('slicer', field.key);
+            return;
+        case 'slicerMode':
+            handlers.resetFieldOverride('slicer', 'slicerMode');
+            return;
+        case 'uniform':
+            handlers.resetFieldOverride('uniform', field.key);
+            return;
+        case 'sceneParam':
+            handlers.resetFieldOverride('param', field.key);
+            return;
+        case 'stepControl':
+            handlers.resetStepParamOverride(field.stepIndex, field.key);
+            return;
+        default:
             return;
     }
 }
@@ -94,5 +118,7 @@ export function triggerInspectorAction(action: InspectorActionSchema, handlers: 
             return handlers.savePostprocessScript();
         case 'revertPostprocessScript':
             return handlers.revertPostprocessScript();
+        case 'resetAllOverrides':
+            return handlers.resetAllOverrides();
     }
 }

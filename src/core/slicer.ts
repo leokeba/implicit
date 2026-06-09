@@ -11,10 +11,10 @@ import {
     type SceneFieldValue,
 } from './shader-pipeline';
 import {
-    applyToolpathPostprocess,
-    type ToolpathPostprocessConfig,
-    type ToolpathPostprocessSummary,
+    applyToolpathPipeline,
+    type ToolpathPipelineStepSummary,
 } from './toolpath-postprocess';
+import type { ResolvedPipelineStep } from './postprocess-registry';
 import { snapToNearestOptionValue } from './control-options';
 import {
     buildExcludeObjectDefineLine,
@@ -90,7 +90,7 @@ export interface VaseToolpath {
     layerCount: number;
     pointsPerLayer: number;
     estimatedHeight: number;
-    postprocessSummary?: ToolpathPostprocessSummary | null;
+    postprocessSummaries?: ToolpathPipelineStepSummary[];
 }
 
 export interface VaseBaseToolpath {
@@ -324,9 +324,9 @@ export class Slicer {
         };
     }
 
-    public generateVaseGcode(next: Partial<VaseSlicerSettings>, postprocessConfig?: ToolpathPostprocessConfig | null): VaseSliceResult {
+    public generateVaseGcode(next: Partial<VaseSlicerSettings>, pipeline?: ResolvedPipelineStep[]): VaseSliceResult {
         const settings = this.getMergedSettings(next);
-        const result = this.executeVaseSlice(settings, postprocessConfig);
+        const result = this.executeVaseSlice(settings, pipeline);
         return {
             settings: result.settings,
             toolpath: result.toolpath,
@@ -337,10 +337,10 @@ export class Slicer {
     public async generateVaseGcodeWithProgress(
         next: Partial<VaseSlicerSettings>,
         onProgress?: SliceProgressReporter,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
+        pipeline?: ResolvedPipelineStep[],
     ): Promise<VaseSliceResult> {
         const settings = this.getMergedSettings(next);
-        const result = await this.executeVaseSliceAsync(settings, onProgress, postprocessConfig);
+        const result = await this.executeVaseSliceAsync(settings, onProgress, pipeline);
         return {
             settings: result.settings,
             toolpath: result.toolpath,
@@ -352,7 +352,7 @@ export class Slicer {
         next: Partial<VaseSlicerSettings>,
         iterations: number,
         warmupRuns = 1,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
+        pipeline?: ResolvedPipelineStep[],
     ): VaseSliceBenchmarkResult {
         const settings = this.getMergedSettings(next);
         const measuredRunCount = clampInt(iterations, 1, 20);
@@ -362,7 +362,7 @@ export class Slicer {
         let lastResult: VaseSliceResult | null = null;
 
         for (let runIndex = 0; runIndex < totalRunCount; runIndex++) {
-            const result = this.executeVaseSlice(settings, postprocessConfig);
+            const result = this.executeVaseSlice(settings, pipeline);
             lastResult = {
                 settings: result.settings,
                 toolpath: result.toolpath,
@@ -406,11 +406,12 @@ export class Slicer {
     public generateVaseGcodeFromBaseToolpath(
         baseToolpath: VaseBaseToolpath,
         next: Partial<VaseSlicerSettings>,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
+        pipeline?: ResolvedPipelineStep[],
+        extraHeaderLines?: string[],
     ): VaseSliceResult {
         const settings = this.getMergedSettings(next);
-        const finalized = this.finalizeSpiralToolpath(baseToolpath, settings, postprocessConfig);
-        const gcode = this.buildGcode(finalized, settings);
+        const finalized = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
+        const gcode = this.buildGcode(finalized, settings, extraHeaderLines);
         return {
             settings,
             toolpath: finalized,
@@ -424,7 +425,7 @@ export class Slicer {
 
     private executeVaseSlice(
         settings: VaseSlicerSettings,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
+        pipeline?: ResolvedPipelineStep[],
     ): VaseSliceExecution {
         this.lastSliceDebugSnapshot = null;
         const startTime = performance.now();
@@ -433,7 +434,7 @@ export class Slicer {
         const baseToolpath = settings.slicerMode === 'cylindrical'
             ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
             : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
-        const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, postprocessConfig);
+        const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
         const toolpathEndTime = performance.now();
         const gcode = this.buildGcode(toolpath, settings);
         const endTime = performance.now();
@@ -454,7 +455,7 @@ export class Slicer {
     private async executeVaseSliceAsync(
         settings: VaseSlicerSettings,
         onProgress?: SliceProgressReporter,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
+        pipeline?: ResolvedPipelineStep[],
     ): Promise<VaseSliceExecution> {
         this.lastSliceDebugSnapshot = null;
         reportSliceProgress(onProgress, 'preparing', 0, 1, 0.0, 'Preparing slicer settings...');
@@ -469,7 +470,7 @@ export class Slicer {
         const baseToolpath = settings.slicerMode === 'cylindrical'
             ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
             : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
-        const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, postprocessConfig);
+        const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
         const toolpathEndTime = performance.now();
 
         reportSliceProgress(onProgress, 'gcode', 0, 1, 0.92, 'Encoding G-code...');
@@ -950,11 +951,11 @@ export class Slicer {
     private finalizeSpiralToolpath(
         baseToolpath: VaseBaseToolpath,
         settings: VaseSlicerSettings,
-        postprocessConfig?: ToolpathPostprocessConfig | null,
+        pipeline?: ResolvedPipelineStep[],
     ): VaseToolpath {
         const basePoints = baseToolpath.points.map((point) => ({ ...point }));
         this.attachSceneFieldsToPoints(basePoints, settings);
-        const postprocessed = applyToolpathPostprocess(basePoints, settings, postprocessConfig);
+        const postprocessed = applyToolpathPipeline(basePoints, settings, pipeline ?? []);
         const optimizedPoints = this.optimizeToolpath(postprocessed.points, settings);
         this.recomputeExtrusion(optimizedPoints, settings);
         this.applyMinimumLayerTime(optimizedPoints, settings);
@@ -964,7 +965,7 @@ export class Slicer {
             layerCount: baseToolpath.layerCount,
             pointsPerLayer: baseToolpath.pointsPerLayer,
             estimatedHeight: baseToolpath.estimatedHeight,
-            postprocessSummary: postprocessed.summary,
+            postprocessSummaries: postprocessed.summaries,
         };
     }
 
@@ -1401,7 +1402,7 @@ export class Slicer {
         }
     }
 
-    private buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings): string {
+    private buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings, extraHeaderLines?: string[]): string {
         if (toolpath.points.length < 2) {
             throw new Error('Vase slicing produced no valid path.');
         }
@@ -1455,13 +1456,16 @@ export class Slicer {
         lines.push(`; First layer extrusion/mm: ${calculateExtrusionPerMm(settings, settings.firstLayerLineWidth).toFixed(5)}`);
         lines.push(`; Extrusion/mm: ${calculateExtrusionPerMm(settings, settings.lineWidth).toFixed(5)}`);
         lines.push(`; Estimated height (mm): ${toolpath.estimatedHeight.toFixed(3)}`);
-        if (toolpath.postprocessSummary) {
-            lines.push(`; Postprocess script: ${toolpath.postprocessSummary.scriptName} (${toolpath.postprocessSummary.language})`);
-            lines.push(`; Postprocess points: ${toolpath.postprocessSummary.inputPointCount} -> ${toolpath.postprocessSummary.outputPointCount} before merge`);
-            lines.push(`; Postprocess runtime (ms): ${toolpath.postprocessSummary.durationMs.toFixed(2)}`);
-            for (const note of toolpath.postprocessSummary.notes) {
+        for (const summary of toolpath.postprocessSummaries ?? []) {
+            lines.push(`; Postprocess step ${summary.stepIndex + 1}: ${summary.name}${summary.scriptId ? ` (${summary.scriptId})` : ''}`);
+            lines.push(`; Postprocess points: ${summary.inputPointCount} -> ${summary.outputPointCount} before merge`);
+            lines.push(`; Postprocess runtime (ms): ${summary.durationMs.toFixed(2)}`);
+            for (const note of summary.notes) {
                 lines.push(`; Postprocess note: ${note}`);
             }
+        }
+        for (const line of extraHeaderLines ?? []) {
+            lines.push(line.startsWith(';') ? line : `; ${line}`);
         }
         const rawPathPoints = toolpath.layerCount * toolpath.pointsPerLayer;
         const mergedPathPoints = toolpath.points.length;
@@ -2900,6 +2904,11 @@ function buildSceneControlValueMap(definitions: SceneControlDefinition[], values
 
     for (const definition of definitions) {
         const rawValue = values[definition.key] ?? definition.defaultValue;
+        if (definition.hasControl === false) {
+            next[definition.key] = rawValue;
+            continue;
+        }
+
         if (definition.options && definition.options.length > 0) {
             next[definition.key] = snapToNearestOptionValue(rawValue, definition.options);
             continue;

@@ -1,13 +1,16 @@
 // Waffle Knit
-// @control {"key":"normalAmplitudeMm","label":"Normal amplitude (mm)","min":0.0,"max":3.4,"step":0.01,"default":0.32,"section":"Waffle Pattern","description":"Outward/inward displacement magnitude."}
-// @control {"key":"tangentAmplitudeMm","label":"Tangent amplitude (mm)","min":0.0,"max":3.4,"step":0.01,"default":0.22,"section":"Waffle Pattern","description":"Along-contour displacement magnitude."}
-// @control {"key":"normalWavesPerLayer","label":"Normal waves per layer","min":0.25,"max":24.0,"step":0.25,"default":6.0,"section":"Waffle Pattern","description":"Frequency of normal-direction waves."}
-// @control {"key":"tangentWavesPerLayer","label":"Tangent waves per layer","min":0.25,"max":24.0,"step":0.25,"default":9.0,"section":"Waffle Pattern","description":"Frequency of tangent-direction waves."}
 
 const TAU = Math.PI * 2.0;
 const PI = Math.PI;
 const QUARTER_TURN = Math.PI * 0.5;
 const EPSILON = 1e-6;
+
+export const controls = {
+    normalAmplitudeMm: { default: 0.32, min: 0.0, max: 3.4, step: 0.01, label: 'Normal amplitude (mm)', section: 'Waffle Pattern', description: 'Outward/inward displacement magnitude.' },
+    tangentAmplitudeMm: { default: 0.22, min: 0.0, max: 3.4, step: 0.01, label: 'Tangent amplitude (mm)', section: 'Waffle Pattern', description: 'Along-contour displacement magnitude.' },
+    normalWavesPerLayer: { default: 6.0, min: 0.25, max: 24.0, step: 0.25, label: 'Normal waves per layer', section: 'Waffle Pattern', description: 'Frequency of normal-direction waves.' },
+    tangentWavesPerLayer: { default: 9.0, min: 0.25, max: 24.0, step: 0.25, label: 'Tangent waves per layer', section: 'Waffle Pattern', description: 'Frequency of tangent-direction waves.' },
+};
 
 export function transform(context: any) {
     const normalAmplitudeMm = Number(context.params?.normalAmplitudeMm ?? 0.32);

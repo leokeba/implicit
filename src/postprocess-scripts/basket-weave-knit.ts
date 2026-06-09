@@ -1,14 +1,17 @@
 // Basket Weave Knit
-// @control {"key":"normalAmplitudeMm","label":"Normal amplitude (mm)","min":0.0,"max":2.6,"step":0.01,"default":0.34,"section":"Basket Weave","description":"Outward displacement strength in active normal blocks."}
-// @control {"key":"tangentAmplitudeMm","label":"Tangent amplitude (mm)","min":0.0,"max":2.6,"step":0.01,"default":0.24,"section":"Basket Weave","description":"Along-path displacement strength in active tangent blocks."}
-// @control {"key":"blockLayers","label":"Block layers","min":1.0,"max":24.0,"step":1.0,"default":3.0,"section":"Basket Weave","description":"How many layers before swapping weave direction."}
-// @control {"key":"blocksPerLayer","label":"Blocks per layer","min":2.0,"max":64.0,"step":1.0,"default":10.0,"section":"Basket Weave","description":"How many horizontal weave blocks around the perimeter."}
-// @control {"key":"sceneFieldInfluence","label":"Scene field influence","min":0.0,"max":1.0,"step":0.05,"default":1.0,"section":"Basket Weave","description":"Blend between uniform weave amplitude and the active scene field sample named noise."}
-// @control {"key":"sceneFieldDepth","label":"Scene field depth","min":0.0,"max":2.0,"step":0.05,"default":1.0,"section":"Basket Weave","description":"How strongly the noise field expands/compresses weave amplitude around baseline."}
 
 const TAU = Math.PI * 2.0;
 const PI = Math.PI;
 const EPSILON = 1e-6;
+
+export const controls = {
+    normalAmplitudeMm: { default: 0.34, min: 0.0, max: 2.6, step: 0.01, label: 'Normal amplitude (mm)', section: 'Basket Weave', description: 'Outward displacement strength in active normal blocks.' },
+    tangentAmplitudeMm: { default: 0.24, min: 0.0, max: 2.6, step: 0.01, label: 'Tangent amplitude (mm)', section: 'Basket Weave', description: 'Along-path displacement strength in active tangent blocks.' },
+    blockLayers: { default: 3.0, min: 1.0, max: 24.0, step: 1.0, label: 'Block layers', section: 'Basket Weave', description: 'How many layers before swapping weave direction.' },
+    blocksPerLayer: { default: 10.0, min: 2.0, max: 64.0, step: 1.0, label: 'Blocks per layer', section: 'Basket Weave', description: 'How many horizontal weave blocks around the perimeter.' },
+    sceneFieldInfluence: { default: 1.0, min: 0.0, max: 1.0, step: 0.05, label: 'Scene field influence', section: 'Basket Weave', description: 'Blend between uniform weave amplitude and the active scene field sample named noise.' },
+    sceneFieldDepth: { default: 1.0, min: 0.0, max: 2.0, step: 0.05, label: 'Scene field depth', section: 'Basket Weave', description: 'How strongly the noise field expands/compresses weave amplitude around baseline.' },
+};
 
 export function transform(context: any) {
     const normalAmplitudeMm = Number(context.params?.normalAmplitudeMm ?? 0.34);

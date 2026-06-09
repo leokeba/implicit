@@ -1,120 +1,85 @@
-import type { SceneDocument } from '../core/shader-pipeline';
-import {
-    buildBrowserStoragePayload,
-    hasDirtyDocuments,
-    mergeBrowserDocuments,
-    type StoredBrowserDocuments,
-} from './documents/repository';
+import type { SceneBundle, SceneFiles } from '../core/shader-pipeline';
 
-const SCENE_DOCUMENTS_STORAGE_KEY = 'implicit.sceneDocuments.v1';
 const SCENE_API_ENDPOINT = '/__implicit_api/scenes';
 
-export type SceneDocumentStorageMode = 'browser' | 'filesystem';
+/**
+ * 'filesystem': the dev server file API is available and edits write real files.
+ * 'bundled': static build; scenes are read-only snapshots bundled at build time.
+ */
+export type SceneStorageMode = 'filesystem' | 'bundled';
 
 export interface SceneRepositoryState {
-    mode: SceneDocumentStorageMode;
-    documents: SceneDocument[];
-}
-
-interface SceneApiDocumentPayload {
-    id: string;
-    name: string;
-    fileName: string;
-    source: string;
+    mode: SceneStorageMode;
+    /** Null in bundled mode (keep the build-time bundles). */
+    scenes: SceneBundle[] | null;
 }
 
 interface SceneApiListResponse {
-    documents?: SceneApiDocumentPayload[];
+    scenes?: Array<{ id?: unknown; files?: unknown }>;
 }
 
-interface SceneApiSingleResponse {
-    document?: SceneApiDocumentPayload;
+interface SceneApiSaveResponse {
+    scene?: { id?: unknown; files?: unknown };
 }
 
-export async function loadSceneRepository(defaultDocuments: SceneDocument[]): Promise<SceneRepositoryState> {
-    const filesystemDocuments = await loadFilesystemSceneDocuments();
-    if (filesystemDocuments) {
-        return {
-            mode: 'filesystem',
-            documents: filesystemDocuments,
-        };
+export async function loadSceneRepository(): Promise<SceneRepositoryState> {
+    const scenes = await fetchFilesystemScenes();
+    return scenes
+        ? { mode: 'filesystem', scenes }
+        : { mode: 'bundled', scenes: null };
+}
+
+export async function reloadFilesystemScenes(): Promise<SceneBundle[] | null> {
+    return fetchFilesystemScenes();
+}
+
+export async function saveSceneFile(sceneId: string, fileName: string, source: string): Promise<SceneBundle> {
+    const response = await fetch(
+        `${SCENE_API_ENDPOINT}/${encodeURIComponent(sceneId)}/${encodeURIComponent(fileName)}`,
+        {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source }),
+        }
+    );
+
+    if (!response.ok) {
+        throw new Error(await readErrorPayload(response));
     }
 
-    return {
-        mode: 'browser',
-        documents: loadBrowserSceneDocuments(defaultDocuments),
-    };
-}
-
-export async function reloadFilesystemSceneDocuments(): Promise<SceneDocument[] | null> {
-    return loadFilesystemSceneDocuments();
-}
-
-export async function saveSceneDocuments(
-    mode: SceneDocumentStorageMode,
-    targetDocument: SceneDocument,
-    defaultDocuments: SceneDocument[],
-    currentDocuments: SceneDocument[]
-): Promise<SceneDocument[]> {
-    if (mode === 'filesystem') {
-        return saveFilesystemSceneDocuments(targetDocument, currentDocuments);
+    const payload = (await response.json()) as SceneApiSaveResponse;
+    const bundle = normalizeSceneBundle(payload.scene);
+    if (!bundle) {
+        throw new Error('Scene save returned an invalid payload.');
     }
 
-    persistBrowserSceneDocuments(defaultDocuments, currentDocuments);
-    return cloneSceneDocuments(currentDocuments);
+    return bundle;
 }
 
-export function createSceneDocument(existingDocuments: SceneDocument[], sourceTemplate: string, requestedName?: string): SceneDocument {
-    const baseName = (requestedName ?? 'New Scene').trim() || 'New Scene';
-    const existingIds = new Set(existingDocuments.map((document) => document.id));
-    const baseId = toSceneId(baseName);
-
-    let nextId = baseId;
-    let suffix = 2;
-    while (existingIds.has(nextId)) {
-        nextId = `${baseId}_${suffix}`;
-        suffix += 1;
+export function areSceneBundlesEqual(left: SceneBundle[], right: SceneBundle[]): boolean {
+    if (left.length !== right.length) {
+        return false;
     }
 
-    return {
-        id: nextId,
-        name: toSceneLabel(nextId),
-        fileName: `${nextId}.glsl`,
-        source: sourceTemplate,
-    };
+    return left.every((bundle, index) => {
+        const candidate = right[index];
+        if (!candidate || candidate.id !== bundle.id) {
+            return false;
+        }
+
+        const leftNames = Object.keys(bundle.files).sort();
+        const rightNames = Object.keys(candidate.files).sort();
+        if (leftNames.length !== rightNames.length) {
+            return false;
+        }
+
+        return leftNames.every((name, nameIndex) => (
+            name === rightNames[nameIndex] && bundle.files[name] === candidate.files[name]
+        ));
+    });
 }
 
-export function hasDirtySceneDocuments(workingDocuments: SceneDocument[], persistedDocuments: SceneDocument[]): boolean {
-    return hasDirtyDocuments(workingDocuments, persistedDocuments, (working, persisted) => (
-        working.id === persisted.id &&
-        working.source === persisted.source &&
-        working.fileName === persisted.fileName
-    ));
-}
-
-function loadBrowserSceneDocuments(defaultDocuments: SceneDocument[]): SceneDocument[] {
-    const stored = readStoredBrowserDocuments();
-    return mergeBrowserDocuments(defaultDocuments, stored, cloneSceneDocument, sortSceneDocuments);
-}
-
-function persistBrowserSceneDocuments(defaultDocuments: SceneDocument[], currentDocuments: SceneDocument[]): void {
-    if (typeof localStorage === 'undefined') {
-        return;
-    }
-
-    const payload = buildBrowserStoragePayload(defaultDocuments, currentDocuments, cloneSceneDocument);
-
-    try {
-        localStorage.setItem(
-            SCENE_DOCUMENTS_STORAGE_KEY,
-            JSON.stringify(payload)
-        );
-    } catch {
-        // Ignore storage write failures.
-    }
-}
-
-async function loadFilesystemSceneDocuments(): Promise<SceneDocument[] | null> {
+async function fetchFilesystemScenes(): Promise<SceneBundle[] | null> {
     if (typeof fetch === 'undefined') {
         return null;
     }
@@ -126,41 +91,38 @@ async function loadFilesystemSceneDocuments(): Promise<SceneDocument[] | null> {
         }
 
         const payload = (await response.json()) as SceneApiListResponse;
-        if (!Array.isArray(payload.documents)) {
+        if (!Array.isArray(payload.scenes)) {
             return null;
         }
 
-        return sortSceneDocuments(payload.documents.map(normalizeSceneApiDocument));
+        const bundles = payload.scenes
+            .map(normalizeSceneBundle)
+            .filter((bundle): bundle is SceneBundle => bundle !== null);
+        return bundles.sort((leftBundle, rightBundle) => leftBundle.id.localeCompare(rightBundle.id));
     } catch {
         return null;
     }
 }
 
-async function saveFilesystemSceneDocuments(targetDocument: SceneDocument, currentDocuments: SceneDocument[]): Promise<SceneDocument[]> {
-    const response = await fetch(`${SCENE_API_ENDPOINT}/${encodeURIComponent(targetDocument.fileName)}`, {
-        method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ source: targetDocument.source }),
-    });
-
-    if (!response.ok) {
-        const payload = await readErrorPayload(response);
-        throw new Error(payload);
+function normalizeSceneBundle(value: unknown): SceneBundle | null {
+    if (!value || typeof value !== 'object') {
+        return null;
     }
 
-    const payload = (await response.json()) as SceneApiSingleResponse;
-    const savedDocument = payload.document ? normalizeSceneApiDocument(payload.document) : cloneSceneDocument(targetDocument);
-    const nextDocuments = currentDocuments.map((document) =>
-        document.id === targetDocument.id ? savedDocument : cloneSceneDocument(document)
-    );
-
-    if (!nextDocuments.some((document) => document.id === savedDocument.id)) {
-        nextDocuments.push(savedDocument);
+    const id = typeof (value as { id?: unknown }).id === 'string' ? ((value as { id: string }).id).trim() : '';
+    const rawFiles = (value as { files?: unknown }).files;
+    if (!id || !rawFiles || typeof rawFiles !== 'object') {
+        return null;
     }
 
-    return sortSceneDocuments(nextDocuments);
+    const files: SceneFiles = {};
+    for (const [fileName, source] of Object.entries(rawFiles as Record<string, unknown>)) {
+        if (typeof source === 'string') {
+            files[fileName] = source;
+        }
+    }
+
+    return { id, name: id, files };
 }
 
 async function readErrorPayload(response: Response): Promise<string> {
@@ -170,102 +132,4 @@ async function readErrorPayload(response: Response): Promise<string> {
     } catch {
         return `Scene save failed with status ${response.status}.`;
     }
-}
-
-function readStoredBrowserDocuments(): StoredBrowserDocuments<SceneDocument> {
-    if (typeof localStorage === 'undefined') {
-        return { overrides: [], customs: [] };
-    }
-
-    try {
-        const raw = localStorage.getItem(SCENE_DOCUMENTS_STORAGE_KEY);
-        if (!raw) {
-            return { overrides: [], customs: [] };
-        }
-
-        const parsed = JSON.parse(raw) as Partial<StoredBrowserDocuments<SceneDocument>>;
-        return {
-            overrides: Array.isArray(parsed.overrides)
-                ? parsed.overrides.filter(isStoredOverride)
-                : [],
-            customs: Array.isArray(parsed.customs)
-                ? parsed.customs.filter(isSceneDocumentLike).map(normalizeSceneApiDocument)
-                : [],
-        };
-    } catch {
-        return { overrides: [], customs: [] };
-    }
-}
-
-function isStoredOverride(value: unknown): value is { id: string; source: string } {
-    return Boolean(
-        value &&
-            typeof value === 'object' &&
-            typeof (value as { id?: unknown }).id === 'string' &&
-            typeof (value as { source?: unknown }).source === 'string'
-    );
-}
-
-function isSceneDocumentLike(value: unknown): value is SceneApiDocumentPayload {
-    return Boolean(
-        value &&
-            typeof value === 'object' &&
-            typeof (value as SceneApiDocumentPayload).id === 'string' &&
-            typeof (value as SceneApiDocumentPayload).name === 'string' &&
-            typeof (value as SceneApiDocumentPayload).fileName === 'string' &&
-            typeof (value as SceneApiDocumentPayload).source === 'string'
-    );
-}
-
-function normalizeSceneApiDocument(document: SceneApiDocumentPayload): SceneDocument {
-    const fileName = sanitizeSceneFileName(document.fileName || `${document.id}.glsl`);
-    const id = (document.id || fileName.replace(/\.glsl$/i, '')).trim() || 'scene';
-    return {
-        id,
-        name: document.name.trim().length > 0 ? document.name.trim() : toSceneLabel(id),
-        fileName,
-        source: document.source,
-    };
-}
-
-function sanitizeSceneFileName(value: string): string {
-    const trimmed = value.trim().replace(/[\\/]+/g, '_');
-    return trimmed.toLowerCase().endsWith('.glsl') ? trimmed : `${trimmed}.glsl`;
-}
-
-function cloneSceneDocuments(documents: SceneDocument[]): SceneDocument[] {
-    return documents.map(cloneSceneDocument);
-}
-
-function cloneSceneDocument(document: SceneDocument): SceneDocument {
-    return {
-        id: document.id,
-        name: document.name,
-        fileName: document.fileName,
-        source: document.source,
-    };
-}
-
-function sortSceneDocuments(documents: SceneDocument[]): SceneDocument[] {
-    return cloneSceneDocuments(documents).sort((left, right) => left.name.localeCompare(right.name));
-}
-
-function toSceneId(value: string): string {
-    const withoutExtension = value.replace(/\.glsl$/i, '').trim();
-    return withoutExtension
-        .replace(/([a-z\d])([A-Z])/g, '$1_$2')
-        .replace(/[^a-zA-Z0-9_-]+/g, '_')
-        .replace(/^_+|_+$/g, '')
-        .toLowerCase() || 'scene';
-}
-
-function toSceneLabel(sceneId: string): string {
-    return sceneId
-        .replace(/([a-z\d])([A-Z])/g, '$1 $2')
-        .replace(/[_-]+/g, ' ')
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
-        .join(' ') || 'Scene';
 }

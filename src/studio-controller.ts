@@ -1,32 +1,36 @@
 import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
 import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
 import { snapToNearestOptionValue } from './core/control-options';
+import {
+    resolvePipelineSteps,
+    type ResolvedPipelineStep,
+} from './core/postprocess-registry';
 import Renderer from './core/renderer';
 import type { AnimationParams, RaymarchParams, ViewportParams } from './core/renderer';
+import { hashString } from './core/script-host';
 import {
+    getActiveSceneFiles,
     getActiveSceneId,
+    getActiveSceneManifest,
+    getActiveSceneManifestError,
     getAvailableScenes,
+    getSceneBundles,
     getSceneControlDefinitions,
-    getSceneDocuments,
-    getSceneDefaultParams,
-    replaceSceneDocuments,
+    replaceSceneBundles,
     setActiveSceneById,
-    upsertSceneDocument,
+    upsertSceneFile,
+    type SceneBundle,
     type SceneControlDefinition,
-    type SceneControlValueMap,
-    type SceneDocument,
     type SceneOption,
-    type SceneParamMap,
 } from './core/shader-pipeline';
 import {
     Slicer,
     type VaseBaseToolpath,
     type SliceDebugSnapshot,
     type SliceProgressUpdate,
-    type VaseSliceBenchmarkRun,
     type VaseSlicerSettings,
 } from './core/slicer';
-import type { ToolpathPostprocessConfig } from './core/toolpath-postprocess';
+import type { ScalarControlSpec, SceneManifest } from './scene-runtime';
 import { Preview } from './ui';
 import { summarizeBenchmarkRuns } from './studio/benchmark-summary';
 import { buildSlicerFilename, downloadTextFile } from './studio/file-export';
@@ -52,6 +56,45 @@ export interface SlicerBenchmarkSummary {
 
 export type ShaderStatusMode = 'ready' | 'compiling' | 'ok' | 'error';
 
+/** Sparse session-only overrides applied on top of the file-derived configuration. */
+export interface SceneOverrides {
+    slicer: Partial<VaseSlicerSettings>;
+    uniforms: Record<string, number>;
+    params: Record<string, number>;
+    stepParams: Record<number, Record<string, number>>;
+    disabledSteps: number[];
+    printerId: string | null;
+    filamentId: string | null;
+}
+
+export interface PipelineStepView {
+    index: number;
+    name: string;
+    scriptId: string | null;
+    enabled: boolean;
+    controls: ScalarControlSpec[];
+    params: Record<string, number>;
+    overriddenParamKeys: string[];
+    error: string | null;
+}
+
+export interface SceneConfigView {
+    settings: VaseSlicerSettings;
+    uniformControls: SceneControlDefinition[];
+    uniformValues: Record<string, number>;
+    paramControls: ScalarControlSpec[];
+    paramValues: Record<string, number>;
+    pipeline: PipelineStepView[];
+    overriddenSlicerKeys: string[];
+    overriddenUniformKeys: string[];
+    overriddenParamKeys: string[];
+    overrideCount: number;
+    printerOverridden: boolean;
+    filamentOverridden: boolean;
+    manifestError: string | null;
+    preprocessError: string | null;
+}
+
 export interface StudioSnapshot {
     viewMode: number;
     sceneId: string;
@@ -59,25 +102,16 @@ export interface StudioSnapshot {
     raymarchParams: RaymarchParams;
     viewportParams: ViewportParams;
     animationParams: AnimationParams;
-    slicerSettings: VaseSlicerSettings;
     printerModels: PrinterModel[];
     filamentProfiles: FilamentProfile[];
-    sceneControlDefinitions: SceneControlDefinition[];
-    sceneControlValues: SceneControlValueMap;
+    config: SceneConfigView;
 }
 
 export interface SceneChangeResult {
     ok: boolean;
     sceneId: string;
-    settings: VaseSlicerSettings;
-    sceneControlDefinitions: SceneControlDefinition[];
-    sceneControlValues: SceneControlValueMap;
+    config: SceneConfigView;
     shaderMessage: string;
-    workspaceStatus: string;
-}
-
-export interface PresetChangeResult {
-    settings: VaseSlicerSettings;
     workspaceStatus: string;
 }
 
@@ -85,39 +119,16 @@ export interface SceneRegistrySyncResult {
     ok: boolean;
     sceneId: string;
     sceneOptions: SceneOption[];
-    sceneControlDefinitions: SceneControlDefinition[];
-    sceneControlValues: SceneControlValueMap;
-    settings: VaseSlicerSettings;
+    config: SceneConfigView;
     shaderMessage: string;
 }
 
-export interface SceneSourceUpdateResult extends SceneRegistrySyncResult {
-    sceneDocument: SceneDocument | null;
+export interface PresetChangeResult {
+    config: SceneConfigView;
+    workspaceStatus: string;
 }
-
-const SCENE_DEFAULT_PARAM_ALIASES: Partial<Record<string, keyof VaseSlicerSettings>> = {
-    nozzleDiameterMm: 'nozzleDiameter',
-    layerHeightMm: 'layerHeight',
-};
 
 const MAX_SHADER_ERROR_CHARS = 6000;
-
-function resolveSceneDefaultTargetKey(
-    paramName: string,
-    numericSlicerSettingKeys: Set<keyof VaseSlicerSettings>
-): keyof VaseSlicerSettings | null {
-    const alias = SCENE_DEFAULT_PARAM_ALIASES[paramName];
-    if (alias) {
-        return alias;
-    }
-
-    const candidate = paramName as keyof VaseSlicerSettings;
-    if (numericSlicerSettingKeys.has(candidate)) {
-        return candidate;
-    }
-
-    return null;
-}
 
 export function normalizeShaderStatusMessage(message: string): string {
     const trimmed = message.trim();
@@ -142,57 +153,61 @@ export function compactShaderStatusMessage(message: string): string {
     return `${firstLine.slice(0, maxInlineLen - 1)}...`;
 }
 
+function emptyOverrides(): SceneOverrides {
+    return {
+        slicer: {},
+        uniforms: {},
+        params: {},
+        stepParams: {},
+        disabledSteps: [],
+        printerId: null,
+        filamentId: null,
+    };
+}
+
 export class StudioController {
     private renderer: Renderer;
     private slicer: Slicer;
     private preview: Preview;
-    private slicerSettings: VaseSlicerSettings;
     private printerModels: PrinterModel[];
     private filamentProfiles: FilamentProfile[];
     private sceneOptions: SceneOption[];
     private isSlicing: boolean;
     private renderFrameHandle: number | null;
-    private numericSlicerSettingKeys: Set<keyof VaseSlicerSettings>;
     private initialized: boolean;
-    private sceneControlDefinitions: SceneControlDefinition[];
-    private sceneControlValues: SceneControlValueMap;
-    private toolpathPostprocessConfig: ToolpathPostprocessConfig | null;
     private renderLifecycleCleanup: (() => void) | null;
     private cachedBaseToolpath: { cacheKey: string; baseToolpath: VaseBaseToolpath } | null;
+
+    /** Session overrides for the active scene, keyed per scene by the App snapshot. */
+    private overrides: SceneOverrides;
+
+    // Resolved (file-derived + overrides) state for the active scene.
+    private resolvedSettings: VaseSlicerSettings;
+    private resolvedUniformValues: Record<string, number>;
+    private resolvedParamValues: Record<string, number>;
+    private resolvedPipeline: ResolvedPipelineStep[];
+    private preprocessError: string | null;
 
     constructor() {
         this.renderer = new Renderer();
         this.slicer = new Slicer();
         this.preview = new Preview();
-        this.slicerSettings = this.slicer.getDefaultVaseSettings();
         this.printerModels = loadPrinterModels();
         this.filamentProfiles = loadFilamentProfiles();
         this.sceneOptions = getAvailableScenes();
         this.isSlicing = false;
         this.renderFrameHandle = null;
-        this.numericSlicerSettingKeys = new Set();
         this.initialized = false;
-        this.sceneControlDefinitions = getSceneControlDefinitions();
-        this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions);
-        this.toolpathPostprocessConfig = null;
         this.renderLifecycleCleanup = null;
         this.cachedBaseToolpath = null;
+        this.overrides = emptyOverrides();
+        this.resolvedSettings = this.slicer.getDefaultVaseSettings();
+        this.resolvedUniformValues = {};
+        this.resolvedParamValues = {};
+        this.resolvedPipeline = [];
+        this.preprocessError = null;
 
-        if (this.filamentProfiles.length > 0) {
-            this.slicerSettings = applyFilamentProfile(this.slicerSettings, this.filamentProfiles[0]);
-        }
-        if (this.printerModels.length > 0) {
-            this.slicerSettings = applyPrinterModel(this.slicerSettings, this.printerModels[0]);
-        }
-
-        this.numericSlicerSettingKeys = new Set(
-            Object.entries(this.slicerSettings)
-                .filter((entry): entry is [keyof VaseSlicerSettings, number] => typeof entry[1] === 'number')
-                .map(([key]) => key)
-        );
-
-        this.applySceneDefaultParams(getSceneDefaultParams());
-        this.syncSceneControlState();
+        this.resolveConfiguration();
     }
 
     public init(): void {
@@ -202,8 +217,7 @@ export class StudioController {
 
         this.preview.init();
         this.renderer.init(this.preview.getCanvas());
-        this.syncSceneSlicerUniforms();
-        this.syncSceneControlState();
+        this.resolveConfiguration();
         this.renderLifecycleCleanup = attachRenderLifecycleHandlers(() => this.updatePreviewRenderState());
         this.updatePreviewRenderState();
         this.initialized = true;
@@ -217,11 +231,37 @@ export class StudioController {
             raymarchParams: this.renderer.getRaymarchParams(),
             viewportParams: this.renderer.getViewportParams(),
             animationParams: this.renderer.getAnimationParams(),
-            slicerSettings: { ...this.slicerSettings },
             printerModels: [...this.printerModels],
             filamentProfiles: [...this.filamentProfiles],
-            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
-            sceneControlValues: { ...this.sceneControlValues },
+            config: this.getConfigView(),
+        };
+    }
+
+    public getConfigView(): SceneConfigView {
+        return {
+            settings: { ...this.resolvedSettings },
+            uniformControls: getSceneControlDefinitions(),
+            uniformValues: { ...this.resolvedUniformValues },
+            paramControls: getActiveSceneManifest().params.map((spec) => ({ ...spec })),
+            paramValues: { ...this.resolvedParamValues },
+            pipeline: this.resolvedPipeline.map((step) => ({
+                index: step.index,
+                name: step.name,
+                scriptId: step.scriptId,
+                enabled: step.enabled,
+                controls: step.controls.map((control) => ({ ...control })),
+                params: { ...step.params },
+                overriddenParamKeys: [...step.overriddenParamKeys],
+                error: step.error,
+            })),
+            overriddenSlicerKeys: Object.keys(this.overrides.slicer),
+            overriddenUniformKeys: Object.keys(this.overrides.uniforms),
+            overriddenParamKeys: Object.keys(this.overrides.params),
+            overrideCount: this.countOverrides(),
+            printerOverridden: this.overrides.printerId !== null,
+            filamentOverridden: this.overrides.filamentId !== null,
+            manifestError: getActiveSceneManifestError(),
+            preprocessError: this.preprocessError,
         };
     }
 
@@ -229,8 +269,8 @@ export class StudioController {
         return this.sceneOptions.find((scene) => scene.id === sceneId)?.name ?? sceneId;
     }
 
-    public getSceneDocuments(): SceneDocument[] {
-        return getSceneDocuments();
+    public getSceneBundles(): SceneBundle[] {
+        return getSceneBundles();
     }
 
     public getViewModeLabel(viewMode: number): string {
@@ -254,15 +294,42 @@ export class StudioController {
         return `Viewport mode: ${this.getViewModeLabel(viewMode)}.`;
     }
 
-    public changeScene(sceneId: string): SceneChangeResult {
+    /** Exports the active scene's session overrides for snapshot persistence. */
+    public exportOverrides(): SceneOverrides {
+        return {
+            slicer: { ...this.overrides.slicer },
+            uniforms: { ...this.overrides.uniforms },
+            params: { ...this.overrides.params },
+            stepParams: Object.fromEntries(
+                Object.entries(this.overrides.stepParams).map(([index, values]) => [index, { ...values }])
+            ),
+            disabledSteps: [...this.overrides.disabledSteps],
+            printerId: this.overrides.printerId,
+            filamentId: this.overrides.filamentId,
+        };
+    }
+
+    public restoreOverrides(overrides: Partial<SceneOverrides> | null | undefined): void {
+        const base = emptyOverrides();
+        this.overrides = {
+            slicer: { ...base.slicer, ...(overrides?.slicer ?? {}) },
+            uniforms: { ...base.uniforms, ...(overrides?.uniforms ?? {}) },
+            params: { ...base.params, ...(overrides?.params ?? {}) },
+            stepParams: { ...(overrides?.stepParams ?? {}) },
+            disabledSteps: Array.isArray(overrides?.disabledSteps) ? [...overrides.disabledSteps] : [],
+            printerId: overrides?.printerId ?? null,
+            filamentId: overrides?.filamentId ?? null,
+        };
+        this.resolveConfiguration();
+    }
+
+    public changeScene(sceneId: string, overrides?: Partial<SceneOverrides> | null): SceneChangeResult {
         const previousSceneId = getActiveSceneId();
         if (sceneId === previousSceneId) {
             return {
                 ok: true,
                 sceneId,
-                settings: { ...this.slicerSettings },
-                sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
-                sceneControlValues: { ...this.sceneControlValues },
+                config: this.getConfigView(),
                 shaderMessage: 'Ready',
                 workspaceStatus: `Scene already loaded: ${this.getSceneLabel(sceneId)}.`,
             };
@@ -272,9 +339,7 @@ export class StudioController {
             return {
                 ok: false,
                 sceneId: previousSceneId,
-                settings: { ...this.slicerSettings },
-                sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
-                sceneControlValues: { ...this.sceneControlValues },
+                config: this.getConfigView(),
                 shaderMessage: `Scene '${sceneId}' was not found.`,
                 workspaceStatus: `Scene load failed: ${sceneId}.`,
             };
@@ -287,78 +352,56 @@ export class StudioController {
             return {
                 ok: false,
                 sceneId: previousSceneId,
-                settings: { ...this.slicerSettings },
-                sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
-                sceneControlValues: { ...this.sceneControlValues },
+                config: this.getConfigView(),
                 shaderMessage: result.message,
                 workspaceStatus: `Scene load failed: ${this.getSceneLabel(sceneId)}.`,
             };
         }
 
-        this.refreshActiveSceneControls();
-        this.applySceneDefaultParams(getSceneDefaultParams());
-        this.syncSceneSlicerUniforms();
-        this.syncSceneControlState();
+        this.overrides = { ...emptyOverrides(), ...(overrides ?? {}) } as SceneOverrides;
+        this.cachedBaseToolpath = null;
+        this.resolveConfiguration();
         return {
             ok: true,
             sceneId,
-            settings: { ...this.slicerSettings },
-            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
-            sceneControlValues: { ...this.sceneControlValues },
+            config: this.getConfigView(),
             shaderMessage: `Loaded scene: ${sceneId}`,
             workspaceStatus: `Scene loaded: ${this.getSceneLabel(sceneId)}.`,
         };
     }
 
-    public syncSceneDocuments(documents: SceneDocument[]): SceneRegistrySyncResult {
-        replaceSceneDocuments(documents);
+    public syncSceneBundles(bundles: SceneBundle[]): SceneRegistrySyncResult {
+        replaceSceneBundles(bundles);
         this.sceneOptions = getAvailableScenes();
-        this.refreshActiveSceneControls();
-        this.syncSceneControlState();
+        this.resolveConfiguration();
 
         const result = this.reloadRendererShaders();
         return {
             ok: result.ok,
             sceneId: getActiveSceneId(),
             sceneOptions: [...this.sceneOptions],
-            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
-            sceneControlValues: { ...this.sceneControlValues },
-            settings: { ...this.slicerSettings },
+            config: this.getConfigView(),
             shaderMessage: result.message,
         };
     }
 
-    public updateSceneDocumentSource(sceneId: string, source: string): SceneSourceUpdateResult {
-        const sceneDocument = upsertSceneDocument({
-            ...(getSceneDocuments().find((candidate) => candidate.id === sceneId) ?? {
-                id: sceneId,
-                name: this.getSceneLabel(sceneId),
-                fileName: `${sceneId}.glsl`,
-                source,
-            }),
-            source,
-        });
-
+    public updateSceneFile(sceneId: string, fileName: string, source: string): SceneRegistrySyncResult & { bundle: SceneBundle } {
+        const bundle = upsertSceneFile(sceneId, fileName, source);
         this.sceneOptions = getAvailableScenes();
 
-        if (sceneDocument.id === getActiveSceneId()) {
-            this.refreshActiveSceneControls(true);
-            this.syncSceneControlState();
+        let result = { ok: true, message: 'Scene file updated.' };
+        if (bundle.id === getActiveSceneId()) {
+            this.resolveConfiguration();
+            result = this.reloadRendererShaders();
         }
-
-        const result = sceneDocument.id === getActiveSceneId()
-            ? this.reloadRendererShaders()
-            : { ok: true, message: 'Scene document updated.' };
 
         return {
             ok: result.ok,
             sceneId: getActiveSceneId(),
             sceneOptions: [...this.sceneOptions],
-            sceneControlDefinitions: this.sceneControlDefinitions.map((definition) => ({ ...definition })),
-            sceneControlValues: { ...this.sceneControlValues },
-            settings: { ...this.slicerSettings },
+            config: this.getConfigView(),
             shaderMessage: result.message,
-            sceneDocument,
+            bundle,
         };
     }
 
@@ -374,45 +417,53 @@ export class StudioController {
         this.renderer.updateAnimationParams(next);
     }
 
-    public updateSceneControlValue(controlKey: string, value: number): void {
-        const definition = this.sceneControlDefinitions.find((candidate) => candidate.key === controlKey);
-        if (!definition) {
-            return;
-        }
+    public updateSlicerParams(next: Partial<VaseSlicerSettings>): void {
+        this.overrides.slicer = { ...this.overrides.slicer, ...next };
+        this.resolveConfiguration();
+    }
 
-        this.sceneControlValues = {
-            ...this.sceneControlValues,
-            [definition.key]: clampSceneControlValue(value, definition),
+    public updateUniformValue(key: string, value: number): void {
+        this.overrides.uniforms = { ...this.overrides.uniforms, [key]: value };
+        this.resolveConfiguration();
+    }
+
+    public updateParamValue(key: string, value: number): void {
+        this.overrides.params = { ...this.overrides.params, [key]: value };
+        this.resolveConfiguration();
+    }
+
+    public updateStepParam(stepIndex: number, key: string, value: number): void {
+        this.overrides.stepParams = {
+            ...this.overrides.stepParams,
+            [stepIndex]: { ...(this.overrides.stepParams[stepIndex] ?? {}), [key]: value },
         };
-        this.syncSceneControlState();
+        this.resolveConfiguration();
     }
 
-    public resetView(): string {
-        this.renderer.resetCameraView();
-        return 'Viewport reset to default orbit.';
-    }
-
-    public setToolpathOverlayVisible(visible: boolean): void {
-        this.preview.setOverlayVisible(visible);
-    }
-
-    public getLastSliceDebugSnapshot(): SliceDebugSnapshot | null {
-        return this.slicer.getLastSliceDebugSnapshot();
+    public setStepEnabled(stepIndex: number, enabled: boolean): void {
+        const disabled = new Set(this.overrides.disabledSteps);
+        if (enabled) {
+            disabled.delete(stepIndex);
+        } else {
+            disabled.add(stepIndex);
+        }
+        this.overrides.disabledSteps = [...disabled];
+        this.resolveConfiguration();
     }
 
     public changePrinterModel(printerModelId: string): PresetChangeResult {
         const nextModel = this.printerModels.find((model) => model.id === printerModelId);
         if (!nextModel) {
             return {
-                settings: { ...this.slicerSettings },
+                config: this.getConfigView(),
                 workspaceStatus: `Printer preset not found: ${printerModelId}.`,
             };
         }
 
-        this.slicerSettings = applyPrinterModel(this.slicerSettings, nextModel);
-        this.syncSceneSlicerUniforms();
+        this.overrides.printerId = printerModelId;
+        this.resolveConfiguration();
         return {
-            settings: { ...this.slicerSettings },
+            config: this.getConfigView(),
             workspaceStatus: `Printer preset loaded: ${nextModel.name}.`,
         };
     }
@@ -421,26 +472,62 @@ export class StudioController {
         const nextProfile = this.filamentProfiles.find((profile) => profile.id === filamentProfileId);
         if (!nextProfile) {
             return {
-                settings: { ...this.slicerSettings },
+                config: this.getConfigView(),
                 workspaceStatus: `Material preset not found: ${filamentProfileId}.`,
             };
         }
 
-        this.slicerSettings = applyFilamentProfile(this.slicerSettings, nextProfile);
-        this.syncSceneSlicerUniforms();
+        this.overrides.filamentId = filamentProfileId;
+        this.resolveConfiguration();
         return {
-            settings: { ...this.slicerSettings },
+            config: this.getConfigView(),
             workspaceStatus: `Material preset loaded: ${nextProfile.name}.`,
         };
     }
 
-    public updateSlicerParams(next: Partial<VaseSlicerSettings>): void {
-        this.slicerSettings = { ...this.slicerSettings, ...next };
-        this.syncSceneSlicerUniforms();
+    public resetOverride(scope: 'slicer' | 'uniform' | 'param', key: string): void {
+        if (scope === 'slicer') {
+            const { [key as keyof VaseSlicerSettings]: _removed, ...rest } = this.overrides.slicer;
+            this.overrides.slicer = rest;
+        } else if (scope === 'uniform') {
+            const { [key]: _removed, ...rest } = this.overrides.uniforms;
+            this.overrides.uniforms = rest;
+        } else {
+            const { [key]: _removed, ...rest } = this.overrides.params;
+            this.overrides.params = rest;
+        }
+        this.resolveConfiguration();
     }
 
-    public setToolpathPostprocessConfig(config: ToolpathPostprocessConfig | null): void {
-        this.toolpathPostprocessConfig = config ? { ...config } : null;
+    public resetStepParamOverride(stepIndex: number, key: string): void {
+        const stepOverrides = { ...(this.overrides.stepParams[stepIndex] ?? {}) };
+        delete stepOverrides[key];
+        this.overrides.stepParams = { ...this.overrides.stepParams, [stepIndex]: stepOverrides };
+        this.resolveConfiguration();
+    }
+
+    public resetAllOverrides(): string {
+        this.overrides = emptyOverrides();
+        this.resolveConfiguration();
+        return 'All session overrides reset to scene-defined values.';
+    }
+
+    public resetView(): string {
+        this.renderer.resetCameraView();
+        return 'Viewport reset to default orbit.';
+    }
+
+    /** Re-runs the resolution ladder, e.g. after the postprocess registry changed. */
+    public refreshConfiguration(): void {
+        this.resolveConfiguration();
+    }
+
+    public setToolpathOverlayVisible(visible: boolean): void {
+        this.preview.setOverlayVisible(visible);
+    }
+
+    public getLastSliceDebugSnapshot(): SliceDebugSnapshot | null {
+        return this.slicer.getLastSliceDebugSnapshot();
     }
 
     public async generateVaseGcode(
@@ -460,7 +547,7 @@ export class StudioController {
         onProgress?: (update: SliceProgressUpdate) => void
     ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
         return this.runWhilePreviewPausedAsync(async () => {
-            const baseResult = await this.slicer.generateVaseBaseToolpathWithProgress(this.slicerSettings, onProgress);
+            const baseResult = await this.slicer.generateVaseBaseToolpathWithProgress(this.resolvedSettings, onProgress);
             this.cachedBaseToolpath = {
                 cacheKey,
                 baseToolpath: {
@@ -468,21 +555,7 @@ export class StudioController {
                     points: baseResult.baseToolpath.points.map((point) => ({ ...point })),
                 },
             };
-            const result = this.slicer.generateVaseGcodeFromBaseToolpath(
-                baseResult.baseToolpath,
-                this.slicerSettings,
-                this.toolpathPostprocessConfig,
-            );
-            this.preview.setToolpathOverlayWorldPoints(
-                convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
-            );
-            const filename = buildSlicerFilename(this.slicerSettings, this.toolpathPostprocessConfig);
-            return {
-                filename,
-                gcode: result.gcode,
-                bytes: result.gcode.length,
-                points: result.toolpath.points.length,
-            };
+            return this.finishArtifactFromBase(baseResult.baseToolpath);
         });
     }
 
@@ -498,27 +571,18 @@ export class StudioController {
                 ...this.cachedBaseToolpath.baseToolpath,
                 points: this.cachedBaseToolpath.baseToolpath.points.map((point) => ({ ...point })),
             };
-            const result = this.slicer.generateVaseGcodeFromBaseToolpath(
-                baseToolpath,
-                this.slicerSettings,
-                this.toolpathPostprocessConfig,
-            );
-            this.preview.setToolpathOverlayWorldPoints(
-                convertToolpathToScenePoints(result.toolpath.points, this.slicerSettings)
-            );
-            const filename = buildSlicerFilename(this.slicerSettings, this.toolpathPostprocessConfig);
-            return {
-                filename,
-                gcode: result.gcode,
-                bytes: result.gcode.length,
-                points: result.toolpath.points.length,
-            };
+            return this.finishArtifactFromBase(baseToolpath);
         });
     }
 
     public benchmarkVaseGcode(iterations: number, warmupRuns: number): SlicerBenchmarkSummary {
         return this.runWhilePreviewPaused(() => {
-            const benchmark = this.slicer.benchmarkVaseGcode(this.slicerSettings, iterations, warmupRuns, this.toolpathPostprocessConfig);
+            const benchmark = this.slicer.benchmarkVaseGcode(
+                this.resolvedSettings,
+                iterations,
+                warmupRuns,
+                this.getEnabledPipelineSteps(),
+            );
             this.preview.setToolpathOverlayWorldPoints(
                 convertToolpathToScenePoints(benchmark.lastResult.toolpath.points, benchmark.settings)
             );
@@ -528,6 +592,226 @@ export class StudioController {
 
     public resizeViewport(): void {
         this.renderer.resize();
+    }
+
+    /**
+     * Resolution ladder, lowest to highest precedence:
+     * slicer defaults -> printer/filament presets -> manifest slicer block ->
+     * manifest preprocess() -> session overrides.
+     */
+    private resolveConfiguration(): void {
+        const manifest = getActiveSceneManifest();
+
+        // Settings base: defaults + presets + manifest static block.
+        let settings = this.slicer.getDefaultVaseSettings();
+        const printer = this.resolvePrinterModel(manifest);
+        if (printer) {
+            settings = applyPrinterModel(settings, printer);
+        }
+        const filament = this.resolveFilamentProfile(manifest);
+        if (filament) {
+            settings = applyFilamentProfile(settings, filament);
+        }
+        settings = { ...settings, ...manifest.slicer };
+
+        // Param and uniform bases from manifest defaults + overrides.
+        const paramValues = this.resolveScalarValues(manifest.params, this.overrides.params);
+        const uniformDefaults = this.resolveScalarValues(manifest.uniforms, this.overrides.uniforms);
+
+        // Preprocess: sees override-adjusted inputs, loses to explicit overrides.
+        this.preprocessError = null;
+        let preprocessSlicer: Partial<VaseSlicerSettings> = {};
+        let preprocessUniforms: Record<string, number> = {};
+        if (manifest.preprocess) {
+            try {
+                const output = manifest.preprocess({
+                    params: { ...paramValues },
+                    uniforms: { ...uniformDefaults },
+                    slicer: { ...settings, ...this.overrides.slicer },
+                }) ?? {};
+                preprocessSlicer = output.slicer ?? {};
+                preprocessUniforms = output.uniforms ?? {};
+            } catch (error) {
+                this.preprocessError = error instanceof Error ? error.message : String(error);
+            }
+        }
+
+        this.resolvedSettings = {
+            ...settings,
+            ...preprocessSlicer,
+            ...this.overrides.slicer,
+        };
+        if (this.resolvedSettings.maxY <= this.resolvedSettings.minY) {
+            this.resolvedSettings.maxY = this.resolvedSettings.minY + Math.max(0.001, this.resolvedSettings.layerHeight);
+        }
+
+        this.resolvedUniformValues = {
+            ...uniformDefaults,
+            ...preprocessUniforms,
+            ...this.overrides.uniforms,
+        };
+        this.resolvedParamValues = paramValues;
+
+        this.resolvedPipeline = resolvePipelineSteps({
+            manifest,
+            sceneId: getActiveSceneId(),
+            sceneFiles: getActiveSceneFiles(),
+            sceneParams: { ...paramValues },
+            stepParamOverrides: this.overrides.stepParams,
+            disabledSteps: new Set(this.overrides.disabledSteps),
+        });
+
+        this.pushSceneStateToEngines();
+    }
+
+    private resolveScalarValues(specs: ScalarControlSpec[], overrides: Record<string, number>): Record<string, number> {
+        const values: Record<string, number> = {};
+        for (const spec of specs) {
+            const override = overrides[spec.key];
+            values[spec.key] = typeof override === 'number' && Number.isFinite(override)
+                ? clampScalarValue(override, spec)
+                : spec.defaultValue;
+        }
+
+        return values;
+    }
+
+    private resolvePrinterModel(manifest: SceneManifest): PrinterModel | null {
+        const targetId = this.overrides.printerId ?? manifest.printer;
+        if (targetId) {
+            const match = this.printerModels.find((model) => model.id === targetId);
+            if (match) {
+                return match;
+            }
+        }
+
+        return this.printerModels[0] ?? null;
+    }
+
+    private resolveFilamentProfile(manifest: SceneManifest): FilamentProfile | null {
+        const targetId = this.overrides.filamentId ?? manifest.filament;
+        if (targetId) {
+            const match = this.filamentProfiles.find((profile) => profile.id === targetId);
+            if (match) {
+                return match;
+            }
+        }
+
+        return this.filamentProfiles[0] ?? null;
+    }
+
+    private pushSceneStateToEngines(): void {
+        const controlDefinitions = getSceneControlDefinitions();
+        this.renderer.setSceneControlState(controlDefinitions, this.resolvedUniformValues);
+        this.slicer.setSceneControlState(controlDefinitions, this.resolvedUniformValues);
+        this.renderer.setSceneSlicerUniformState({
+            minY: this.resolvedSettings.minY,
+            maxY: this.resolvedSettings.maxY,
+            modelScale: this.resolvedSettings.modelScale,
+            maxRadius: this.resolvedSettings.maxRadius,
+            nozzleDiameter: this.resolvedSettings.nozzleDiameter,
+            flowRate: this.resolvedSettings.flowRate,
+            layerHeight: this.resolvedSettings.layerHeight,
+            lineWidth: this.resolvedSettings.lineWidth,
+            firstLayerLineWidth: this.resolvedSettings.firstLayerLineWidth,
+        });
+    }
+
+    private getEnabledPipelineSteps(): ResolvedPipelineStep[] {
+        return this.resolvedPipeline.filter((step) => step.enabled && !step.error);
+    }
+
+    private finishArtifactFromBase(baseToolpath: VaseBaseToolpath): { filename: string; gcode: string; bytes: number; points: number } {
+        const result = this.slicer.generateVaseGcodeFromBaseToolpath(
+            baseToolpath,
+            this.resolvedSettings,
+            this.getEnabledPipelineSteps(),
+            this.buildReproducibilityHeader(),
+        );
+        this.preview.setToolpathOverlayWorldPoints(
+            convertToolpathToScenePoints(result.toolpath.points, this.resolvedSettings)
+        );
+        const filename = buildSlicerFilename(
+            this.resolvedSettings,
+            getActiveSceneManifest(),
+            { ...this.resolvedParamValues, ...this.resolvedUniformValues },
+            this.getEnabledPipelineSteps().map((step) => step.scriptId ?? step.name),
+        );
+        return {
+            filename,
+            gcode: result.gcode,
+            bytes: result.gcode.length,
+            points: result.toolpath.points.length,
+        };
+    }
+
+    /** Header lines that make the exported file traceable back to its sources. */
+    private buildReproducibilityHeader(): string[] {
+        const sceneId = getActiveSceneId();
+        const files = getActiveSceneFiles();
+        const lines: string[] = [
+            'IMPLICIT_BLOCK_START',
+            `implicit_scene = ${sceneId}`,
+        ];
+
+        for (const fileName of Object.keys(files).sort()) {
+            lines.push(`implicit_file = ${sceneId}/${fileName} fnv1a:${hashString(files[fileName] ?? '')}`);
+        }
+
+        for (const step of this.getEnabledPipelineSteps()) {
+            const paramText = Object.entries(step.params)
+                .map(([key, value]) => `${key}=${formatHeaderNumber(value)}`)
+                .join(' ');
+            lines.push(`implicit_postprocess = ${step.scriptId ?? step.name}${paramText ? ` ${paramText}` : ''}`);
+        }
+
+        const overrideLines = this.describeOverrides();
+        if (overrideLines.length === 0) {
+            lines.push('implicit_overrides = none');
+        } else {
+            for (const overrideLine of overrideLines) {
+                lines.push(`implicit_override = ${overrideLine}`);
+            }
+        }
+
+        lines.push(`implicit_settings = ${JSON.stringify(this.resolvedSettings)}`);
+        lines.push(`implicit_uniforms = ${JSON.stringify(this.resolvedUniformValues)}`);
+        lines.push(`implicit_params = ${JSON.stringify(this.resolvedParamValues)}`);
+        lines.push('IMPLICIT_BLOCK_END');
+        return lines;
+    }
+
+    private describeOverrides(): string[] {
+        const entries: string[] = [];
+        for (const [key, value] of Object.entries(this.overrides.slicer)) {
+            entries.push(`slicer.${key} = ${String(value)}`);
+        }
+        for (const [key, value] of Object.entries(this.overrides.uniforms)) {
+            entries.push(`uniform.${key} = ${formatHeaderNumber(value)}`);
+        }
+        for (const [key, value] of Object.entries(this.overrides.params)) {
+            entries.push(`param.${key} = ${formatHeaderNumber(value)}`);
+        }
+        for (const [stepIndex, values] of Object.entries(this.overrides.stepParams)) {
+            for (const [key, value] of Object.entries(values)) {
+                entries.push(`step[${stepIndex}].${key} = ${formatHeaderNumber(value)}`);
+            }
+        }
+        for (const stepIndex of this.overrides.disabledSteps) {
+            entries.push(`step[${stepIndex}] disabled`);
+        }
+        if (this.overrides.printerId) {
+            entries.push(`printer = ${this.overrides.printerId}`);
+        }
+        if (this.overrides.filamentId) {
+            entries.push(`filament = ${this.overrides.filamentId}`);
+        }
+
+        return entries;
+    }
+
+    private countOverrides(): number {
+        return this.describeOverrides().length;
     }
 
     private startRenderingLoop(): void {
@@ -592,53 +876,6 @@ export class StudioController {
         }
     }
 
-    private applySceneDefaultParams(params: SceneParamMap): void {
-        for (const [paramName, value] of Object.entries(params)) {
-            if (typeof value !== 'number') {
-                continue;
-            }
-
-            const targetKey = resolveSceneDefaultTargetKey(paramName, this.numericSlicerSettingKeys);
-            if (!targetKey) {
-                continue;
-            }
-
-            ((this.slicerSettings as unknown) as Record<string, unknown>)[targetKey] = value;
-        }
-
-        if (this.slicerSettings.maxY <= this.slicerSettings.minY) {
-            this.slicerSettings.maxY = this.slicerSettings.minY + Math.max(0.001, this.slicerSettings.layerHeight);
-        }
-    }
-
-    private syncSceneSlicerUniforms(): void {
-        this.renderer.setSceneSlicerUniformState({
-            minY: this.slicerSettings.minY,
-            maxY: this.slicerSettings.maxY,
-            modelScale: this.slicerSettings.modelScale,
-            maxRadius: this.slicerSettings.maxRadius,
-            nozzleDiameter: this.slicerSettings.nozzleDiameter,
-            flowRate: this.slicerSettings.flowRate,
-            layerHeight: this.slicerSettings.layerHeight,
-            lineWidth: this.slicerSettings.lineWidth,
-            firstLayerLineWidth: this.slicerSettings.firstLayerLineWidth,
-        });
-    }
-
-    private refreshActiveSceneControls(preserveValues: boolean = false): void {
-        const nextDefinitions = getSceneControlDefinitions();
-        this.sceneControlDefinitions = nextDefinitions;
-        this.sceneControlValues = buildSceneControlValueMap(
-            nextDefinitions,
-            preserveValues ? this.sceneControlValues : undefined
-        );
-    }
-
-    private syncSceneControlState(): void {
-        this.renderer.setSceneControlState(this.sceneControlDefinitions, this.sceneControlValues);
-        this.slicer.setSceneControlState(this.sceneControlDefinitions, this.sceneControlValues);
-    }
-
     private reloadRendererShaders(): { ok: boolean; message: string } {
         const result = this.renderer.hotReloadShaders({});
         if (!result.ok && result.message !== 'Renderer not initialized') {
@@ -650,29 +887,20 @@ export class StudioController {
             message: result.ok ? result.message : 'Ready',
         };
     }
-
 }
 
-function buildSceneControlValueMap(
-    definitions: SceneControlDefinition[],
-    previousValues: SceneControlValueMap = {}
-): SceneControlValueMap {
-    const values: SceneControlValueMap = {};
-
-    for (const definition of definitions) {
-        values[definition.key] = clampSceneControlValue(previousValues[definition.key] ?? definition.defaultValue, definition);
+function clampScalarValue(value: number, spec: ScalarControlSpec): number {
+    if (spec.options && spec.options.length > 0) {
+        return snapToNearestOptionValue(value, spec.options);
     }
 
-    return values;
+    if (!spec.hasControl) {
+        return value;
+    }
+
+    return Math.min(spec.max, Math.max(spec.min, value));
 }
 
-function clampSceneControlValue(value: number, definition: SceneControlDefinition): number {
-    if (definition.options && definition.options.length > 0) {
-        const fallback = definition.options[0]?.value ?? definition.defaultValue;
-        const safe = Number.isFinite(value) ? value : fallback;
-        return snapToNearestOptionValue(safe, definition.options);
-    }
-
-    const safe = Number.isFinite(value) ? value : definition.defaultValue;
-    return Math.min(definition.max, Math.max(definition.min, safe));
+function formatHeaderNumber(value: number): string {
+    return Number.isInteger(value) ? String(value) : value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }

@@ -4,7 +4,7 @@ import type {
     InspectorSchemaState,
     InspectorTabSchema,
 } from './types';
-import { buildPostprocessControlSections, buildSceneControlSections } from './dynamic-sections';
+import { buildPipelineSections, buildSceneControlSections } from './dynamic-sections';
 
 import type { VaseSlicerSettings } from '../../core/slicer';
 
@@ -245,23 +245,22 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
         id: 'postprocess',
         label: 'Postprocess',
         summary: [
-            { label: 'Script', read: (state) => state.postprocessDocuments.find((document) => document.id === state.activePostprocessScriptId)?.name ?? 'None' },
-            { label: 'State', read: (state) => state.postprocessEnabled ? 'Enabled' : 'Disabled' },
+            { label: 'Steps', read: (state) => String(state.pipeline.length) },
+            { label: 'Active', read: (state) => String(state.pipeline.filter((step) => step.enabled && !step.error).length) },
             { label: 'Storage', read: (state) => state.postprocessStorageLabel },
         ],
         sections: [
             {
-                id: 'postprocess-config',
-                title: 'Script Selection',
-                caption: 'Scripts run on the raw spiral path before move merging, extrusion recompute, and layer-time shaping. Use the shared editor panel to edit source.',
+                id: 'postprocess-editing',
+                title: 'Script Editing',
+                caption: 'The pipeline itself is declared in the scene manifest (scene.ts). Pick a generic script here to open it in the editor panel.',
                 fields: [
-                    { kind: 'select', target: 'postprocessScript', id: 'postprocess-script-select', label: 'Active script', optionsSource: 'postprocessDocuments' },
-                    { kind: 'select', target: 'postprocessEnabled', id: 'postprocess-enabled', label: 'Enable script', options: BOOLEAN_TOGGLE_OPTIONS },
+                    { kind: 'select', target: 'postprocessScript', id: 'postprocess-script-select', label: 'Edit script', optionsSource: 'postprocessDocuments' },
                     { kind: 'select', target: 'postprocessAutoUpdate', id: 'postprocess-auto-update', label: 'Auto-update generated G-code', options: BOOLEAN_TOGGLE_OPTIONS },
                 ],
             },
         ],
-        note: 'Scripts may declare // @control { ... } parameters. Use context.params plus point.metrics.layerFilamentMm, layerFilamentProgress, spiralFilamentMm, spiralFilamentProgress, and any active scene shader @field samples exposed on point.sceneFields in transform(context).',
+        note: 'Steps run in manifest order on the raw spiral path before move merging and extrusion recompute. Scripts export controls plus transform(context); context.params carries the step parameters and point.sceneFields carries manifest field samples.',
         actions: [
             { id: 'createPostprocessScript', label: 'New Script' },
             { id: 'revertPostprocessScript', label: 'Revert', tone: 'secondary' },
@@ -323,36 +322,45 @@ export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSch
     }
 
     if (tabId === 'postprocess') {
-        const postprocessControlSections = buildPostprocessControlSections(state.postprocessControlDefinitions);
-        if (postprocessControlSections.length === 0) {
-            return baseTab;
-        }
-
+        const pipelineSections = buildPipelineSections(state.pipeline);
         return {
             ...baseTab,
-            summary: [
-                ...baseTab.summary,
-                { label: 'Custom', read: () => `${state.postprocessControlDefinitions.length} control${state.postprocessControlDefinitions.length === 1 ? '' : 's'}` },
-            ],
-            sections: [...baseTab.sections, ...postprocessControlSections],
+            sections: [...pipelineSections, ...baseTab.sections],
         };
     }
 
     if (tabId !== 'scene') {
-        return baseTab;
+        return withOverrideActions(baseTab, state);
     }
 
-    const sceneControlSections = buildSceneControlSections(state.sceneControlDefinitions);
-    if (sceneControlSections.length === 0) {
-        return baseTab;
+    const sceneControlSections = buildSceneControlSections(state.uniformControls, state.paramControls);
+    const summary = [...baseTab.summary];
+    if (state.overrideCount > 0) {
+        summary.push({ label: 'Overrides', read: () => String(state.overrideCount) });
+    }
+
+    return withOverrideActions({
+        ...baseTab,
+        summary,
+        sections: [...baseTab.sections, ...sceneControlSections],
+        note: state.manifestError
+            ? `Manifest error: ${state.manifestError}`
+            : state.preprocessError
+                ? `Preprocess error: ${state.preprocessError}`
+                : baseTab.note,
+    }, state);
+}
+
+function withOverrideActions(tab: InspectorTabSchema, state: InspectorSchemaState): InspectorTabSchema {
+    if (state.overrideCount === 0 || (tab.id !== 'scene' && tab.id !== 'print' && tab.id !== 'machine' && tab.id !== 'material')) {
+        return tab;
     }
 
     return {
-        ...baseTab,
-        summary: [
-            ...baseTab.summary,
-            { label: 'Custom', read: () => `${state.sceneControlDefinitions.length} control${state.sceneControlDefinitions.length === 1 ? '' : 's'}` },
+        ...tab,
+        actions: [
+            ...(tab.actions ?? []),
+            { id: 'resetAllOverrides', label: `Reset ${state.overrideCount} Override${state.overrideCount === 1 ? '' : 's'}`, tone: 'secondary' },
         ],
-        sections: [...baseTab.sections, ...sceneControlSections],
     };
 }

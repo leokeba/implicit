@@ -1,11 +1,14 @@
 // Seed Stitch Knit
-// @control {"key":"amplitudeMm","label":"Amplitude (mm)","min":0.0,"max":1.2,"step":0.01,"default":0.28,"section":"Seed Pattern","description":"Maximum displacement for seed bumps."}
-// @control {"key":"wavesPerLayer","label":"Waves per layer","min":0.25,"max":20.0,"step":0.25,"default":7.0,"section":"Seed Pattern","description":"Base sinusoidal frequency along each layer."}
-// @control {"key":"chunksPerLayer","label":"Chunks per layer","min":2.0,"max":120.0,"step":1.0,"default":28.0,"section":"Seed Pattern","description":"Alternation block count around each layer."}
 
 const TAU = Math.PI * 2.0;
 const PI = Math.PI;
 const EPSILON = 1e-6;
+
+export const controls = {
+    amplitudeMm: { default: 0.28, min: 0.0, max: 1.2, step: 0.01, label: 'Amplitude (mm)', section: 'Seed Pattern', description: 'Maximum displacement for seed bumps.' },
+    wavesPerLayer: { default: 7.0, min: 0.25, max: 20.0, step: 0.25, label: 'Waves per layer', section: 'Seed Pattern', description: 'Base sinusoidal frequency along each layer.' },
+    chunksPerLayer: { default: 28.0, min: 2.0, max: 120.0, step: 1.0, label: 'Chunks per layer', section: 'Seed Pattern', description: 'Alternation block count around each layer.' },
+};
 
 export function transform(context: any) {
     const amplitudeMm = Number(context.params?.amplitudeMm ?? 0.28);

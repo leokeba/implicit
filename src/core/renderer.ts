@@ -961,6 +961,11 @@ function buildSceneControlValueMap(definitions: SceneControlDefinition[], values
 
     for (const definition of definitions) {
         const rawValue = values[definition.key] ?? definition.defaultValue;
+        if (definition.hasControl === false) {
+            next[definition.key] = rawValue;
+            continue;
+        }
+
         if (definition.options && definition.options.length > 0) {
             next[definition.key] = snapToNearestOptionValue(rawValue, definition.options);
             continue;

@@ -7,10 +7,11 @@ import { defineConfig, type Connect, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 const SCENE_API_PREFIX = '/__implicit_api/scenes';
-const SCENE_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.glsl$/i;
+const SCENE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/i;
+const SCENE_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(glsl|ts|js)$/i;
 const POSTPROCESS_API_PREFIX = '/__implicit_api/postprocess-scripts';
 const POSTPROCESS_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(js|ts)$/i;
-const scenesDirectory = fileURLToPath(new URL('./src/shaders/scenes', import.meta.url));
+const scenesDirectory = fileURLToPath(new URL('./src/scenes', import.meta.url));
 const postprocessDirectory = fileURLToPath(new URL('./src/postprocess-scripts', import.meta.url));
 const codeMirrorPackages = [
   'svelte-codemirror-editor',
@@ -22,10 +23,16 @@ const codeMirrorPackages = [
   '@codemirror/theme-one-dark',
 ];
 
-interface SceneApiDocument {
+interface SceneApiBundle {
+  id: string;
+  files: Record<string, string>;
+}
+
+interface PostprocessApiDocument {
   id: string;
   name: string;
   fileName: string;
+  language: 'javascript' | 'typescript';
   source: string;
 }
 
@@ -62,20 +69,26 @@ function createWorkspaceFilesApiMiddleware(): Connect.NextHandleFunction {
     try {
       if (isSceneRequest) {
         if (req.method === 'GET' && url.pathname === SCENE_API_PREFIX) {
-          const documents = await readAllSceneDocuments();
-          sendJson(res, 200, { mode: 'filesystem', documents });
+          const scenes = await readAllSceneBundles();
+          sendJson(res, 200, { mode: 'filesystem', scenes });
           return;
         }
 
-        const fileName = decodeURIComponent(url.pathname.slice(`${SCENE_API_PREFIX}/`.length));
-        if (!isSafeSceneFileName(fileName)) {
-          sendJson(res, 400, { error: 'Invalid scene filename.' });
+        const segments = url.pathname
+          .slice(`${SCENE_API_PREFIX}/`.length)
+          .split('/')
+          .map((segment) => decodeURIComponent(segment));
+        const [sceneId, fileName] = segments;
+        if (segments.length !== 2 || !isSafeSceneId(sceneId) || !isSafeSceneFileName(fileName)) {
+          sendJson(res, 400, { error: 'Expected /scenes/<sceneId>/<fileName> with safe names.' });
           return;
         }
+
+        const sceneDirectory = path.join(scenesDirectory, sceneId);
 
         if (req.method === 'GET') {
-          const document = await readSceneDocument(fileName);
-          sendJson(res, 200, { document });
+          const source = await fs.readFile(path.join(sceneDirectory, fileName), 'utf8');
+          sendJson(res, 200, { sceneId, fileName, source });
           return;
         }
 
@@ -87,10 +100,10 @@ function createWorkspaceFilesApiMiddleware(): Connect.NextHandleFunction {
             return;
           }
 
-          await fs.mkdir(scenesDirectory, { recursive: true });
-          await fs.writeFile(path.join(scenesDirectory, fileName), source, 'utf8');
-          const document = buildSceneApiDocument(fileName, source);
-          sendJson(res, 200, { document });
+          await fs.mkdir(sceneDirectory, { recursive: true });
+          await fs.writeFile(path.join(sceneDirectory, fileName), source, 'utf8');
+          const scene = await readSceneBundle(sceneId);
+          sendJson(res, 200, { scene });
           return;
         }
       }
@@ -139,26 +152,36 @@ function createWorkspaceFilesApiMiddleware(): Connect.NextHandleFunction {
   };
 }
 
-async function readAllSceneDocuments(): Promise<SceneApiDocument[]> {
+async function readAllSceneBundles(): Promise<SceneApiBundle[]> {
   const entries = await fs.readdir(scenesDirectory, { withFileTypes: true });
-  const documents = await Promise.all(
+  const bundles = await Promise.all(
     entries
-      .filter((entry: { isFile: () => boolean; name: string }) => entry.isFile() && isSafeSceneFileName(entry.name))
-      .map(async (entry: { name: string }) => {
-        const source = await fs.readFile(path.join(scenesDirectory, entry.name), 'utf8');
-        return buildSceneApiDocument(entry.name, source);
-      })
+      .filter((entry: { isDirectory: () => boolean; name: string }) => entry.isDirectory() && isSafeSceneId(entry.name))
+      .map((entry: { name: string }) => readSceneBundle(entry.name))
   );
 
-  return documents.sort((left: SceneApiDocument, right: SceneApiDocument) => left.name.localeCompare(right.name));
+  return bundles
+    .filter((bundle: SceneApiBundle) => Object.keys(bundle.files).length > 0)
+    .sort((left: SceneApiBundle, right: SceneApiBundle) => left.id.localeCompare(right.id));
 }
 
-async function readSceneDocument(fileName: string): Promise<SceneApiDocument> {
-  const source = await fs.readFile(path.join(scenesDirectory, fileName), 'utf8');
-  return buildSceneApiDocument(fileName, source);
+async function readSceneBundle(sceneId: string): Promise<SceneApiBundle> {
+  const sceneDirectory = path.join(scenesDirectory, sceneId);
+  const entries = await fs.readdir(sceneDirectory, { withFileTypes: true });
+  const files: Record<string, string> = {};
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !isSafeSceneFileName(entry.name)) {
+      continue;
+    }
+
+    files[entry.name] = await fs.readFile(path.join(sceneDirectory, entry.name), 'utf8');
+  }
+
+  return { id: sceneId, files };
 }
 
-async function readAllPostprocessDocuments(): Promise<Array<SceneApiDocument & { language: 'javascript' | 'typescript' }>> {
+async function readAllPostprocessDocuments(): Promise<PostprocessApiDocument[]> {
   const entries = await fs.readdir(postprocessDirectory, { withFileTypes: true });
   const documents = await Promise.all(
     entries
@@ -172,35 +195,20 @@ async function readAllPostprocessDocuments(): Promise<Array<SceneApiDocument & {
   return documents.sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function readPostprocessDocument(fileName: string): Promise<SceneApiDocument & { language: 'javascript' | 'typescript' }> {
+async function readPostprocessDocument(fileName: string): Promise<PostprocessApiDocument> {
   const source = await fs.readFile(path.join(postprocessDirectory, fileName), 'utf8');
   return buildPostprocessApiDocument(fileName, source);
 }
 
-function buildSceneApiDocument(fileName: string, source: string): SceneApiDocument {
-  const id = fileName.replace(/\.glsl$/i, '');
-  const name = id
-    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
-    .join(' ') || 'Scene';
-
-  return {
-    id,
-    name,
-    fileName,
-    source,
-  };
+function isSafeSceneId(sceneId: string): boolean {
+  return SCENE_ID_PATTERN.test(sceneId) && !sceneId.includes('..');
 }
 
 function isSafeSceneFileName(fileName: string): boolean {
   return SCENE_FILE_PATTERN.test(fileName) && !fileName.includes('/') && !fileName.includes('\\') && !fileName.includes('..');
 }
 
-function buildPostprocessApiDocument(fileName: string, source: string): SceneApiDocument & { language: 'javascript' | 'typescript' } {
+function buildPostprocessApiDocument(fileName: string, source: string): PostprocessApiDocument {
   const id = fileName.replace(/\.(js|ts)$/i, '');
   const name = id
     .replace(/([a-z\d])([A-Z])/g, '$1 $2')

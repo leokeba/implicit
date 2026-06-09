@@ -1,68 +1,35 @@
-import type { ToolpathPostprocessLanguage } from '../core/toolpath-postprocess';
 import {
-    buildBrowserStoragePayload,
-    hasDirtyDocuments,
-    mergeBrowserDocuments,
-    type StoredBrowserDocuments,
-} from './documents/repository';
+    buildScriptDocument,
+    listPostprocessScripts,
+    type PostprocessScriptDocument,
+    type PostprocessScriptLanguage,
+} from '../core/postprocess-registry';
 
-const POSTPROCESS_STORAGE_KEY = 'implicit.postprocessScripts.v1';
+export type { PostprocessScriptDocument } from '../core/postprocess-registry';
+
 const POSTPROCESS_API_ENDPOINT = '/__implicit_api/postprocess-scripts';
 
-const bundledScriptModules = import.meta.glob('../postprocess-scripts/*.{js,ts}', {
-    eager: true,
-    query: '?raw',
-    import: 'default',
-}) as Record<string, string>;
-
-export type PostprocessScriptStorageMode = 'browser' | 'filesystem';
-
-export interface PostprocessScriptDocument {
-    id: string;
-    name: string;
-    fileName: string;
-    language: ToolpathPostprocessLanguage;
-    source: string;
-}
+export type PostprocessStorageMode = 'filesystem' | 'bundled';
 
 export interface PostprocessRepositoryState {
-    mode: PostprocessScriptStorageMode;
+    mode: PostprocessStorageMode;
     documents: PostprocessScriptDocument[];
 }
 
 interface ScriptApiDocumentPayload {
-    id: string;
-    name: string;
-    fileName: string;
-    language: ToolpathPostprocessLanguage;
-    source: string;
+    id?: unknown;
+    name?: unknown;
+    fileName?: unknown;
+    language?: unknown;
+    source?: unknown;
 }
 
 interface ScriptApiListResponse {
     documents?: ScriptApiDocumentPayload[];
 }
 
-interface ScriptApiSingleResponse {
-    document?: ScriptApiDocumentPayload;
-}
-
-export function getBundledPostprocessDocuments(): PostprocessScriptDocument[] {
-    const entries = Object.entries(bundledScriptModules).map(([modulePath, source]) => {
-        const fileName = modulePath.split('/').pop() ?? 'postprocess.ts';
-        return normalizePostprocessDocument({
-            id: fileName.replace(/\.(js|ts)$/i, ''),
-            name: toScriptLabel(fileName.replace(/\.(js|ts)$/i, '')),
-            fileName,
-            language: inferLanguageFromFileName(fileName),
-            source,
-        });
-    });
-
-    return sortPostprocessDocuments(entries);
-}
-
-export async function loadPostprocessRepository(defaultDocuments: PostprocessScriptDocument[]): Promise<PostprocessRepositoryState> {
-    const filesystemDocuments = await loadFilesystemPostprocessDocuments();
+export async function loadPostprocessRepository(): Promise<PostprocessRepositoryState> {
+    const filesystemDocuments = await fetchFilesystemPostprocessDocuments();
     if (filesystemDocuments) {
         return {
             mode: 'filesystem',
@@ -71,32 +38,36 @@ export async function loadPostprocessRepository(defaultDocuments: PostprocessScr
     }
 
     return {
-        mode: 'browser',
-        documents: loadBrowserPostprocessDocuments(defaultDocuments),
+        mode: 'bundled',
+        documents: listPostprocessScripts(),
     };
 }
 
 export async function reloadFilesystemPostprocessDocuments(): Promise<PostprocessScriptDocument[] | null> {
-    return loadFilesystemPostprocessDocuments();
+    return fetchFilesystemPostprocessDocuments();
 }
 
-export async function savePostprocessDocument(
-    mode: PostprocessScriptStorageMode,
-    targetDocument: PostprocessScriptDocument,
-    defaultDocuments: PostprocessScriptDocument[],
-    currentDocuments: PostprocessScriptDocument[]
-): Promise<PostprocessScriptDocument[]> {
-    if (mode === 'filesystem') {
-        return saveFilesystemPostprocessDocument(targetDocument, currentDocuments);
+export async function savePostprocessDocument(document: PostprocessScriptDocument): Promise<PostprocessScriptDocument> {
+    const response = await fetch(`${POSTPROCESS_API_ENDPOINT}/${encodeURIComponent(document.fileName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            source: document.source,
+            language: document.language,
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(await readErrorPayload(response));
     }
 
-    persistBrowserPostprocessDocuments(defaultDocuments, currentDocuments);
-    return clonePostprocessDocuments(currentDocuments);
+    const payload = (await response.json()) as { document?: ScriptApiDocumentPayload };
+    return normalizeScriptDocument(payload.document) ?? { ...document };
 }
 
 export function createPostprocessDocument(
     existingDocuments: PostprocessScriptDocument[],
-    language: ToolpathPostprocessLanguage = 'typescript',
+    language: PostprocessScriptLanguage = 'typescript',
     requestedName?: string,
 ): PostprocessScriptDocument {
     const baseName = (requestedName ?? 'New Postprocess').trim() || 'New Postprocess';
@@ -111,50 +82,28 @@ export function createPostprocessDocument(
     }
 
     const extension = language === 'javascript' ? 'js' : 'ts';
-    return {
-        id: nextId,
-        name: toScriptLabel(nextId),
-        fileName: `${nextId}.${extension}`,
-        language,
-        source: buildDefaultPostprocessSource(nextId, language),
-    };
+    const document = buildScriptDocument(`${nextId}.${extension}`, buildDefaultPostprocessSource(nextId, language));
+    return document;
 }
 
-export function hasDirtyPostprocessDocuments(
-    workingDocuments: PostprocessScriptDocument[],
-    persistedDocuments: PostprocessScriptDocument[]
-): boolean {
-    return hasDirtyDocuments(workingDocuments, persistedDocuments, (working, persisted) => (
-        working.id === persisted.id &&
-        working.source === persisted.source &&
-        working.fileName === persisted.fileName &&
-        working.language === persisted.language
-    ));
-}
-
-function loadBrowserPostprocessDocuments(defaultDocuments: PostprocessScriptDocument[]): PostprocessScriptDocument[] {
-    const stored = readStoredBrowserDocuments();
-    return mergeBrowserDocuments(defaultDocuments, stored, clonePostprocessDocument, sortPostprocessDocuments);
-}
-
-function persistBrowserPostprocessDocuments(defaultDocuments: PostprocessScriptDocument[], currentDocuments: PostprocessScriptDocument[]): void {
-    if (typeof localStorage === 'undefined') {
-        return;
+export function arePostprocessCollectionsEqual(left: PostprocessScriptDocument[], right: PostprocessScriptDocument[]): boolean {
+    if (left.length !== right.length) {
+        return false;
     }
 
-    const payload = buildBrowserStoragePayload(defaultDocuments, currentDocuments, clonePostprocessDocument);
-
-    try {
-        localStorage.setItem(
-            POSTPROCESS_STORAGE_KEY,
-            JSON.stringify(payload)
+    return left.every((document, index) => {
+        const candidate = right[index];
+        return Boolean(
+            candidate &&
+                candidate.id === document.id &&
+                candidate.fileName === document.fileName &&
+                candidate.language === document.language &&
+                candidate.source === document.source
         );
-    } catch {
-        // Ignore storage write failures.
-    }
+    });
 }
 
-async function loadFilesystemPostprocessDocuments(): Promise<PostprocessScriptDocument[] | null> {
+async function fetchFilesystemPostprocessDocuments(): Promise<PostprocessScriptDocument[] | null> {
     if (typeof fetch === 'undefined') {
         return null;
     }
@@ -170,120 +119,69 @@ async function loadFilesystemPostprocessDocuments(): Promise<PostprocessScriptDo
             return null;
         }
 
-        return sortPostprocessDocuments(payload.documents.map(normalizePostprocessDocument));
+        const documents = payload.documents
+            .map(normalizeScriptDocument)
+            .filter((document): document is PostprocessScriptDocument => document !== null);
+        return documents.sort((leftDoc, rightDoc) => leftDoc.name.localeCompare(rightDoc.name));
     } catch {
         return null;
     }
 }
 
-async function saveFilesystemPostprocessDocument(
-    targetDocument: PostprocessScriptDocument,
-    currentDocuments: PostprocessScriptDocument[]
-): Promise<PostprocessScriptDocument[]> {
-    const response = await fetch(`${POSTPROCESS_API_ENDPOINT}/${encodeURIComponent(targetDocument.fileName)}`, {
-        method: 'PUT',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            source: targetDocument.source,
-            language: targetDocument.language,
-        }),
-    });
-
-    if (!response.ok) {
-        const payload = await readErrorPayload(response);
-        throw new Error(payload);
+function normalizeScriptDocument(payload: ScriptApiDocumentPayload | undefined): PostprocessScriptDocument | null {
+    if (!payload || typeof payload.fileName !== 'string' || typeof payload.source !== 'string') {
+        return null;
     }
 
-    const payload = (await response.json()) as ScriptApiSingleResponse;
-    const savedDocument = payload.document ? normalizePostprocessDocument(payload.document) : clonePostprocessDocument(targetDocument);
-    const nextDocuments = currentDocuments.map((document) =>
-        document.id === targetDocument.id ? savedDocument : clonePostprocessDocument(document)
-    );
-
-    if (!nextDocuments.some((document) => document.id === savedDocument.id)) {
-        nextDocuments.push(savedDocument);
-    }
-
-    return sortPostprocessDocuments(nextDocuments);
+    return buildScriptDocument(payload.fileName, payload.source);
 }
 
-async function readErrorPayload(response: Response): Promise<string> {
-    try {
-        const payload = (await response.json()) as { error?: string };
-        return payload.error || `Postprocess save failed with status ${response.status}.`;
-    } catch {
-        return `Postprocess save failed with status ${response.status}.`;
-    }
-}
+function buildDefaultPostprocessSource(scriptId: string, language: PostprocessScriptLanguage): string {
+    const label = toScriptLabel(scriptId);
+    if (language === 'javascript') {
+        return `// ${label}
+// Mutate context.points in place or return a new array.
+// point.metrics.shapeLayerProgress gives smooth 0..1 progress across the full print.
+// Scene field samples (manifest \`fields\`) are available at point.sceneFields.<key>.
 
-function readStoredBrowserDocuments(): StoredBrowserDocuments<PostprocessScriptDocument> {
-    if (typeof localStorage === 'undefined') {
-        return { overrides: [], customs: [] };
-    }
+export const controls = {
+    strength: { default: 1.0, min: 0.0, max: 2.0, step: 0.05 },
+};
 
-    try {
-        const raw = localStorage.getItem(POSTPROCESS_STORAGE_KEY);
-        if (!raw) {
-            return { overrides: [], customs: [] };
-        }
-
-        const parsed = JSON.parse(raw) as Partial<StoredBrowserDocuments<PostprocessScriptDocument>>;
-        return {
-            overrides: Array.isArray(parsed.overrides)
-                ? parsed.overrides.filter(isStoredOverride)
-                : [],
-            customs: Array.isArray(parsed.customs)
-                ? parsed.customs.filter(isPostprocessDocumentLike).map(normalizePostprocessDocument)
-                : [],
-        };
-    } catch {
-        return { overrides: [], customs: [] };
-    }
-}
-
-function isStoredOverride(value: unknown): value is { id: string; source: string } {
-    return Boolean(
-        value &&
-            typeof value === 'object' &&
-            typeof (value as { id?: unknown }).id === 'string' &&
-            typeof (value as { source?: unknown }).source === 'string'
-    );
-}
-
-function isPostprocessDocumentLike(value: unknown): value is ScriptApiDocumentPayload {
-    return Boolean(
-        value &&
-            typeof value === 'object' &&
-            typeof (value as ScriptApiDocumentPayload).id === 'string' &&
-            typeof (value as ScriptApiDocumentPayload).name === 'string' &&
-            typeof (value as ScriptApiDocumentPayload).fileName === 'string' &&
-            typeof (value as ScriptApiDocumentPayload).source === 'string' &&
-            typeof (value as ScriptApiDocumentPayload).language === 'string'
-    );
-}
-
-function normalizePostprocessDocument(document: ScriptApiDocumentPayload): PostprocessScriptDocument {
-    const fileName = sanitizeScriptFileName(document.fileName || `${document.id}.ts`);
-    const id = (document.id || fileName.replace(/\.(js|ts)$/i, '')).trim() || 'postprocess';
+export function transform(context) {
+    const strength = context.params.strength ?? 1.0;
     return {
-        id,
-        name: document.name?.trim() || toScriptLabel(id),
-        fileName,
-        language: inferLanguageFromFileName(fileName),
-        source: typeof document.source === 'string' ? document.source : '',
+        points: context.points.map((point) => ({
+            ...point,
+            extrusionScale: (point.extrusionScale ?? 1) * strength,
+        })),
+        notes: [\`Applied strength=\${strength.toFixed(2)}\`],
     };
 }
-
-function buildDefaultPostprocessSource(scriptId: string, language: ToolpathPostprocessLanguage): string {
-    const label = toScriptLabel(scriptId);
-    const header = `// ${label}\n// Mutate context.points in place or return a new array.\n// Use point.metrics.shapeLayerProgress for smooth layer-normalized progress across the full print (0..1).\n// Sampled scene shader fields are available at point.sceneFields by their @field key, for example point.sceneFields?.noise.\n// @control {"key":"strength","label":"Strength","min":0.0,"max":2.0,"step":0.05,"default":1.0,"section":"Script Parameters"}\n`;
-    if (language === 'javascript') {
-        return `${header}\nexport function transform(context) {\n    const strength = context.params.strength ?? 1.0;\n    return {\n        points: context.points.map((point) => ({\n            ...point,\n            extrusionScale: (point.extrusionScale ?? 1) * strength,\n        })),\n        notes: [\`Applied strength=\${strength.toFixed(2)}\`],\n    };\n}\n`;
+`;
     }
 
-    return `${header}\nexport function transform(context: any) {\n    const strength = context.params.strength ?? 1.0;\n    return {\n        points: context.points.map((point: any) => ({\n            ...point,\n            extrusionScale: (point.extrusionScale ?? 1) * strength,\n        })),\n        notes: [\`Applied strength=\${strength.toFixed(2)}\`],\n    };\n}\n`;
+    return `// ${label}
+// Mutate context.points in place or return a new array.
+// point.metrics.shapeLayerProgress gives smooth 0..1 progress across the full print.
+// Scene field samples (manifest \`fields\`) are available at point.sceneFields.<key>.
+import type { ToolpathPostprocessContext } from 'implicit/scene';
+
+export const controls = {
+    strength: { default: 1.0, min: 0.0, max: 2.0, step: 0.05 },
+};
+
+export function transform(context: ToolpathPostprocessContext) {
+    const strength = context.params.strength ?? 1.0;
+    return {
+        points: context.points.map((point) => ({
+            ...point,
+            extrusionScale: (point.extrusionScale ?? 1) * strength,
+        })),
+        notes: [\`Applied strength=\${strength.toFixed(2)}\`],
+    };
+}
+`;
 }
 
 function toScriptId(value: string): string {
@@ -305,29 +203,11 @@ function toScriptLabel(value: string): string {
         .join(' ') || 'Postprocess';
 }
 
-function inferLanguageFromFileName(fileName: string): ToolpathPostprocessLanguage {
-    return fileName.toLowerCase().endsWith('.js') ? 'javascript' : 'typescript';
-}
-
-function sanitizeScriptFileName(fileName: string): string {
-    const trimmed = fileName.trim() || 'postprocess.ts';
-    if (/\.(js|ts)$/i.test(trimmed)) {
-        return trimmed;
+async function readErrorPayload(response: Response): Promise<string> {
+    try {
+        const payload = (await response.json()) as { error?: string };
+        return payload.error || `Postprocess save failed with status ${response.status}.`;
+    } catch {
+        return `Postprocess save failed with status ${response.status}.`;
     }
-
-    return `${trimmed}.ts`;
-}
-
-function clonePostprocessDocument(document: PostprocessScriptDocument): PostprocessScriptDocument {
-    return {
-        ...document,
-    };
-}
-
-function clonePostprocessDocuments(documents: PostprocessScriptDocument[]): PostprocessScriptDocument[] {
-    return documents.map(clonePostprocessDocument);
-}
-
-function sortPostprocessDocuments(documents: PostprocessScriptDocument[]): PostprocessScriptDocument[] {
-    return documents.slice().sort((left, right) => left.name.localeCompare(right.name));
 }

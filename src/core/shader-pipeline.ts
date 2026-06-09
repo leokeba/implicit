@@ -1,15 +1,11 @@
+import type { SceneManifest } from '../scene-runtime';
+import { evaluateSceneManifest } from './scene-manifest';
 import type {
     SceneControlDefinition,
-    SceneControlValueMap,
-    SceneDocument,
     SceneFieldDefinition,
     SceneOption,
-    SceneParamMap,
-    SceneSlicerDefaults,
 } from './shaders/types';
-import { parseSceneControlDefinitions, parseSceneDefaultParams, parseSceneFieldDefinitions, readSceneNumberParam } from './shaders/scene-parser';
 
-import defaultSceneSource from '../shaders/scenes/defaultScene.glsl?raw';
 import environmentSource from '../shaders/lib/environment.glsl?raw';
 import materialsSource from '../shaders/lib/materials.glsl?raw';
 import raymarchSource from '../shaders/lib/raymarch.glsl?raw';
@@ -25,17 +21,38 @@ import utilsSource from '../shaders/lib/utils.glsl?raw';
 export type {
     SceneControlDefinition,
     SceneControlValueMap,
-    SceneDocument,
     SceneFieldDefinition,
     SceneFieldType,
     SceneFieldValue,
     SceneOption,
-    SceneParamMap,
-    SceneParamValue,
-    SceneSlicerDefaults,
 } from './shaders/types';
 
-const sceneSourceModules = import.meta.glob('../shaders/scenes/*.glsl', {
+export const SCENE_GLSL_FILE = 'scene.glsl';
+
+/** All sources of one scene folder, keyed by file name (scene.glsl, scene.ts, helpers...). */
+export type SceneFiles = Record<string, string>;
+
+export interface SceneBundle {
+    id: string;
+    name: string;
+    files: SceneFiles;
+}
+
+interface SceneEntry {
+    id: string;
+    name: string;
+    files: SceneFiles;
+    manifest: SceneManifest;
+    manifestError: string | null;
+}
+
+interface ShaderPipelineRuntimeState {
+    activeSceneId?: string;
+}
+
+const ACTIVE_SCENE_STORAGE_KEY = 'implicit.activeScene.v1';
+
+const bundledSceneModules = import.meta.glob('../scenes/*/*', {
     eager: true,
     query: '?raw',
     import: 'default',
@@ -46,7 +63,6 @@ export interface ShaderSourceUpdates {
     rendererFragmentTemplate?: string;
     slicerVertex?: string;
     slicerFragmentTemplate?: string;
-    scene?: string;
     raymarch?: string;
     sdfPrimitives?: string;
     environment?: string;
@@ -59,7 +75,6 @@ interface ShaderSources {
     rendererFragmentTemplate: string;
     slicerVertex: string;
     slicerFragmentTemplate: string;
-    scene: string;
     raymarch: string;
     sdfPrimitives: string;
     environment: string;
@@ -67,30 +82,7 @@ interface ShaderSources {
     utils: string;
 }
 
-interface SceneEntry extends SceneDocument {
-    controls: SceneControlDefinition[];
-    fields: SceneFieldDefinition[];
-}
-
-interface ShaderPipelineRuntimeState {
-    activeSceneId?: string;
-}
-
-const ACTIVE_SCENE_STORAGE_KEY = 'implicit.activeScene.v1';
-
-const sceneEntries: SceneEntry[] = buildSceneEntries({
-    ...sceneSourceModules,
-});
-if (sceneEntries.length === 0) {
-    sceneEntries.push({
-        id: 'defaultScene',
-        name: 'Default Scene',
-        fileName: 'defaultScene.glsl',
-        source: defaultSceneSource,
-        controls: parseSceneControlDefinitions(defaultSceneSource),
-        fields: parseSceneFieldDefinitions(defaultSceneSource),
-    });
-}
+const sceneEntries: SceneEntry[] = buildSceneEntriesFromModules(bundledSceneModules);
 
 const runtimeState: ShaderPipelineRuntimeState = ((globalThis as any).__implicitShaderPipelineState as ShaderPipelineRuntimeState | undefined) ?? {};
 (globalThis as any).__implicitShaderPipelineState = runtimeState;
@@ -103,7 +95,6 @@ let activeSources: ShaderSources = {
     rendererFragmentTemplate: rendererFragmentTemplateSource,
     slicerVertex: slicerVertexSource,
     slicerFragmentTemplate: slicerFragmentTemplateSource,
-    scene: getSceneSourceById(activeSceneId),
     raymarch: raymarchSource,
     sdfPrimitives: sdfPrimitivesSource,
     environment: environmentSource,
@@ -111,132 +102,89 @@ let activeSources: ShaderSources = {
     utils: utilsSource,
 };
 
-export function getImportedShaderSources(): ShaderSourceUpdates {
-    return {
-        rendererVertex: rendererVertexSource,
-        rendererFragmentTemplate: rendererFragmentTemplateSource,
-        slicerVertex: slicerVertexSource,
-        slicerFragmentTemplate: slicerFragmentTemplateSource,
-        scene: getSceneSourceById(activeSceneId),
-        raymarch: raymarchSource,
-        sdfPrimitives: sdfPrimitivesSource,
-        environment: environmentSource,
-        materials: materialsSource,
-        utils: utilsSource,
-    };
-}
-
 export function getAvailableScenes(): SceneOption[] {
     return sceneEntries.map((scene) => ({ id: scene.id, name: scene.name }));
 }
 
-export function getSceneDocuments(): SceneDocument[] {
-    return sceneEntries.map((scene) => ({
-        id: scene.id,
-        name: scene.name,
-        fileName: scene.fileName,
-        source: scene.source,
-    }));
+export function getSceneBundles(): SceneBundle[] {
+    return sceneEntries.map(toSceneBundle);
 }
 
 export function getActiveSceneId(): string {
     return activeSceneId;
 }
 
-export function getActiveSceneFileName(): string | null {
-    const entry = resolveSceneEntryById(activeSceneId);
-    return entry?.fileName ?? null;
+export function getActiveSceneManifest(): SceneManifest {
+    return requireActiveEntry().manifest;
+}
+
+export function getActiveSceneManifestError(): string | null {
+    return requireActiveEntry().manifestError;
+}
+
+export function getActiveSceneFiles(): SceneFiles {
+    return { ...requireActiveEntry().files };
 }
 
 export function getSceneControlDefinitions(sceneId: string = activeSceneId): SceneControlDefinition[] {
     const entry = resolveSceneEntryById(sceneId);
-    return entry?.controls.map((control) => ({ ...control })) ?? [];
+    if (!entry) {
+        return [];
+    }
+
+    return entry.manifest.uniforms.map((spec) => ({
+        key: spec.key,
+        label: spec.label,
+        uniform: spec.key,
+        min: spec.min,
+        max: spec.max,
+        step: spec.step,
+        defaultValue: spec.defaultValue,
+        section: spec.section,
+        description: spec.description,
+        options: spec.options,
+        hasControl: spec.hasControl,
+    }));
 }
 
 export function getSceneFieldDefinitions(sceneId: string = activeSceneId): SceneFieldDefinition[] {
     const entry = resolveSceneEntryById(sceneId);
-    return entry?.fields.map((field) => ({ ...field })) ?? [];
+    return entry?.manifest.fields.map((field) => ({ ...field })) ?? [];
 }
 
-export function replaceSceneDocuments(documents: SceneDocument[]): SceneDocument[] {
-    const nextEntries = buildSceneEntries(
-        Object.fromEntries(
-            documents.map((document) => [document.fileName, document.source])
-        )
-    );
+export function replaceSceneBundles(bundles: SceneBundle[]): SceneBundle[] {
+    const nextEntries = bundles
+        .filter((bundle) => bundle.id.trim().length > 0)
+        .map((bundle) => buildSceneEntry(bundle.id, bundle.files));
 
     if (nextEntries.length === 0) {
-        return getSceneDocuments();
+        return getSceneBundles();
     }
 
     sceneEntries.length = 0;
-    sceneEntries.push(...nextEntries);
+    sceneEntries.push(...sortSceneEntries(nextEntries));
 
     const resolvedActive = resolveSceneEntryById(activeSceneId) ?? sceneEntries[0];
     activeSceneId = resolvedActive?.id ?? activeSceneId;
     runtimeState.activeSceneId = activeSceneId;
-    activeSources = {
-        ...activeSources,
-        scene: getSceneSourceById(activeSceneId),
-    };
 
-    return getSceneDocuments();
+    return getSceneBundles();
 }
 
-export function upsertSceneDocument(document: SceneDocument): SceneDocument {
-    const normalized = normalizeSceneDocument(document);
-    const existing = resolveSceneEntryById(normalized.id);
+export function upsertSceneFile(sceneId: string, fileName: string, source: string): SceneBundle {
+    const existing = resolveSceneEntryById(sceneId);
+    const files: SceneFiles = existing ? { ...existing.files, [fileName]: source } : { [fileName]: source };
+    const nextEntry = buildSceneEntry(existing?.id ?? sceneId.trim(), files);
 
     if (existing) {
-        existing.id = normalized.id;
-        existing.name = normalized.name;
-        existing.fileName = normalized.fileName;
-        existing.source = normalized.source;
-        existing.controls = parseSceneControlDefinitions(normalized.source);
-        existing.fields = parseSceneFieldDefinitions(normalized.source);
+        const index = sceneEntries.indexOf(existing);
+        sceneEntries[index] = nextEntry;
     } else {
-        sceneEntries.push({
-            ...normalized,
-            controls: parseSceneControlDefinitions(normalized.source),
-            fields: parseSceneFieldDefinitions(normalized.source),
-        });
-        sceneEntries.sort((left, right) => left.name.localeCompare(right.name));
+        sceneEntries.push(nextEntry);
+        sortSceneEntriesInPlace();
     }
 
-    if (normalizeSceneId(activeSceneId) === normalizeSceneId(normalized.id)) {
-        activeSceneId = normalized.id;
-        runtimeState.activeSceneId = normalized.id;
-        activeSources = {
-            ...activeSources,
-            scene: normalized.source,
-        };
-    }
-
-    return {
-        id: normalized.id,
-        name: normalized.name,
-        fileName: normalized.fileName,
-        source: normalized.source,
-    };
-}
-
-export function updateSceneSourceById(sceneId: string, source: string): boolean {
-    const entry = resolveSceneEntryById(sceneId);
-    if (!entry) {
-        return false;
-    }
-
-    entry.source = source;
-    entry.controls = parseSceneControlDefinitions(source);
-    entry.fields = parseSceneFieldDefinitions(source);
-    if (entry.id === activeSceneId) {
-        activeSources = {
-            ...activeSources,
-            scene: source,
-        };
-    }
-
-    return true;
+    return toSceneBundle(nextEntry);
 }
 
 export function setActiveSceneById(sceneId: string): boolean {
@@ -248,10 +196,6 @@ export function setActiveSceneById(sceneId: string): boolean {
     activeSceneId = nextEntry.id;
     runtimeState.activeSceneId = nextEntry.id;
     storeActiveSceneId(nextEntry.id);
-    activeSources = {
-        ...activeSources,
-        scene: nextEntry.source,
-    };
     return true;
 }
 
@@ -261,7 +205,6 @@ export function applyShaderSourceUpdates(updates: ShaderSourceUpdates): void {
         rendererFragmentTemplate: updates.rendererFragmentTemplate ?? activeSources.rendererFragmentTemplate,
         slicerVertex: updates.slicerVertex ?? activeSources.slicerVertex,
         slicerFragmentTemplate: updates.slicerFragmentTemplate ?? activeSources.slicerFragmentTemplate,
-        scene: updates.scene ?? activeSources.scene,
         raymarch: updates.raymarch ?? activeSources.raymarch,
         sdfPrimitives: updates.sdfPrimitives ?? activeSources.sdfPrimitives,
         environment: updates.environment ?? activeSources.environment,
@@ -275,11 +218,12 @@ export function getRendererVertexSource(): string {
 }
 
 export function composeRendererFragmentSource(): string {
-    const activeField = getSceneFieldDefinitions(activeSceneId)[0] ?? null;
+    const entry = requireActiveEntry();
+    const activeField = entry.manifest.fields[0] ?? null;
     return activeSources.rendererFragmentTemplate
         .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
         .replace('__UTILS_GLSL__', activeSources.utils)
-        .replace('__SCENE_GLSL__', activeSources.scene)
+        .replace('__SCENE_GLSL__', composeSceneGlsl(entry))
         .replace('__RAYMARCH_GLSL__', activeSources.raymarch)
         .replace('__ENVIRONMENT_GLSL__', activeSources.environment)
         .replace('__MATERIALS_GLSL__', activeSources.materials)
@@ -294,7 +238,7 @@ export function composeSlicerFragmentSource(): string {
     return activeSources.slicerFragmentTemplate
         .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
         .replace('__UTILS_GLSL__', activeSources.utils)
-        .replace('__SCENE_GLSL__', activeSources.scene);
+        .replace('__SCENE_GLSL__', composeSceneGlsl(requireActiveEntry()));
 }
 
 export function getSceneFieldSamplerVertexSource(): string {
@@ -305,7 +249,7 @@ export function composeSceneFieldSamplerFragmentSource(field: SceneFieldDefiniti
     return sceneFieldSampleFragmentTemplateSource
         .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
         .replace('__UTILS_GLSL__', activeSources.utils)
-        .replace('__SCENE_GLSL__', activeSources.scene)
+        .replace('__SCENE_GLSL__', composeSceneGlsl(requireActiveEntry()))
         .replace('__FIELD_COMPONENT_GLSL__', buildSceneFieldComponentSource(field, componentIndex));
 }
 
@@ -313,78 +257,73 @@ export function getSlicerProgramSignature(): string {
     return `${activeSources.slicerVertex}::${composeSlicerFragmentSource()}`;
 }
 
-export function getSceneDefaultParams(): SceneParamMap {
-    return parseSceneDefaultParams(activeSources.scene);
+function composeSceneGlsl(entry: SceneEntry): string {
+    const glsl = entry.files[SCENE_GLSL_FILE] ?? '';
+    const uniformBlock = buildSceneUniformBlock(entry.manifest);
+    return uniformBlock.length > 0 ? `${uniformBlock}\n\n${glsl}` : glsl;
 }
 
-export function getSceneSlicerDefaults(): SceneSlicerDefaults {
-    const params = getSceneDefaultParams();
-    const defaults: SceneSlicerDefaults = {};
-
-    const minY = readSceneNumberParam(params, ['minY']);
-    const maxY = readSceneNumberParam(params, ['maxY']);
-    const modelScale = readSceneNumberParam(params, ['modelScale'], true);
-    const maxRadius = readSceneNumberParam(params, ['maxRadius'], true);
-    const nozzleDiameterMm = readSceneNumberParam(params, ['nozzleDiameterMm', 'nozzleDiameter'], true);
-    const flowRate = readSceneNumberParam(params, ['flowRate'], true);
-    const layerHeightMm = readSceneNumberParam(params, ['layerHeightMm', 'layerHeight'], true);
-
-    if (typeof minY === 'number') {
-        defaults.minY = minY;
-    }
-    if (typeof maxY === 'number') {
-        defaults.maxY = maxY;
-    }
-    if (typeof modelScale === 'number') {
-        defaults.modelScale = modelScale;
-    }
-    if (typeof maxRadius === 'number') {
-        defaults.maxRadius = maxRadius;
-    }
-    if (typeof nozzleDiameterMm === 'number') {
-        defaults.nozzleDiameterMm = nozzleDiameterMm;
-    }
-    if (typeof flowRate === 'number') {
-        defaults.flowRate = flowRate;
-    }
-    if (typeof layerHeightMm === 'number') {
-        defaults.layerHeightMm = layerHeightMm;
-    }
-
-    return defaults;
+function buildSceneUniformBlock(manifest: SceneManifest): string {
+    return manifest.uniforms
+        .map((spec) => `uniform float ${spec.key};`)
+        .join('\n');
 }
 
-function buildSceneEntries(modules: Record<string, string | { default: string }>): SceneEntry[] {
-    const deduped = new Map<string, SceneEntry>();
+function buildSceneEntriesFromModules(modules: Record<string, string>): SceneEntry[] {
+    const filesByScene = new Map<string, SceneFiles>();
 
-    Object.entries(modules)
-        .map(([path, module]) => {
-            const filename = path.split('/').pop() ?? '';
-            const id = filename.replace(/\.glsl(?:\?raw)?$/i, '');
-            const name = toSceneLabel(id);
-            const source = typeof module === 'string'
-                ? module
-                : typeof module.default === 'string'
-                    ? module.default
-                    : '';
-            return {
-                id,
-                name,
-                fileName: filename,
-                source,
-                controls: parseSceneControlDefinitions(source),
-                fields: parseSceneFieldDefinitions(source),
-            };
-        })
-        .filter((entry) => entry.id.length > 0)
-        .forEach((entry) => {
-            const existing = deduped.get(entry.id);
-            if (!existing || (existing.source.length === 0 && entry.source.length > 0)) {
-                deduped.set(entry.id, entry);
-            }
-        });
+    for (const [modulePath, source] of Object.entries(modules)) {
+        const segments = modulePath.split('/');
+        const fileName = segments.pop() ?? '';
+        const sceneId = segments.pop() ?? '';
+        if (!sceneId || !fileName) {
+            continue;
+        }
 
-    return Array.from(deduped.values()).sort((a, b) => a.name.localeCompare(b.name));
+        const files = filesByScene.get(sceneId) ?? {};
+        files[fileName] = typeof source === 'string' ? source : '';
+        filesByScene.set(sceneId, files);
+    }
+
+    return sortSceneEntries(
+        Array.from(filesByScene.entries()).map(([sceneId, files]) => buildSceneEntry(sceneId, files))
+    );
+}
+
+function buildSceneEntry(sceneId: string, files: SceneFiles): SceneEntry {
+    const evaluation = evaluateSceneManifest(sceneId, files);
+    return {
+        id: sceneId,
+        name: evaluation.manifest.title ?? toSceneLabel(sceneId),
+        files,
+        manifest: evaluation.manifest,
+        manifestError: evaluation.error,
+    };
+}
+
+function toSceneBundle(entry: SceneEntry): SceneBundle {
+    return {
+        id: entry.id,
+        name: entry.name,
+        files: { ...entry.files },
+    };
+}
+
+function sortSceneEntries(entries: SceneEntry[]): SceneEntry[] {
+    return entries.slice().sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function sortSceneEntriesInPlace(): void {
+    sceneEntries.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function requireActiveEntry(): SceneEntry {
+    const entry = resolveSceneEntryById(activeSceneId) ?? sceneEntries[0];
+    if (!entry) {
+        throw new Error('No scenes are available. Add a folder under src/scenes/<id>/ with a scene.glsl.');
+    }
+
+    return entry;
 }
 
 function buildSceneFieldComponentSource(field: SceneFieldDefinition, componentIndex: number): string {
@@ -465,57 +404,13 @@ function componentSwizzle(componentIndex: number, componentCount: number): strin
     }
 }
 
-function normalizeSceneDocument(document: SceneDocument): SceneDocument {
-    const fileName = normalizeSceneFileName(document.fileName || document.id);
-    const fallbackId = fileName.replace(/\.glsl$/i, '');
-    const id = document.id.trim().length > 0 ? document.id.trim() : fallbackId;
-
-    return {
-        id,
-        name: document.name.trim().length > 0 ? document.name.trim() : toSceneLabel(id),
-        fileName,
-        source: document.source,
-    };
-}
-
-function normalizeSceneFileName(value: string): string {
-    const sanitized = value
-        .trim()
-        .replace(/[\\/]+/g, '_')
-        .replace(/^\.+/, '')
-        .replace(/\s+/g, ' ');
-    if (sanitized.toLowerCase().endsWith('.glsl')) {
-        return sanitized;
-    }
-
-    return `${sanitized || 'scene'}.glsl`;
-}
-
-function getSceneSourceById(sceneId: string): string {
-    const entry = resolveSceneEntryById(sceneId);
-    if (entry) {
-        return entry.source;
-    }
-
-    const fallback = sceneEntries[0];
-    return fallback?.source ?? '';
-}
-
 function resolveSceneEntryById(sceneId: string): SceneEntry | undefined {
-    const normalizedTarget = normalizeSceneId(sceneId);
-    if (!normalizedTarget) {
+    const target = sceneId.trim();
+    if (!target) {
         return undefined;
     }
 
-    return sceneEntries.find((scene) => normalizeSceneId(scene.id) === normalizedTarget);
-}
-
-function normalizeSceneId(sceneId: string): string {
-    return sceneId
-        .trim()
-        .replace(/\.glsl$/i, '')
-        .replace(/[-\s]+/g, '_')
-        .toLowerCase();
+    return sceneEntries.find((scene) => scene.id === target);
 }
 
 function toSceneLabel(sceneId: string): string {
@@ -566,4 +461,3 @@ function storeActiveSceneId(sceneId: string): void {
         // Ignore storage write failures.
     }
 }
-

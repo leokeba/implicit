@@ -22,6 +22,11 @@
     export let hideLabel: string;
     export let switchLabel: string;
     export let language: 'glsl' | 'javascript' | 'typescript';
+    export let fileOptions: Array<{ value: string; label: string }> = [];
+    export let activeFileOption: string | null = null;
+    export let onSelectFileOption: ((value: string) => void) | null = null;
+    export let addFileLabel: string | null = null;
+    export let onAddFile: (() => void | Promise<void>) | null = null;
     export let onChangeSource: (value: string) => void;
     export let onCreate: () => void | Promise<void>;
     export let onSave: () => void | Promise<void>;
@@ -137,6 +142,21 @@
         </div>
 
         <div class="scene-editor-actions">
+            {#if fileOptions.length > 0 && onSelectFileOption}
+                <select
+                    class="scene-editor-file-select"
+                    aria-label="Active editor file"
+                    value={activeFileOption ?? ''}
+                    on:change={(event) => onSelectFileOption?.((event.currentTarget as HTMLSelectElement).value)}
+                >
+                    {#each fileOptions as option}
+                        <option value={option.value}>{option.label}</option>
+                    {/each}
+                </select>
+            {/if}
+            {#if addFileLabel && onAddFile}
+                <button class="chrome-button chrome-button-ghost" type="button" on:click={onAddFile}>{addFileLabel}</button>
+            {/if}
             <button class="chrome-button chrome-button-ghost" type="button" on:click={onCreate}>{createLabel}</button>
             <button class="chrome-button chrome-button-ghost" type="button" on:click={onSwitchDocument}>{switchLabel}</button>
             <button class="chrome-button chrome-button-ghost" type="button" disabled={!dirty || savePending || !source} on:click={onRevert}>Revert</button>

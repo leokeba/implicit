@@ -1,13 +1,16 @@
 // Moss Knit
-// @control {"key":"baseAmplitudeMm","label":"Base amplitude (mm)","min":0.0,"max":1.4,"step":0.01,"default":0.24,"section":"Moss Pattern","description":"Primary contour-normal displacement amount."}
-// @control {"key":"wavesPerLayer","label":"Waves per layer","min":0.25,"max":20.0,"step":0.25,"default":6.0,"section":"Moss Pattern","description":"Main stitch wave frequency per layer."}
-// @control {"key":"noiseAmount","label":"Noise amount","min":0.0,"max":1.0,"step":0.01,"default":0.35,"section":"Moss Pattern","description":"Adds stable irregularity to emulate hand-knit variation."}
-// @control {"key":"noiseScale","label":"Noise scale","min":0.2,"max":8.0,"step":0.05,"default":2.4,"section":"Moss Pattern","description":"Spatial frequency of the irregularity pattern."}
-// @control {"key":"seed","label":"Seed","min":0.0,"max":999.0,"step":1.0,"default":17.0,"section":"Moss Pattern","description":"Changes deterministic noise layout without randomness at runtime."}
 
 const TAU = Math.PI * 2.0;
 const PI = Math.PI;
 const EPSILON = 1e-6;
+
+export const controls = {
+    baseAmplitudeMm: { default: 0.24, min: 0.0, max: 1.4, step: 0.01, label: 'Base amplitude (mm)', section: 'Moss Pattern', description: 'Primary contour-normal displacement amount.' },
+    wavesPerLayer: { default: 6.0, min: 0.25, max: 20.0, step: 0.25, label: 'Waves per layer', section: 'Moss Pattern', description: 'Main stitch wave frequency per layer.' },
+    noiseAmount: { default: 0.35, min: 0.0, max: 1.0, step: 0.01, label: 'Noise amount', section: 'Moss Pattern', description: 'Adds stable irregularity to emulate hand-knit variation.' },
+    noiseScale: { default: 2.4, min: 0.2, max: 8.0, step: 0.05, label: 'Noise scale', section: 'Moss Pattern', description: 'Spatial frequency of the irregularity pattern.' },
+    seed: { default: 17.0, min: 0.0, max: 999.0, step: 1.0, label: 'Seed', section: 'Moss Pattern', description: 'Changes deterministic noise layout without randomness at runtime.' },
+};
 
 export function transform(context: any) {
     const baseAmplitudeMm = Number(context.params?.baseAmplitudeMm ?? 0.24);

@@ -1,42 +1,13 @@
-import ts from 'typescript';
-
-import {
-    inferOptionStep,
-    parseNumericControlOptions,
-    snapToNearestOptionValue,
-    type NumericControlOption,
-} from './control-options';
+import type { ScalarControlSpec } from '../scene-runtime';
+import type { ResolvedPipelineStep } from './postprocess-registry';
 import { getSceneFieldDefinitions } from './shader-pipeline';
 import type { SceneFieldDefinition, SceneFieldValue } from './shaders/types';
 import type { ToolpathPoint, VaseSlicerSettings } from './slicer';
 
-export type ToolpathPostprocessLanguage = 'javascript' | 'typescript';
-
-export interface ToolpathPostprocessConfig {
-    enabled: boolean;
-    scriptId: string;
-    scriptName: string;
-    language: ToolpathPostprocessLanguage;
-    source: string;
-    parameterValues?: Record<string, number>;
-}
-
-export interface PostprocessControlDefinition {
-    key: string;
-    label: string;
-    min: number;
-    max: number;
-    step: number;
-    defaultValue: number;
-    section: string;
-    description?: string;
-    options?: NumericControlOption[];
-}
-
-export interface ToolpathPostprocessSummary {
-    scriptId: string;
-    scriptName: string;
-    language: ToolpathPostprocessLanguage;
+export interface ToolpathPipelineStepSummary {
+    stepIndex: number;
+    name: string;
+    scriptId: string | null;
     notes: string[];
     durationMs: number;
     inputPointCount: number;
@@ -90,7 +61,7 @@ export interface ToolpathPostprocessPoint extends ToolpathPostprocessMutablePoin
 
 export interface ToolpathPostprocessContext {
     settings: VaseSlicerSettings;
-    controls: PostprocessControlDefinition[];
+    controls: ScalarControlSpec[];
     params: Record<string, number>;
     sceneFieldDefinitions: SceneFieldDefinition[];
     layers: ToolpathPostprocessLayerSummary[];
@@ -109,73 +80,58 @@ export interface ToolpathPostprocessResult {
     notes?: string[];
 }
 
-interface NormalizedToolpathPostprocessResult {
-    points: ToolpathPoint[];
-    notes: string[];
-    durationMs: number;
-}
-
 type ToolpathTransform = (context: ToolpathPostprocessContext) => void | ToolpathPostprocessMutablePoint[] | ToolpathPostprocessResult;
 
-interface PostprocessControlConfigFile {
-    key?: unknown;
-    label?: unknown;
-    min?: unknown;
-    max?: unknown;
-    step?: unknown;
-    default?: unknown;
-    section?: unknown;
-    description?: unknown;
-    options?: unknown;
-}
-
-const compiledTransformCache = new Map<string, ToolpathTransform>();
-
-export function applyToolpathPostprocess(
+/**
+ * Runs the scene's resolved postprocess pipeline over the raw spiral toolpath.
+ * Steps run in order; each step sees the output of the previous one.
+ * Failures throw with the step name so they surface in the UI.
+ */
+export function applyToolpathPipeline(
     points: ToolpathPoint[],
     settings: VaseSlicerSettings,
-    config: ToolpathPostprocessConfig | null | undefined,
-): { points: ToolpathPoint[]; summary: ToolpathPostprocessSummary | null } {
-    if (!config?.enabled) {
-        return {
-            points,
-            summary: null,
-        };
-    }
+    steps: ResolvedPipelineStep[],
+): { points: ToolpathPoint[]; summaries: ToolpathPipelineStepSummary[] } {
+    let currentPoints = points;
+    const summaries: ToolpathPipelineStepSummary[] = [];
 
-    const source = config.source.trim();
-    if (source.length === 0) {
-        return {
-            points,
-            summary: null,
-        };
-    }
+    for (const step of steps) {
+        if (!step.enabled) {
+            continue;
+        }
 
-    const controls = parsePostprocessControlDefinitions(config.source);
-    const parameterValues = buildPostprocessParameterValues(controls, config.parameterValues);
-    const context = buildToolpathPostprocessContext(points, settings, controls, parameterValues);
-    const startTime = performance.now();
-    const normalized = runToolpathPostprocess(context, config);
-    const durationMs = performance.now() - startTime;
+        if (step.error || !step.transform) {
+            throw new Error(`Postprocess step '${step.name}' is not runnable: ${step.error ?? 'no transform resolved'}.`);
+        }
 
-    return {
-        points: normalized.points,
-        summary: {
-            scriptId: config.scriptId,
-            scriptName: config.scriptName,
-            language: config.language,
+        const context = buildToolpathPostprocessContext(currentPoints, settings, step.controls, step.params);
+        const startTime = performance.now();
+        const output = step.transform(context);
+        const normalized = normalizeToolpathPostprocessOutput(output, context.points);
+        const nextPoints = normalized.points.map((point) => normalizeReturnedPoint(point));
+        validatePostprocessPoints(nextPoints, step.name);
+        const durationMs = performance.now() - startTime;
+
+        summaries.push({
+            stepIndex: step.index,
+            name: step.name,
+            scriptId: step.scriptId,
             notes: normalized.notes,
             durationMs,
-            inputPointCount: points.length,
-            outputPointCount: normalized.points.length,
-        },
-    };
+            inputPointCount: currentPoints.length,
+            outputPointCount: nextPoints.length,
+        });
+
+        currentPoints = nextPoints;
+    }
+
+    return { points: currentPoints, summaries };
 }
 
 export function buildToolpathPostprocessContext(
     points: ToolpathPoint[],
     settings: VaseSlicerSettings,
-    controls: PostprocessControlDefinition[] = [],
+    controls: ScalarControlSpec[] = [],
     parameterValues: Record<string, number> = {},
 ): ToolpathPostprocessContext {
     const sceneFieldDefinitions = getSceneFieldDefinitions();
@@ -312,73 +268,6 @@ export function buildToolpathPostprocessContext(
     };
 }
 
-export function parsePostprocessControlDefinitions(source: string): PostprocessControlDefinition[] {
-    const pattern = /^\s*\/\/\s*@control\s+(\{.+\})\s*$/gm;
-    const controls: PostprocessControlDefinition[] = [];
-    const seenKeys = new Set<string>();
-
-    let match: RegExpExecArray | null = pattern.exec(source);
-    while (match) {
-        const parsed = safeParsePostprocessControlConfig(match[1] ?? '');
-        if (!parsed || seenKeys.has(parsed.key)) {
-            match = pattern.exec(source);
-            continue;
-        }
-
-        seenKeys.add(parsed.key);
-        controls.push(parsed);
-        match = pattern.exec(source);
-    }
-
-    return controls;
-}
-
-export function buildPostprocessParameterValues(
-    definitions: PostprocessControlDefinition[],
-    values?: Record<string, number>,
-): Record<string, number> {
-    const nextValues: Record<string, number> = {};
-    for (const definition of definitions) {
-        const candidate = values?.[definition.key];
-        nextValues[definition.key] = clampPostprocessControlValue(
-            typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : definition.defaultValue,
-            definition,
-        );
-    }
-
-    return nextValues;
-}
-
-export function clampPostprocessControlValue(
-    value: number,
-    definition: Pick<PostprocessControlDefinition, 'min' | 'max' | 'options'>,
-): number {
-    if (definition.options && definition.options.length > 0) {
-        const fallback = definition.options[0]?.value ?? 0;
-        const safe = Number.isFinite(value) ? value : fallback;
-        return snapToNearestOptionValue(safe, definition.options);
-    }
-
-    return Math.min(definition.max, Math.max(definition.min, value));
-}
-
-function runToolpathPostprocess(
-    context: ToolpathPostprocessContext,
-    config: ToolpathPostprocessConfig,
-): NormalizedToolpathPostprocessResult {
-    const transform = getCompiledTransform(config);
-    const output = transform(context);
-    const normalized = normalizeToolpathPostprocessOutput(output, context.points);
-    const points = normalized.points.map((point, index) => normalizeReturnedPoint(point, index));
-    validatePostprocessPoints(points, config);
-
-    return {
-        points,
-        notes: normalized.notes,
-        durationMs: 0,
-    };
-}
-
 function normalizeToolpathPostprocessOutput(
     output: ReturnType<ToolpathTransform>,
     fallbackPoints: ToolpathPostprocessPoint[],
@@ -405,7 +294,7 @@ function normalizeToolpathPostprocessOutput(
     };
 }
 
-function normalizeReturnedPoint(point: ToolpathPostprocessMutablePoint, index: number): ToolpathPoint {
+function normalizeReturnedPoint(point: ToolpathPostprocessMutablePoint): ToolpathPoint {
     return {
         x: point.x,
         y: point.y,
@@ -417,91 +306,37 @@ function normalizeReturnedPoint(point: ToolpathPostprocessMutablePoint, index: n
     };
 }
 
-function validatePostprocessPoints(points: ToolpathPoint[], config: ToolpathPostprocessConfig): void {
+function validatePostprocessPoints(points: ToolpathPoint[], stepName: string): void {
     if (points.length < 2) {
-        throw new Error(`Postprocess script '${config.scriptName}' must return at least 2 points.`);
+        throw new Error(`Postprocess step '${stepName}' must return at least 2 points.`);
     }
 
     let previousLayer = -1;
     for (let index = 0; index < points.length; index++) {
         const point = points[index];
         if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) {
-            throw new Error(`Postprocess script '${config.scriptName}' returned a non-finite coordinate at point ${index}.`);
+            throw new Error(`Postprocess step '${stepName}' returned a non-finite coordinate at point ${index}.`);
         }
 
         if (!Number.isInteger(point.layer) || point.layer < 0) {
-            throw new Error(`Postprocess script '${config.scriptName}' returned an invalid layer index at point ${index}.`);
+            throw new Error(`Postprocess step '${stepName}' returned an invalid layer index at point ${index}.`);
         }
 
         if (point.layer < previousLayer) {
-            throw new Error(`Postprocess script '${config.scriptName}' reordered points across layers at point ${index}.`);
+            throw new Error(`Postprocess step '${stepName}' reordered points across layers at point ${index}.`);
         }
 
         if (!Number.isFinite(point.speedMmPerSec) || point.speedMmPerSec <= 0) {
-            throw new Error(`Postprocess script '${config.scriptName}' returned an invalid speed at point ${index}.`);
+            throw new Error(`Postprocess step '${stepName}' returned an invalid speed at point ${index}.`);
         }
 
         const extrusionScale = point.extrusionScale ?? 1;
         if (!Number.isFinite(extrusionScale) || extrusionScale < 0 || extrusionScale > 16) {
-            throw new Error(`Postprocess script '${config.scriptName}' returned an invalid extrusionScale at point ${index}.`);
+            throw new Error(`Postprocess step '${stepName}' returned an invalid extrusionScale at point ${index}.`);
         }
 
         previousLayer = point.layer;
     }
-}
-
-function getCompiledTransform(config: ToolpathPostprocessConfig): ToolpathTransform {
-    const cacheKey = `${config.language}:${hashString(config.source)}`;
-    const cached = compiledTransformCache.get(cacheKey);
-    if (cached) {
-        return cached;
-    }
-
-    const compiledSource = transpileToolpathScript(config);
-    const moduleRef: { exports: Record<string, unknown> } = { exports: {} };
-    const factory = new Function('module', 'exports', compiledSource) as (module: { exports: Record<string, unknown> }, exports: Record<string, unknown>) => void;
-    factory(moduleRef, moduleRef.exports);
-
-    const transform = moduleRef.exports.transform;
-    if (typeof transform !== 'function') {
-        throw new Error(`Postprocess script '${config.scriptName}' must export a transform(context) function.`);
-    }
-
-    compiledTransformCache.set(cacheKey, transform as ToolpathTransform);
-    return transform as ToolpathTransform;
-}
-
-function transpileToolpathScript(config: ToolpathPostprocessConfig): string {
-    const result = ts.transpileModule(config.source, {
-        compilerOptions: {
-            target: ts.ScriptTarget.ES2020,
-            module: ts.ModuleKind.CommonJS,
-            allowJs: true,
-            useDefineForClassFields: false,
-        },
-        fileName: config.language === 'typescript' ? `${config.scriptId || 'postprocess'}.ts` : `${config.scriptId || 'postprocess'}.js`,
-        reportDiagnostics: true,
-    });
-
-    const diagnostics = result.diagnostics?.filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error) ?? [];
-    if (diagnostics.length > 0) {
-        const message = diagnostics
-            .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n'))
-            .join('\n');
-        throw new Error(`Postprocess script '${config.scriptName}' failed to compile.\n${message}`);
-    }
-
-    return result.outputText;
-}
-
-function hashString(value: string): string {
-    let hash = 2166136261;
-    for (let index = 0; index < value.length; index++) {
-        hash ^= value.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-    }
-
-    return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 function ratioOrZero(value: number, total: number): number {
@@ -514,78 +349,4 @@ function ratioOrZero(value: number, total: number): number {
 
 function distance3(a: Pick<ToolpathPoint, 'x' | 'y' | 'z'>, b: Pick<ToolpathPoint, 'x' | 'y' | 'z'>): number {
     return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
-function safeParsePostprocessControlConfig(rawPayload: string): PostprocessControlDefinition | null {
-    try {
-        const parsed = JSON.parse(rawPayload) as PostprocessControlConfigFile;
-        const key = typeof parsed.key === 'string' ? normalizePostprocessControlKey(parsed.key) : '';
-        if (!key) {
-            return null;
-        }
-
-        const options = parseNumericControlOptions(parsed.options);
-        const hasOptions = options.length > 0;
-
-        let min = readFiniteNumber(parsed.min);
-        let max = readFiniteNumber(parsed.max);
-        let step = readFiniteNumber(parsed.step);
-
-        if (hasOptions) {
-            min = Math.min(...options.map((option) => option.value));
-            max = Math.max(...options.map((option) => option.value));
-            step = inferOptionStep(options);
-        }
-
-        if (min === null || max === null || step === null || max <= min || step <= 0) {
-            return null;
-        }
-
-        const fallbackDefault = hasOptions
-            ? options[0]?.value ?? min
-            : min + (max - min) * 0.5;
-        const defaultValue = clampPostprocessControlValue(readFiniteNumber(parsed.default) ?? fallbackDefault, {
-            min,
-            max,
-            options: hasOptions ? options : undefined,
-        });
-        return {
-            key,
-            label: typeof parsed.label === 'string' && parsed.label.trim().length > 0 ? parsed.label.trim() : toPostprocessLabel(key),
-            min,
-            max,
-            step,
-            defaultValue,
-            section: typeof parsed.section === 'string' && parsed.section.trim().length > 0 ? parsed.section.trim() : 'Script Parameters',
-            description: typeof parsed.description === 'string' && parsed.description.trim().length > 0 ? parsed.description.trim() : undefined,
-            options: hasOptions ? options : undefined,
-        };
-    } catch {
-        return null;
-    }
-}
-
-function normalizePostprocessControlKey(value: string): string {
-    return value
-        .trim()
-        .replace(/[^a-zA-Z0-9]+/g, ' ')
-        .trim()
-        .replace(/\s+(.)/g, (_, letter: string) => letter.toUpperCase())
-        .replace(/\s/g, '')
-        .replace(/^[A-Z]/, (letter) => letter.toLowerCase());
-}
-
-function toPostprocessLabel(value: string): string {
-    return value
-        .replace(/([a-z\d])([A-Z])/g, '$1 $2')
-        .replace(/[_-]+/g, ' ')
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
-        .join(' ') || 'Parameter';
-}
-
-function readFiniteNumber(value: unknown): number | null {
-    return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }

@@ -1,6 +1,6 @@
-import { getActiveSceneId, getSceneDefaultParams } from '../core/shader-pipeline';
+import { getActiveSceneId } from '../core/shader-pipeline';
 
-import type { ToolpathPostprocessConfig } from '../core/toolpath-postprocess';
+import type { SceneManifest } from '../scene-runtime';
 import type { VaseSlicerSettings } from '../core/slicer';
 
 export interface MoonrakerUploadOptions {
@@ -42,15 +42,17 @@ export async function checkMoonrakerAvailability(baseUrl: string, apiKey?: strin
 
 export function buildSlicerFilename(
     settings: VaseSlicerSettings,
-    postprocessConfig?: ToolpathPostprocessConfig | null,
+    manifest: SceneManifest,
+    templateValues: Record<string, number>,
+    pipelineSlugs: string[],
 ): string {
     const stamp = new Date().toISOString().replace(/[:]/g, '-').replace(/\..+$/, '');
     const modelSlug = slugifyForFilename(getActiveSceneId(), 'model');
     const printerSlug = slugifyForFilename(settings.printerModelId, 'printer');
     const nozzleSlug = buildNozzleSlug(settings.nozzleDiameter);
-    const postprocessSlug = buildPostprocessSlug(postprocessConfig);
-    const sceneSuffixSlug = buildSceneSuffixSlug();
-    const parts = [modelSlug, printerSlug, nozzleSlug, postprocessSlug, sceneSuffixSlug, stamp].filter(Boolean);
+    const stepSlugs = pipelineSlugs.map((slug) => slugifyForFilename(slug, '')).filter(Boolean);
+    const suffixSlug = buildManifestSuffixSlug(manifest, templateValues);
+    const parts = [modelSlug, printerSlug, nozzleSlug, ...stepSlugs, suffixSlug, stamp].filter(Boolean);
     return `${parts.join('-')}.gcode`;
 }
 
@@ -203,44 +205,49 @@ function buildNozzleSlug(nozzleDiameter: number): string {
     return `${compact}`;
 }
 
-function buildPostprocessSlug(config?: ToolpathPostprocessConfig | null): string | null {
-    if (!config?.enabled) {
-        return null;
-    }
-
-    const patternSlug = slugifyForFilename(config.scriptId || config.scriptName, 'postprocess');
-    return `${patternSlug}`;
-}
-
-function buildSceneSuffixSlug(): string | null {
-    const params = getSceneDefaultParams();
-    const template = typeof params.gcodeSuffix === 'string' ? params.gcodeSuffix.trim() : '';
+function buildManifestSuffixSlug(manifest: SceneManifest, templateValues: Record<string, number>): string | null {
+    const template = manifest.export.filenameSuffix?.trim() ?? '';
     if (!template) {
         return null;
     }
 
-    const partIndex = readSceneIntegerParam(params.partIndex);
-    const partCount = readSceneIntegerParam(params.partCount);
-    const resolved = interpolateSceneSuffixTemplate(template, partIndex, partCount);
-    const slug = slugifyForFilename(resolved, '');
-    return slug || null;
-}
-
-function interpolateSceneSuffixTemplate(template: string, partIndex: number | null, partCount: number | null): string {
+    const partIndex = readIntegerValue(templateValues.partIndex ?? templateValues.uPartIndex);
+    const partCount = readIntegerValue(templateValues.partCount ?? templateValues.uPartCount);
     const safeIndex = partIndex ?? 0;
     const safePart = safeIndex + 1;
     const safeCount = Math.max(partCount ?? safePart, safePart, 1);
     const padWidth = Math.max(String(safeCount).length, 2);
 
-    return template
-        .replaceAll('{index}', String(safeIndex))
-        .replaceAll('{indexPad}', padInteger(safeIndex, padWidth))
-        .replaceAll('{part}', String(safePart))
-        .replaceAll('{part1}', padInteger(safePart, padWidth))
-        .replaceAll('{count}', padInteger(safeCount, padWidth));
+    const resolved = template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, token: string) => {
+        if (token === 'index') {
+            return String(safeIndex);
+        }
+        if (token === 'indexPad') {
+            return padInteger(safeIndex, padWidth);
+        }
+        if (token === 'part') {
+            return String(safePart);
+        }
+        if (token === 'part1') {
+            return padInteger(safePart, padWidth);
+        }
+        if (token === 'count') {
+            return padInteger(safeCount, padWidth);
+        }
+
+        const value = templateValues[token];
+        return typeof value === 'number' && Number.isFinite(value) ? formatTemplateNumber(value) : match;
+    });
+
+    const slug = slugifyForFilename(resolved, '');
+    return slug || null;
 }
 
-function readSceneIntegerParam(value: unknown): number | null {
+function formatTemplateNumber(value: number): string {
+    return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
+}
+
+function readIntegerValue(value: unknown): number | null {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
         return null;
     }

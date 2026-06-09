@@ -1,10 +1,13 @@
 // Sine Wave Knit
-// @control {"key":"amplitudeMm","label":"Amplitude (mm)","min":0.0,"max":1.2,"step":0.01,"default":0.32,"section":"Sine Wave","description":"Maximum horizontal displacement in millimeters."}
-// @control {"key":"wavesPerLayer","label":"Waves per layer","min":0.25,"max":18.0,"step":0.25,"default":5.0,"section":"Sine Wave","description":"Number of sinusoidal lobes around each layer."}
-// @control {"key":"layerPhaseShiftTurns","label":"Layer phase shift (turns)","min":0.0,"max":1.0,"step":0.01,"default":0.25,"section":"Sine Wave","description":"Phase offset applied per layer to avoid seam-locked stacking."}
 
 const TAU = Math.PI * 2.0;
 const EPSILON = 1e-6;
+
+export const controls = {
+    amplitudeMm: { default: 0.32, min: 0.0, max: 1.2, step: 0.01, label: 'Amplitude (mm)', section: 'Sine Wave', description: 'Maximum horizontal displacement in millimeters.' },
+    wavesPerLayer: { default: 5.0, min: 0.25, max: 18.0, step: 0.25, label: 'Waves per layer', section: 'Sine Wave', description: 'Number of sinusoidal lobes around each layer.' },
+    layerPhaseShiftTurns: { default: 0.25, min: 0.0, max: 1.0, step: 0.01, label: 'Layer phase shift (turns)', section: 'Sine Wave', description: 'Phase offset applied per layer to avoid seam-locked stacking.' },
+};
 
 export function transform(context: any) {
     const amplitudeMm = Number(context.params?.amplitudeMm ?? 0.32);
