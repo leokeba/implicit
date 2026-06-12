@@ -12,6 +12,8 @@ export default defineScene({
     params: {
         heightMm: { default: 50, min: 10, max: 500, step: 1, label: 'Height (mm)', section: 'Size' },
         diameterMm: { default: 50, min: 15, max: 400, step: 1, label: 'Outer diameter (mm)', section: 'Size', description: 'Outside diameter measured over the thread crests.' },
+        detentWidthDeg: { default: 5, min: 0, max: 60, step: 1, label: 'Detent width (°)', section: 'Thread', description: 'Full angular extent of the detent slot carved into the thread crest.' },
+        detentDepth: { default: 1, min: 0, max: 1, step: 0.05, label: 'Detent depth', section: 'Thread', description: 'Fraction of the thread depth removed at the center of the slot.' },
     },
 
     // Fixed values (no sliders); preprocess overrides all of them.
@@ -20,6 +22,8 @@ export default defineScene({
         uCoreRadius: 0.95,
         uPitch: 0.18,
         uThreadDepth: 0.05,
+        uDetentWidth: 0.087,
+        uDetentDepth: 1.0,
     },
 
     slicer: {
@@ -47,6 +51,8 @@ export default defineScene({
                 uCoreRadius: (outerRadiusMm - THREAD_DEPTH_MM) / modelScale,
                 uPitch: PITCH_MM / modelScale,
                 uThreadDepth: THREAD_DEPTH_MM / modelScale,
+                uDetentWidth: (params.detentWidthDeg * Math.PI) / 180,
+                uDetentDepth: params.detentDepth,
             },
         };
     },

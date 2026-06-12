@@ -1,20 +1,13 @@
-// Returns a 0..1 mask that goes to 1 inside a narrow angular slot at theta=0
-// across the detent's full axial span, and to 0 everywhere else. Multiplied
-// into the thread amplitude so the helical ridge vanishes for ~5° of arc at
-// the slot — when two assembled parts rotate, the mating crests fall into the
-// flat for the lock position and have to climb back up to keep rotating.
-const float DETENT_HALF_WIDTH_RAD = 0.044; // ~2.5° → 5° full slot
-
-float threadDetentMask(vec3 p, float distanceFromCap, float lockCenter, float lockHalfHeight) {
+// The thread carries its own detent: inside a narrow angular slot at theta=0
+// the crest dips toward the core along the entire helix, so when two
+// assembled parts rotate, every engaged crest falls into the slot at the lock
+// angle and has to climb back out to keep rotating. `width` is the slot's
+// full angular extent; `depth` is the fraction of the thread depth removed
+// at its center. Returns the amplitude factor to scale the thread by.
+float threadDetentFactor(vec3 p, float width, float depth) {
     float angle = atan(p.z, p.x);
-    float angularMask = exp(-pow(angle / DETENT_HALF_WIDTH_RAD, 2.0));
-
-    // Keep the detent vertical by using the axial term only as a band gate,
-    // not as part of a radial falloff with the angle.
-    float axialDistance = abs(distanceFromCap - lockCenter);
-    float axialMask = 1.0 - smoothstep(lockHalfHeight, lockHalfHeight * 1.35, axialDistance);
-
-    return angularMask * axialMask;
+    float slot = 1.0 - smoothstep(0.0, max(width * 0.5, 1e-4), abs(angle));
+    return 1.0 - depth * slot;
 }
 
 float sdScrewThreadedCylinder(
@@ -24,6 +17,8 @@ float sdScrewThreadedCylinder(
     float pitch,
     float threadDepth,
     float bandHeight,
+    float detentWidth,
+    float detentDepth,
     float lineWidthScene
 ) {
     float distanceFromBottom = p.y + bodyHalfHeight;
@@ -53,18 +48,9 @@ float sdScrewThreadedCylinder(
     float topFitOffset = lineWidthScene * clearanceLineWidths
         * (1. - smoothstep(pitch * 2., bodyHalfHeight * 2. - pitch * 2., distanceFromTop));
 
-    // Detents sit on each band's crest. With matching centers, the top and
-    // bottom detents coincide exactly when the threads are fully engaged.
-    float detentHalfHeight = pitch * 0.3;
-    float bottomDetentCenter = bandHeight * 0.5;
-    float topDetentCenter = bandHeight * 0.5;
-    float detentMask = max(
-        threadDetentMask(p, distanceFromBottom, bottomDetentCenter, detentHalfHeight),
-        threadDetentMask(p, distanceFromTop, topDetentCenter, detentHalfHeight)
-    );
-    // detentMask = 0.;
+    float detentFactor = threadDetentFactor(p, detentWidth, detentDepth);
 
-    float radius = coreRadius + threadDepth * profile * threadMask * (1.0 - detentMask) - topFitOffset;
+    float radius = coreRadius + threadDepth * profile * threadMask * detentFactor - topFitOffset;
     vec2 d = vec2(length(p.xz) - radius, abs(p.y) - bodyHalfHeight);
     return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
 }
@@ -73,5 +59,5 @@ float mapScene(vec3 p) {
     float layerWidthScene = sceneLineWidth();
     // Band ~ one pitch tall, so the thread rises and falls across about one turn at each end.
     float bandHeight = uPitch * 2.;
-    return sdScrewThreadedCylinder(p, uBodyHalfHeight, uCoreRadius, uPitch, uThreadDepth, bandHeight, layerWidthScene);
+    return sdScrewThreadedCylinder(p, uBodyHalfHeight, uCoreRadius, uPitch, uThreadDepth, bandHeight, uDetentWidth, uDetentDepth, layerWidthScene);
 }
