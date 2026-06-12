@@ -42,11 +42,16 @@ float sdScrewThreadedCylinder(
     float profile = sinusoidalThreadProfile(p, pitch);
 
     // Start the top tolerance taper before the thread runout, so the fit neck
-    // is already established by the time the thread begins to fade.
+    // is already established before the top thread reaches full height.
     // Increase `clearanceLineWidths` if printed parts still don't slip together.
-    float clearanceLineWidths = 1.1;
+    float clearanceLineWidths = 1.8;
+    float clearancePlateauLineWidths = 10.0;
+    float clearanceTransitionEnd = min(
+        max(lineWidthScene * clearancePlateauLineWidths, threadTaperHeight),
+        max(topTaperHeight - lineWidthScene, threadTaperHeight)
+    );
     float topFitOffset = lineWidthScene * clearanceLineWidths
-        * (1.0 - smoothstep(0.3, topTaperHeight, distanceFromTop));
+        * (1. - smoothstep(pitch * 2., bodyHalfHeight * 2. - pitch * 2., distanceFromTop));
 
     // Detents sit on each band's crest. With matching centers, the top and
     // bottom detents coincide exactly when the threads are fully engaged.
@@ -66,11 +71,7 @@ float sdScrewThreadedCylinder(
 
 float mapScene(vec3 p) {
     float layerWidthScene = sceneLineWidth();
-    float bodyHalfHeight = 1.0;
-    float coreRadius = 0.95;
-    float pitch = 0.18;
-    float threadDepth = 0.05;
     // Band ~ one pitch tall, so the thread rises and falls across about one turn at each end.
-    float bandHeight = pitch * 2.;
-    return sdScrewThreadedCylinder(p, bodyHalfHeight, coreRadius, pitch, threadDepth, bandHeight, layerWidthScene);
+    float bandHeight = uPitch * 2.;
+    return sdScrewThreadedCylinder(p, uBodyHalfHeight, uCoreRadius, uPitch, uThreadDepth, bandHeight, layerWidthScene);
 }
