@@ -27,7 +27,7 @@
 
 <header class="app-topbar">
     <div class="app-brand">
-        <img class="app-brand-logo" src="/branding/implicit-logo-primary.svg" alt="Implicit logo">
+        <img class="app-brand-logo" src="{import.meta.env.BASE_URL}branding/implicit-logo-primary.svg" alt="Implicit logo">
         <h1>Implicit</h1>
     </div>
 
