@@ -282,6 +282,8 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
 }
 
 export default defineConfig({
+  // Subpath deployments (e.g. GitHub Pages) set BASE_PATH=/<repo>/ at build time.
+  base: process.env.BASE_PATH || '/',
   plugins: [svelte(), createSceneFilesApiPlugin()],
   optimizeDeps: {
     exclude: codeMirrorPackages,

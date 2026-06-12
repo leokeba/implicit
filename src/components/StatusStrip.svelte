@@ -1,5 +1,7 @@
 <script lang="ts">
     export let workspaceStatus: string;
+    export let workspaceActionLabel: string | null = null;
+    export let onWorkspaceAction: (() => void) | null = null;
     export let outputStatus: string;
     export let actionPending: boolean;
     export let progressVisible: boolean;
@@ -13,6 +15,9 @@
     <section class="status-panel">
         <span class="status-label">Workspace</span>
         <p class="status-copy">{workspaceStatus}</p>
+        {#if workspaceActionLabel && onWorkspaceAction}
+            <button class="chrome-button workspace-action-button" type="button" on:click={onWorkspaceAction}>{workspaceActionLabel}</button>
+        {/if}
     </section>
     <section class="status-panel">
         <span class="status-label">Commands</span>

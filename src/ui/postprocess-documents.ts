@@ -1,6 +1,5 @@
 import {
     buildScriptDocument,
-    listPostprocessScripts,
     type PostprocessScriptDocument,
     type PostprocessScriptLanguage,
 } from '../core/postprocess-registry';
@@ -8,13 +7,6 @@ import {
 export type { PostprocessScriptDocument } from '../core/postprocess-registry';
 
 const POSTPROCESS_API_ENDPOINT = '/__implicit_api/postprocess-scripts';
-
-export type PostprocessStorageMode = 'filesystem' | 'bundled';
-
-export interface PostprocessRepositoryState {
-    mode: PostprocessStorageMode;
-    documents: PostprocessScriptDocument[];
-}
 
 interface ScriptApiDocumentPayload {
     id?: unknown;
@@ -28,21 +20,7 @@ interface ScriptApiListResponse {
     documents?: ScriptApiDocumentPayload[];
 }
 
-export async function loadPostprocessRepository(): Promise<PostprocessRepositoryState> {
-    const filesystemDocuments = await fetchFilesystemPostprocessDocuments();
-    if (filesystemDocuments) {
-        return {
-            mode: 'filesystem',
-            documents: filesystemDocuments,
-        };
-    }
-
-    return {
-        mode: 'bundled',
-        documents: listPostprocessScripts(),
-    };
-}
-
+/** Null when the dev server file API is unavailable (static build). */
 export async function reloadFilesystemPostprocessDocuments(): Promise<PostprocessScriptDocument[] | null> {
     return fetchFilesystemPostprocessDocuments();
 }

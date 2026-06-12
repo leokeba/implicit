@@ -761,6 +761,13 @@ textarea:focus {
   font-size: 0.82rem;
 }
 
+.workspace-action-button {
+  height: 26px;
+  margin-top: 8px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
 .slice-progress {
   margin-top: 8px;
   display: grid;

@@ -2,18 +2,6 @@ import type { SceneBundle, SceneFiles } from '../core/shader-pipeline';
 
 const SCENE_API_ENDPOINT = '/__implicit_api/scenes';
 
-/**
- * 'filesystem': the dev server file API is available and edits write real files.
- * 'bundled': static build; scenes are read-only snapshots bundled at build time.
- */
-export type SceneStorageMode = 'filesystem' | 'bundled';
-
-export interface SceneRepositoryState {
-    mode: SceneStorageMode;
-    /** Null in bundled mode (keep the build-time bundles). */
-    scenes: SceneBundle[] | null;
-}
-
 interface SceneApiListResponse {
     scenes?: Array<{ id?: unknown; files?: unknown }>;
 }
@@ -22,13 +10,7 @@ interface SceneApiSaveResponse {
     scene?: { id?: unknown; files?: unknown };
 }
 
-export async function loadSceneRepository(): Promise<SceneRepositoryState> {
-    const scenes = await fetchFilesystemScenes();
-    return scenes
-        ? { mode: 'filesystem', scenes }
-        : { mode: 'bundled', scenes: null };
-}
-
+/** Null when the dev server file API is unavailable (static build). */
 export async function reloadFilesystemScenes(): Promise<SceneBundle[] | null> {
     return fetchFilesystemScenes();
 }

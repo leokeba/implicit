@@ -32,21 +32,22 @@
         type InspectorSchemaState,
         type NumericSlicerKey,
     } from './ui/inspector-schema';
-    import {
-        areSceneBundlesEqual,
-        loadSceneRepository,
-        reloadFilesystemScenes,
-        saveSceneFile,
-        type SceneStorageMode,
-    } from './ui/scene-documents';
+    import { areSceneBundlesEqual } from './ui/scene-documents';
     import {
         arePostprocessCollectionsEqual,
         createPostprocessDocument,
-        loadPostprocessRepository,
-        reloadFilesystemPostprocessDocuments,
-        savePostprocessDocument,
-        type PostprocessStorageMode,
     } from './ui/postprocess-documents';
+    import {
+        bundledWorkspaceBackend,
+        probeDevServerBackend,
+        type WorkspaceBackend,
+    } from './ui/workspace-backend';
+    import {
+        isLocalFolderSupported,
+        pickLocalFolderBackend,
+        restoreLocalFolderBackend,
+        type StoredLocalFolder,
+    } from './ui/local-folder-backend';
     import {
         buildSceneGlslTemplate,
         buildSceneManifestTemplate,
@@ -76,7 +77,8 @@
     // Scene folder documents.
     let sceneBundles: SceneBundle[] = studio.getSceneBundles();
     let persistedSceneBundles: SceneBundle[] = sceneBundles;
-    let sceneStorageMode: SceneStorageMode = 'bundled';
+    let workspaceBackend: WorkspaceBackend = bundledWorkspaceBackend;
+    let pendingLocalFolder: StoredLocalFolder | null = null;
     let sceneEditorStatus = 'Scene editor ready.';
     let sceneEditorSavePending = false;
     let activeSceneFileName: string = SCENE_GLSL_FILE;
@@ -84,7 +86,6 @@
     // Generic postprocess script documents (editing targets).
     let postprocessDocuments: PostprocessScriptDocument[] = listPostprocessScripts();
     let persistedPostprocessDocuments = postprocessDocuments;
-    let postprocessMode: PostprocessStorageMode = 'bundled';
     let postprocessStatus = 'Postprocess scripts ready.';
     let postprocessSavePending = false;
     let activePostprocessScriptId = postprocessDocuments[0]?.id ?? '';
@@ -384,7 +385,16 @@
         activeSceneBundle && activeSceneSource !== null &&
             activeSceneSource !== (persistedActiveSceneBundle?.files[activeSceneFileName] ?? null)
     );
-    $: sceneEditorModeLabel = sceneStorageMode === 'filesystem' ? 'Folder Sync' : 'Bundled (read-only save)';
+    $: sceneEditorModeLabel = workspaceBackend.kind === 'dev-server'
+        ? 'Folder Sync'
+        : workspaceBackend.kind === 'local-folder'
+            ? 'Local Folder'
+            : 'Bundled (read-only save)';
+    $: workspaceFolderActionLabel = workspaceBackend.kind !== 'bundled' || !isLocalFolderSupported()
+        ? null
+        : pendingLocalFolder
+            ? `Reconnect '${pendingLocalFolder.name}'`
+            : 'Connect Project Folder…';
     $: sceneEditorLanguage = activeSceneFileName.endsWith('.glsl')
         ? 'glsl' as const
         : activeSceneFileName.endsWith('.js')
@@ -399,7 +409,7 @@
         activePostprocessDocument &&
             (!persistedActivePostprocessDocument || activePostprocessDocument.source !== persistedActivePostprocessDocument.source)
     );
-    $: postprocessModeLabel = postprocessMode === 'filesystem' ? 'Folder Sync' : 'Bundled (read-only save)';
+    $: postprocessModeLabel = sceneEditorModeLabel;
     $: printerConfigured = printerTarget.baseUrl.trim().length > 0;
     $: currentSliceSignature = buildSliceSignature();
     $: currentPostprocessSignature = buildPostprocessSignature(config);
@@ -1008,17 +1018,17 @@
             return;
         }
 
-        if (sceneStorageMode !== 'filesystem') {
-            sceneEditorStatus = 'Run the dev server to save scene files to disk.';
+        if (!workspaceBackend.writable) {
+            sceneEditorStatus = 'Connect a project folder or run the dev server to save scene files to disk.';
             status.setWorkspaceStatus(sceneEditorStatus);
             return;
         }
 
         sceneEditorSavePending = true;
-        sceneEditorStatus = `Saving ${activeSceneFileName} to src/scenes/${activeSceneBundle.id}...`;
+        sceneEditorStatus = `Saving ${activeSceneFileName} to ${workspaceBackend.scenesLabel}/${activeSceneBundle.id}...`;
 
         try {
-            const savedBundle = await saveSceneFile(
+            const savedBundle = await workspaceBackend.saveSceneFile(
                 activeSceneBundle.id,
                 activeSceneFileName,
                 activeSceneBundle.files[activeSceneFileName] ?? ''
@@ -1027,7 +1037,7 @@
             sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
             persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
             applySceneRegistryResult(studio.syncSceneBundles(sceneBundles));
-            sceneEditorStatus = `Saved ${activeSceneFileName} to src/scenes/${savedBundle.id}.`;
+            sceneEditorStatus = `Saved ${activeSceneFileName} to ${workspaceBackend.scenesLabel}/${savedBundle.id}.`;
             status.setWorkspaceStatus(sceneEditorStatus);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Scene save failed.';
@@ -1058,8 +1068,8 @@
             return;
         }
 
-        if (postprocessMode !== 'filesystem') {
-            postprocessStatus = 'Run the dev server to save postprocess scripts to disk.';
+        if (!workspaceBackend.writable) {
+            postprocessStatus = 'Connect a project folder or run the dev server to save postprocess scripts to disk.';
             status.setWorkspaceStatus(postprocessStatus);
             return;
         }
@@ -1068,7 +1078,7 @@
         postprocessStatus = 'Saving postprocess script to folder...';
 
         try {
-            const savedDocument = await savePostprocessDocument(activePostprocessDocument);
+            const savedDocument = await workspaceBackend.savePostprocessDocument(activePostprocessDocument);
             postprocessDocuments = postprocessDocuments
                 .map((document) => (document.id === savedDocument.id ? savedDocument : document))
                 .sort((left, right) => left.name.localeCompare(right.name));
@@ -1078,7 +1088,7 @@
             upsertPostprocessScript(savedDocument);
             studio.refreshConfiguration();
             refreshConfig();
-            postprocessStatus = `Saved ${savedDocument.fileName} to src/postprocess-scripts.`;
+            postprocessStatus = `Saved ${savedDocument.fileName} to ${workspaceBackend.postprocessLabel}.`;
             status.setWorkspaceStatus(postprocessStatus);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Postprocess save failed.';
@@ -1122,7 +1132,7 @@
         postprocessStatus = `Created ${nextDocument.fileName}. Reference it from a scene manifest with usePostprocess('${nextDocument.id}').`;
         status.setWorkspaceStatus(postprocessStatus);
 
-        if (postprocessMode === 'filesystem') {
+        if (workspaceBackend.writable) {
             await saveActivePostprocessDocument();
         }
     }
@@ -1148,10 +1158,10 @@
         const glslSource = buildSceneGlslTemplate(requestedName);
         const manifestSource = buildSceneManifestTemplate(requestedName);
 
-        if (sceneStorageMode === 'filesystem') {
+        if (workspaceBackend.writable) {
             try {
-                await saveSceneFile(nextSceneId, SCENE_GLSL_FILE, glslSource);
-                const savedBundle = await saveSceneFile(nextSceneId, 'scene.ts', manifestSource);
+                await workspaceBackend.saveSceneFile(nextSceneId, SCENE_GLSL_FILE, glslSource);
+                const savedBundle = await workspaceBackend.saveSceneFile(nextSceneId, 'scene.ts', manifestSource);
                 sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
                 persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
             } catch (error) {
@@ -1175,9 +1185,9 @@
         workspace.setEditorVisible(true);
         commitScene(nextSceneId);
         activeSceneFileName = SCENE_GLSL_FILE;
-        sceneEditorStatus = sceneStorageMode === 'filesystem'
-            ? `Created src/scenes/${nextSceneId}/ with scene.glsl and scene.ts.`
-            : `Created scene '${nextSceneId}' in memory. Run the dev server to persist it.`;
+        sceneEditorStatus = workspaceBackend.writable
+            ? `Created ${workspaceBackend.scenesLabel}/${nextSceneId}/ with scene.glsl and scene.ts.`
+            : `Created scene '${nextSceneId}' in memory. Connect a project folder or run the dev server to persist it.`;
         status.setWorkspaceStatus(sceneEditorStatus);
         await resizeViewportAfterLayout();
     }
@@ -1218,17 +1228,17 @@
         applySceneRegistryResult(studio.updateSceneFile(targetSceneId, fileName, initialSource));
         activeSceneFileName = fileName;
 
-        if (sceneStorageMode === 'filesystem') {
+        if (workspaceBackend.writable) {
             try {
-                const savedBundle = await saveSceneFile(targetSceneId, fileName, initialSource);
+                const savedBundle = await workspaceBackend.saveSceneFile(targetSceneId, fileName, initialSource);
                 sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
                 persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
-                sceneEditorStatus = `Created src/scenes/${targetSceneId}/${fileName}.`;
+                sceneEditorStatus = `Created ${workspaceBackend.scenesLabel}/${targetSceneId}/${fileName}.`;
             } catch (error) {
                 sceneEditorStatus = error instanceof Error ? error.message : 'Scene file creation failed.';
             }
         } else {
-            sceneEditorStatus = `Created ${fileName} in memory. Run the dev server to persist it.`;
+            sceneEditorStatus = `Created ${fileName} in memory. Connect a project folder or run the dev server to persist it.`;
         }
         status.setWorkspaceStatus(sceneEditorStatus);
     }
@@ -1403,6 +1413,74 @@
         benchmarkVaseGcode,
     };
 
+    function describeWorkspaceStatuses(backend: WorkspaceBackend): { scene: string; postprocess: string } {
+        if (backend.kind === 'bundled') {
+            const hint = isLocalFolderSupported()
+                ? 'connect a project folder or run the dev server to save changes'
+                : 'run the dev server to save changes';
+            return {
+                scene: `Editing bundled scenes in memory; ${hint}.`,
+                postprocess: `Editing bundled postprocess scripts in memory; ${hint}.`,
+            };
+        }
+
+        return {
+            scene: `Editing scene folders directly from ${backend.scenesLabel}.`,
+            postprocess: `Editing postprocess files directly from ${backend.postprocessLabel}.`,
+        };
+    }
+
+    async function activateWorkspaceBackend(backend: WorkspaceBackend): Promise<void> {
+        workspaceBackend = backend;
+
+        const scenes = await backend.listScenes();
+        if (scenes) {
+            persistedSceneBundles = scenes;
+            sceneBundles = scenes;
+            applySceneRegistryResult(studio.syncSceneBundles(scenes));
+        }
+
+        const documents = await backend.listPostprocessDocuments();
+        if (documents) {
+            persistedPostprocessDocuments = documents;
+            postprocessDocuments = documents;
+            setPostprocessScripts(documents);
+            studio.refreshConfiguration();
+            refreshConfig();
+        }
+
+        const statuses = describeWorkspaceStatuses(backend);
+        sceneEditorStatus = statuses.scene;
+        postprocessStatus = statuses.postprocess;
+        status.setWorkspaceStatus(sceneEditorStatus);
+    }
+
+    async function connectWorkspaceFolder(): Promise<void> {
+        if (!isLocalFolderSupported()) {
+            return;
+        }
+
+        try {
+            const backend = pendingLocalFolder
+                ? await pendingLocalFolder.reconnect()
+                : await pickLocalFolderBackend();
+            pendingLocalFolder = null;
+
+            if (backend) {
+                await activateWorkspaceBackend(backend);
+            } else {
+                sceneEditorStatus = 'Folder access was not granted; staying on the bundled snapshot.';
+                status.setWorkspaceStatus(sceneEditorStatus);
+            }
+        } catch (error) {
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                return;
+            }
+            sceneEditorStatus = error instanceof Error ? error.message : 'Folder connection failed.';
+            status.setWorkspaceStatus(sceneEditorStatus);
+        }
+    }
+
     onMount(() => {
         syncEditorDockSide();
 
@@ -1428,12 +1506,12 @@
 
         let disposed = false;
 
-        const refreshFilesystemScenes = async (): Promise<void> => {
-            if (sceneStorageMode !== 'filesystem' || sceneEditorDirty) {
+        const refreshWorkspaceScenes = async (): Promise<void> => {
+            if (!workspaceBackend.writable || sceneEditorDirty) {
                 return;
             }
 
-            const nextBundles = await reloadFilesystemScenes();
+            const nextBundles = await workspaceBackend.listScenes();
             if (!nextBundles || areSceneBundlesEqual(nextBundles, persistedSceneBundles)) {
                 return;
             }
@@ -1443,12 +1521,12 @@
             applySceneRegistryResult(studio.syncSceneBundles(nextBundles));
         };
 
-        const refreshFilesystemPostprocessScripts = async (): Promise<void> => {
-            if (postprocessMode !== 'filesystem' || postprocessDirty) {
+        const refreshWorkspacePostprocessScripts = async (): Promise<void> => {
+            if (!workspaceBackend.writable || postprocessDirty) {
                 return;
             }
 
-            const nextDocuments = await reloadFilesystemPostprocessDocuments();
+            const nextDocuments = await workspaceBackend.listPostprocessDocuments();
             if (!nextDocuments || arePostprocessCollectionsEqual(nextDocuments, persistedPostprocessDocuments)) {
                 return;
             }
@@ -1462,29 +1540,20 @@
 
         void (async () => {
             try {
-                const [sceneRepository, postprocessRepository] = await Promise.all([
-                    loadSceneRepository(),
-                    loadPostprocessRepository(),
-                ]);
+                let initialBackend = await probeDevServerBackend();
+                if (!initialBackend && isLocalFolderSupported()) {
+                    const restored = await restoreLocalFolderBackend();
+                    if (restored.status === 'connected') {
+                        initialBackend = restored.backend;
+                    } else if (restored.status === 'needs-permission') {
+                        pendingLocalFolder = restored.folder;
+                    }
+                }
                 if (disposed) {
                     return;
                 }
 
-                sceneStorageMode = sceneRepository.mode;
-                if (sceneRepository.scenes) {
-                    persistedSceneBundles = sceneRepository.scenes;
-                    sceneBundles = sceneRepository.scenes;
-                    applySceneRegistryResult(studio.syncSceneBundles(sceneRepository.scenes));
-                }
-
-                postprocessMode = postprocessRepository.mode;
-                persistedPostprocessDocuments = postprocessRepository.documents;
-                postprocessDocuments = postprocessRepository.documents;
-                if (postprocessRepository.mode === 'filesystem') {
-                    setPostprocessScripts(postprocessRepository.documents);
-                    studio.refreshConfiguration();
-                    refreshConfig();
-                }
+                await activateWorkspaceBackend(initialBackend ?? bundledWorkspaceBackend);
 
                 studio.init();
                 printerTarget = readPrinterTarget();
@@ -1493,13 +1562,6 @@
                 }
                 await refreshPrinterAvailability();
                 status.setShaderStatus('ready', 'Ready');
-                sceneEditorStatus = sceneRepository.mode === 'filesystem'
-                    ? 'Editing scene folders directly from src/scenes.'
-                    : 'Editing bundled scenes in memory; run the dev server to save changes.';
-                status.setWorkspaceStatus(sceneEditorStatus);
-                postprocessStatus = postprocessRepository.mode === 'filesystem'
-                    ? 'Editing postprocess files directly from src/postprocess-scripts.'
-                    : 'Editing bundled postprocess scripts in memory; run the dev server to save changes.';
 
                 const runtimeSnapshot = readRuntimeSnapshot();
                 if (runtimeSnapshot) {
@@ -1508,18 +1570,15 @@
                 runtimeSnapshotHydrated = true;
                 persistRuntimeSnapshot(captureRuntimeSnapshot());
 
-                if (sceneRepository.mode === 'filesystem') {
-                    sceneRepositoryPollHandle = window.setInterval(() => {
-                        void refreshFilesystemScenes();
-                    }, 1200);
-                }
-
-                if (postprocessRepository.mode === 'filesystem') {
-                    postprocessRepositoryPollHandle = window.setInterval(() => {
-                        void refreshFilesystemPostprocessScripts();
-                    }, 1200);
-                }
-
+                // Polling is cheap and self-guarding (the refreshers no-op on
+                // read-only backends), so it always runs: a folder connected
+                // later starts syncing without extra wiring.
+                sceneRepositoryPollHandle = window.setInterval(() => {
+                    void refreshWorkspaceScenes();
+                }, 1200);
+                postprocessRepositoryPollHandle = window.setInterval(() => {
+                    void refreshWorkspacePostprocessScripts();
+                }, 1200);
                 printerAvailabilityPollHandle = window.setInterval(() => {
                     void refreshPrinterAvailability();
                 }, 12000);
@@ -1700,6 +1759,8 @@
 
     <StatusStrip
         workspaceStatus={$status.workspaceStatus}
+        workspaceActionLabel={workspaceFolderActionLabel}
+        onWorkspaceAction={connectWorkspaceFolder}
         outputStatus={$status.outputStatus}
         actionPending={$status.actionPending}
         progressVisible={$status.progressVisible}

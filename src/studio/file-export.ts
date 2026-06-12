@@ -30,10 +30,10 @@ export async function checkMoonrakerAvailability(baseUrl: string, apiKey?: strin
     }
 
     try {
-        const response = await fetch(`${normalizedBaseUrl}/server/info`, {
+        const response = await fetch(`${normalizedBaseUrl}/server/info`, withLocalNetworkHint(normalizedBaseUrl, {
             method: 'GET',
             headers,
-        });
+        }));
         return response.ok;
     } catch {
         return false;
@@ -95,11 +95,11 @@ export async function uploadGcodeToMoonraker(
         headers.set('X-Api-Key', options.apiKey.trim());
     }
 
-    const response = await fetch(`${normalizedBaseUrl}/server/files/upload`, {
+    const response = await fetch(`${normalizedBaseUrl}/server/files/upload`, withLocalNetworkHint(normalizedBaseUrl, {
         method: 'POST',
         body: formData,
         headers,
-    });
+    }));
 
     if (!response.ok) {
         const detail = await safeReadResponseText(response);
@@ -142,6 +142,39 @@ interface MoonrakerUploadPayload {
     };
     print_started?: boolean;
     print_queued?: boolean;
+}
+
+/**
+ * Chrome's Local Network Access lets a secure page reach an HTTP printer on
+ * the LAN: declaring the target address space up front exempts the request
+ * from mixed-content blocking behind a one-time permission prompt. Chrome can
+ * only pre-classify private IP literals and .local hostnames; the extra
+ * RequestInit member is ignored by browsers that don't know it.
+ */
+function withLocalNetworkHint(baseUrl: string, init: RequestInit): RequestInit {
+    if (!isPrivateHttpTarget(baseUrl)) {
+        return init;
+    }
+
+    return { ...init, targetAddressSpace: 'local' } as RequestInit;
+}
+
+function isPrivateHttpTarget(baseUrl: string): boolean {
+    try {
+        const url = new URL(baseUrl);
+        if (url.protocol !== 'http:') {
+            return false;
+        }
+
+        const host = url.hostname;
+        return host.endsWith('.local')
+            || /^10\./.test(host)
+            || /^192\.168\./.test(host)
+            || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+            || /^169\.254\./.test(host);
+    } catch {
+        return false;
+    }
 }
 
 function normalizeMoonrakerBaseUrl(value: string): string {
