@@ -128,6 +128,7 @@
         postprocessAutoUpdate?: boolean;
         editorDocumentMode?: 'scene' | 'postprocess';
         activeSceneFileName?: string;
+        viewerFullscreen?: boolean;
         sceneOverrides?: Record<string, Partial<SceneOverrides>>;
     }
 
@@ -304,6 +305,7 @@
             postprocessAutoUpdate,
             editorDocumentMode,
             activeSceneFileName,
+            viewerFullscreen,
             sceneOverrides: {
                 ...sceneOverridesBySceneId,
                 [sceneId]: studio.exportOverrides(),
@@ -361,6 +363,11 @@
 
         if (typeof runtimeSnapshot.activeSceneFileName === 'string') {
             activeSceneFileName = runtimeSnapshot.activeSceneFileName;
+        }
+
+        if (typeof runtimeSnapshot.viewerFullscreen === 'boolean' && runtimeSnapshot.viewerFullscreen !== viewerFullscreen) {
+            viewerFullscreen = runtimeSnapshot.viewerFullscreen;
+            void resizeViewportAfterLayout();
         }
     }
 

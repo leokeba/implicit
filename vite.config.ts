@@ -41,6 +41,17 @@ function createSceneFilesApiPlugin(): Plugin {
 
   return {
     name: 'implicit-scene-files-api',
+    // Scene and postprocess sources reach the running app through this file
+    // API: the app polls it and hot-applies edits in place (recompiling
+    // shaders without losing camera, fullscreen, or the WebGL context). The
+    // `?raw` glob imports of the same files only exist for bundled builds, so
+    // suppress Vite's own HMR reaction to them — otherwise every IDE edit
+    // invalidates an unaccepted raw module and forces a full page reload.
+    hotUpdate({ file }) {
+      if (isWorkspaceManagedFile(file)) {
+        return [];
+      }
+    },
     configureServer(server) {
       server.middlewares.use(middleware);
     },
@@ -48,6 +59,12 @@ function createSceneFilesApiPlugin(): Plugin {
       server.middlewares.use(middleware);
     },
   };
+}
+
+function isWorkspaceManagedFile(file: string): boolean {
+  const normalized = path.normalize(file);
+  return normalized.startsWith(scenesDirectory + path.sep)
+    || normalized.startsWith(postprocessDirectory + path.sep);
 }
 
 function createWorkspaceFilesApiMiddleware(): Connect.NextHandleFunction {
