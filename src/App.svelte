@@ -61,6 +61,7 @@
     export let studio: StudioController;
 
     const EDITOR_SIDE_LAYOUT_MIN_WIDTH = 1440;
+    const COMPACT_WORKSPACE_MAX_WIDTH = 1180;
 
     const snapshot = studio.getSnapshot();
 
@@ -140,6 +141,7 @@
     let printerAvailabilityPollHandle: number | null = null;
     let editorDockSide = false;
     let sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
+    let compactWorkspaceLayout = false;
     let runtimeSnapshotHydrated = false;
     let printerTarget: PrinterTarget = {
         baseUrl: '',
@@ -504,12 +506,14 @@
         studio.resizeViewport();
     }
 
-    function syncEditorDockSide(): void {
+    function syncWorkspaceLayout(): void {
         if (typeof window === 'undefined') {
+            compactWorkspaceLayout = false;
             editorDockSide = false;
             return;
         }
 
+        compactWorkspaceLayout = window.innerWidth <= COMPACT_WORKSPACE_MAX_WIDTH;
         editorDockSide = window.innerWidth >= EDITOR_SIDE_LAYOUT_MIN_WIDTH;
     }
 
@@ -1482,12 +1486,13 @@
     }
 
     onMount(() => {
-        syncEditorDockSide();
+        syncWorkspaceLayout();
 
         const handleWindowResize = () => {
             const previousDockSide = editorDockSide;
-            syncEditorDockSide();
-            if (previousDockSide !== editorDockSide) {
+            const previousCompactLayout = compactWorkspaceLayout;
+            syncWorkspaceLayout();
+            if (previousDockSide !== editorDockSide || previousCompactLayout !== compactWorkspaceLayout) {
                 void resizeViewportAfterLayout();
             }
         };
@@ -1623,7 +1628,7 @@
 
 <svelte:window on:keydown={handleWindowKeydown} />
 
-<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible} class:viewer-fullscreen={viewerFullscreen}>
+<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible} class:viewer-fullscreen={viewerFullscreen} class:compact-workspace={compactWorkspaceLayout}>
     <TopBar
         {sceneOptions}
         {sceneId}
@@ -1706,7 +1711,7 @@
                 generateActionLabel={generateActionLabel}
             />
 
-            {#if !$workspace.inspectorCollapsed}
+            {#if !$workspace.inspectorCollapsed && !compactWorkspaceLayout}
                 <button
                     class="dock-resizer"
                     type="button"
@@ -1719,6 +1724,10 @@
                 <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
             {/if}
         </div>
+
+        {#if compactWorkspaceLayout && !$workspace.inspectorCollapsed}
+            <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
+        {/if}
 
         {#if $workspace.editorVisible && !editorDockSide}
             <DocumentEditorPanel

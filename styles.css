@@ -292,6 +292,54 @@ h1 {
   grid-template-rows: minmax(0, 1fr);
 }
 
+.app-root.compact-workspace .workspace-shell,
+.app-root.compact-workspace .workspace-shell.editor-docked-left,
+.app-root.compact-workspace.inspector-collapsed .workspace-shell,
+.app-root.compact-workspace.inspector-collapsed .workspace-shell.editor-docked-left {
+  display: block;
+}
+
+.app-root.compact-workspace {
+  height: auto;
+  min-height: 100vh;
+  grid-template-rows: auto auto auto;
+}
+
+.app-root.compact-workspace .workspace-stack {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 0;
+}
+
+.app-root.compact-workspace .dock-resizer,
+.app-root.compact-workspace .editor-dock-resizer {
+  display: none;
+}
+
+.app-root.compact-workspace .workspace-main {
+  padding: 8px;
+}
+
+.app-root.compact-workspace .viewport-stage {
+  height: clamp(360px, 62vh, 680px);
+}
+
+.app-root.compact-workspace #controls {
+  border-left: 0;
+  border-top: 1px solid var(--line);
+  max-height: min(42vh, 460px);
+}
+
+.app-root.compact-workspace .scene-editor-shell {
+  border-top: 1px solid var(--line);
+  max-height: min(48vh, 560px);
+}
+
+.app-root.compact-workspace .scene-editor-body {
+  min-height: 240px;
+}
+
 .dock-resizer {
   position: relative;
   min-width: 8px;
@@ -1065,15 +1113,6 @@ textarea:focus {
     min-height: 100vh;
   }
 
-  .workspace-shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(420px, 68vh) auto;
-  }
-
-  .app-root.editor-visible .workspace-stack {
-    grid-template-rows: minmax(0, 1fr) minmax(240px, 38vh);
-  }
-
   .dock-resizer {
     display: none;
   }
@@ -1083,8 +1122,6 @@ textarea:focus {
   }
 
   #controls {
-    border-left: 0;
-    border-top: 1px solid var(--line);
     max-height: none;
   }
 
@@ -1092,9 +1129,8 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .app-root.inspector-collapsed .workspace-shell {
-    grid-template-columns: 1fr;
-    grid-template-rows: minmax(420px, 72vh);
+  .app-root.compact-workspace .viewport-stage {
+    height: clamp(420px, 68vh, 720px);
   }
 }
 
