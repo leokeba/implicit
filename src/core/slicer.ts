@@ -342,14 +342,34 @@ interface SliceGpuPendingBatch {
     pixels: Uint8Array | null;
 }
 
+interface SlicerProgramSources {
+    vertex: string;
+    fragment: string;
+    signature: string;
+}
+
+interface SamplingWorkerJob {
+    resolve: (result: { layers: SliceContourLayer[]; warnings: string[]; pointsPerLayer: number }) => void;
+    reject: (error: Error) => void;
+    onProgress?: SliceProgressReporter;
+}
+
+/** Worker crashed or could not start; distinct from a real slicing error so callers can fall back. */
+class SamplingWorkerUnavailable extends Error {}
+
 export class Slicer {
     private gl: WebGLRenderingContext | null;
     private framebuffer: WebGLFramebuffer | null;
     private renderTargetTexture: WebGLTexture | null;
     private program: WebGLProgram | null;
     private positionBuffer: WebGLBuffer | null;
-    private offscreenCanvas: HTMLCanvasElement;
+    private offscreenCanvas: HTMLCanvasElement | OffscreenCanvas;
     private programSignature: string;
+    private programSourcesOverride: SlicerProgramSources | null;
+    private samplingWorker: Worker | null;
+    private samplingWorkerFailed: boolean;
+    private samplingWorkerJobs: Map<number, SamplingWorkerJob>;
+    private samplingWorkerJobCounter: number;
     private uniformLocations: Map<string, WebGLUniformLocation | null>;
     private positionLocation: number;
     private maxTextureSize: number;
@@ -365,8 +385,16 @@ export class Slicer {
         this.renderTargetTexture = null;
         this.program = null;
         this.positionBuffer = null;
-        this.offscreenCanvas = document.createElement('canvas');
+        // In a worker there is no DOM; OffscreenCanvas provides the GL host.
+        this.offscreenCanvas = typeof document !== 'undefined'
+            ? document.createElement('canvas')
+            : new OffscreenCanvas(4, 4);
         this.programSignature = '';
+        this.programSourcesOverride = null;
+        this.samplingWorker = null;
+        this.samplingWorkerFailed = false;
+        this.samplingWorkerJobs = new Map();
+        this.samplingWorkerJobCounter = 0;
         this.uniformLocations = new Map();
         this.positionLocation = -1;
         this.maxTextureSize = 0;
@@ -548,6 +576,146 @@ export class Slicer {
         return this.lastSliceDebugSnapshot;
     }
 
+    /**
+     * Worker-side entry point: samples contours with the injected shader
+     * sources and returns plain-data results (including the derived
+     * pointsPerLayer) for structured cloning back to the main thread.
+     */
+    public async sampleContoursForWorker(
+        next: Partial<VaseSlicerSettings>,
+        onProgress?: SliceProgressReporter,
+    ): Promise<{ layers: SliceContourLayer[]; warnings: string[]; pointsPerLayer: number }> {
+        this.lastSliceDebugSnapshot = null;
+        const settings = this.getMergedSettings(next);
+        const sampled = await this.sampleSliceContoursGpuAsync(settings, onProgress);
+        return {
+            layers: sampled.layers,
+            warnings: sampled.warnings,
+            pointsPerLayer: settings.pointsPerLayer,
+        };
+    }
+
+    /**
+     * Async sampling entry: prefers the dedicated worker (keeps the main
+     * thread free of GPU stalls and extraction work) and falls back to
+     * in-thread sampling when workers are unavailable or crash. Real slicing
+     * errors from the worker propagate; they are not a reason to fall back.
+     */
+    private async sampleSliceContoursPreferWorker(
+        settings: VaseSlicerSettings,
+        onProgress?: SliceProgressReporter,
+    ): Promise<SampledSliceContours> {
+        const worker = this.getSamplingWorker();
+        if (worker) {
+            try {
+                const result = await this.runSamplingWorkerJob(worker, settings, onProgress);
+                settings.pointsPerLayer = result.pointsPerLayer;
+                return { layers: result.layers, warnings: result.warnings };
+            } catch (error) {
+                if (!(error instanceof SamplingWorkerUnavailable)) {
+                    throw error;
+                }
+            }
+        }
+
+        return this.sampleSliceContoursGpuAsync(settings, onProgress);
+    }
+
+    private getSamplingWorker(): Worker | null {
+        if (this.samplingWorkerFailed) {
+            return null;
+        }
+        if (typeof Worker === 'undefined' || typeof OffscreenCanvas === 'undefined' || typeof document === 'undefined') {
+            // No worker support, or we are already inside the worker.
+            return null;
+        }
+
+        if (!this.samplingWorker) {
+            try {
+                this.samplingWorker = new Worker(new URL('./slicer/sampling.worker.ts', import.meta.url), { type: 'module' });
+            } catch {
+                this.samplingWorkerFailed = true;
+                return null;
+            }
+            this.samplingWorker.onmessage = (event: MessageEvent) => this.handleSamplingWorkerMessage(event.data);
+            this.samplingWorker.onerror = () => {
+                this.samplingWorkerFailed = true;
+                this.failAllSamplingWorkerJobs();
+                this.samplingWorker?.terminate();
+                this.samplingWorker = null;
+            };
+        }
+
+        return this.samplingWorker;
+    }
+
+    private runSamplingWorkerJob(
+        worker: Worker,
+        settings: VaseSlicerSettings,
+        onProgress?: SliceProgressReporter,
+    ): Promise<{ layers: SliceContourLayer[]; warnings: string[]; pointsPerLayer: number }> {
+        const jobId = ++this.samplingWorkerJobCounter;
+        return new Promise((resolve, reject) => {
+            this.samplingWorkerJobs.set(jobId, { resolve, reject, onProgress });
+            worker.postMessage({
+                type: 'sample',
+                jobId,
+                settings,
+                vertexSource: getSlicerVertexSource(),
+                fragmentSource: composeSlicerFragmentSource(),
+                signature: getSlicerProgramSignature(),
+                controlDefinitions: this.sceneControlDefinitions,
+                controlValues: this.sceneControlValues,
+            });
+        });
+    }
+
+    private handleSamplingWorkerMessage(message: unknown): void {
+        const data = message as {
+            type?: string;
+            jobId?: number;
+            update?: SliceProgressUpdate;
+            layers?: SliceContourLayer[];
+            warnings?: string[];
+            pointsPerLayer?: number;
+            message?: string;
+            debugSnapshot?: SliceDebugSnapshot | null;
+        };
+        if (!data || typeof data.jobId !== 'number') {
+            return;
+        }
+        const job = this.samplingWorkerJobs.get(data.jobId);
+        if (!job) {
+            return;
+        }
+
+        if (data.type === 'progress' && data.update) {
+            job.onProgress?.(data.update);
+            return;
+        }
+        if (data.type === 'done') {
+            this.samplingWorkerJobs.delete(data.jobId);
+            job.resolve({
+                layers: data.layers ?? [],
+                warnings: data.warnings ?? [],
+                pointsPerLayer: data.pointsPerLayer ?? 0,
+            });
+            return;
+        }
+        if (data.type === 'error') {
+            this.samplingWorkerJobs.delete(data.jobId);
+            this.lastSliceDebugSnapshot = data.debugSnapshot ?? null;
+            job.reject(new Error(data.message ?? 'Slicing failed in worker.'));
+        }
+    }
+
+    private failAllSamplingWorkerJobs(): void {
+        for (const job of this.samplingWorkerJobs.values()) {
+            job.reject(new SamplingWorkerUnavailable('Slicing worker crashed.'));
+        }
+        this.samplingWorkerJobs.clear();
+    }
+
     private executeVaseSlice(
         settings: VaseSlicerSettings,
         pipeline?: ResolvedPipelineStep[],
@@ -589,7 +757,7 @@ export class Slicer {
         await this.yieldToMainThread();
 
         const startTime = performance.now();
-        const sampled = await this.sampleSliceContoursGpuAsync(settings, onProgress);
+        const sampled = await this.sampleSliceContoursPreferWorker(settings, onProgress);
         const contourSamplingEndTime = performance.now();
 
         reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
@@ -630,7 +798,7 @@ export class Slicer {
         reportSliceProgress(onProgress, 'preparing', 0, 1, 0.0, 'Preparing slicer settings...');
         await this.yieldToMainThread();
 
-        const sampled = await this.sampleSliceContoursGpuAsync(settings, onProgress);
+        const sampled = await this.sampleSliceContoursPreferWorker(settings, onProgress);
         reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
         await this.yieldToMainThread();
 
@@ -2306,17 +2474,29 @@ export class Slicer {
         this.renderTargetHeight = height;
     }
 
+    /**
+     * Inject pre-composed shader sources (worker mode). Outside a worker the
+     * sources come from the live scene registry on every ensure call.
+     */
+    public setSlicerProgramSourcesOverride(vertex: string, fragment: string, signature: string): void {
+        this.programSourcesOverride = { vertex, fragment, signature };
+    }
+
     private ensureSlicerProgram(): void {
         const gl = this.getOrCreateGl();
 
-        const nextSignature = getSlicerProgramSignature();
-        if (!this.program || this.programSignature !== nextSignature) {
-            const nextProgram = this.createProgram(gl, getSlicerVertexSource(), composeSlicerFragmentSource());
+        const sources: SlicerProgramSources = this.programSourcesOverride ?? {
+            vertex: getSlicerVertexSource(),
+            fragment: composeSlicerFragmentSource(),
+            signature: getSlicerProgramSignature(),
+        };
+        if (!this.program || this.programSignature !== sources.signature) {
+            const nextProgram = this.createProgram(gl, sources.vertex, sources.fragment);
             if (this.program) {
                 gl.deleteProgram(this.program);
             }
             this.program = nextProgram;
-            this.programSignature = nextSignature;
+            this.programSignature = sources.signature;
             this.uniformLocations.clear();
             this.positionLocation = gl.getAttribLocation(this.program, 'aPosition');
         }
