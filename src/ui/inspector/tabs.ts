@@ -140,6 +140,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'number', target: 'slicer', key: 'lineWidth', id: 'slicer-line-width', label: 'Line width', step: '0.01', min: '0.2', max: '1.2' },
                     { kind: 'number', target: 'slicer', key: 'firstLayerLineWidth', id: 'slicer-first-layer-line-width', label: 'First layer line width', step: '0.01', min: '0.2', max: '1.2' },
                     { kind: 'number', target: 'slicer', key: 'targetSegmentMm', id: 'slicer-target-segment', label: 'Target segment (mm)', step: '0.05', min: '0.05', max: '2.0' },
+                    { kind: 'number', target: 'slicer', key: 'bottomLayers', id: 'slicer-bottom-layers', label: 'Bottom layers', step: '1', min: '0', max: '3' },
                     { kind: 'number', target: 'slicer', key: 'maxRadius', id: 'slicer-max-radius', label: 'Slice half-extent', step: '0.01', min: '0.1', max: '3.0' },
                 ],
             },

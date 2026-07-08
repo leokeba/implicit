@@ -77,6 +77,11 @@ export interface VaseSlicerSettings {
     retractMm: number;
     retractSpeedMmPerSec: number;
     primeMm: number;
+    /**
+     * Number of solid bottom layers (0 = open vase). Each is printed as a
+     * flat perimeter plus concentric inward fill before the helix starts.
+     */
+    bottomLayers: number;
     brimWidthMm: number;
     brimGapMm: number;
     enableContourAlignment: boolean;
@@ -406,6 +411,7 @@ export class Slicer {
             retractMm: 1.2,
             retractSpeedMmPerSec: 20,
             primeMm: 0.8,
+            bottomLayers: 0,
             brimWidthMm: 5,
             brimGapMm: 0.1,
             enableContourAlignment: true,
@@ -654,6 +660,7 @@ export class Slicer {
         merged.retractMm = clamp(merged.retractMm, 0, 10);
         merged.retractSpeedMmPerSec = clamp(merged.retractSpeedMmPerSec, 5, 80);
         merged.primeMm = clamp(merged.primeMm, 0, 5);
+        merged.bottomLayers = clampInt(merged.bottomLayers, 0, 3);
         merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
         merged.brimGapMm = clamp(merged.brimGapMm, 0, 5);
         merged.enableContourAlignment = Boolean(merged.enableContourAlignment);
@@ -1340,12 +1347,13 @@ export class Slicer {
         let prevY = 0;
         let prevZ = 0;
 
-        // Layer 0 stays flat at Y = layerHeight (first-layer adhesion).
-        // Layers 1+ form a single continuous helix: each sample step advances
-        // Y by layerHeight/perLayer and the contour blend by 1/perLayer, so
-        // the wrap from k=perLayer-1 of revolution N to k=0 of revolution N+1
-        // is a uniform perimeter step with no flat-Y segment and no XZ
-        // jump-back.
+        // The first flatLayerCount layers stay flat (layer 0 for adhesion,
+        // plus any solid bottom layers); the rest form a single continuous
+        // helix: each sample step advances Y by layerHeight/perLayer and the
+        // contour blend by 1/perLayer, so the wrap from k=perLayer-1 of
+        // revolution N to k=0 of revolution N+1 is a uniform perimeter step
+        // with no flat-Y segment and no XZ jump-back.
+        const flatLayerCount = Math.max(1, Math.min(settings.bottomLayers, layers - 1));
         const totalPoints = layers * perLayer;
         for (let n = 0; n < totalPoints; n++) {
             const layerIndex = Math.floor(n / perLayer);
@@ -1356,28 +1364,30 @@ export class Slicer {
             let y: number;
             let segmentExtrusionPerMm: number;
 
-            if (layerIndex === 0) {
-                const contour = contourLayers[0].contour;
+            if (layerIndex < flatLayerCount) {
+                const contour = contourLayers[layerIndex].contour;
                 const point = contour[k] ?? contour[contour.length - 1];
                 sampleX = point.x;
                 sampleZ = point.z;
-                y = settings.layerHeight;
-                segmentExtrusionPerMm = firstLayerExtrusionPerMm;
+                y = settings.layerHeight * (layerIndex + 1);
+                segmentExtrusionPerMm = layerIndex === 0 ? firstLayerExtrusionPerMm : extrusionPerMm;
             } else {
-                // spiralT advances by 1/perLayer per sample; at n=perLayer it is 1/perLayer
-                // (one sample-step into revolution 1), and at n=totalPoints-1 it is layers-1.
-                const spiralT = (n - perLayer + 1) / perLayer;
-                const layerLow = Math.min(Math.max(0, Math.floor(spiralT)), layers - 2);
+                // spiralT advances by 1/perLayer per sample; virtualT places the
+                // helix in contour space starting from the last flat layer's
+                // contour, ending at virtualT = layers-1 (Y = layerHeight*layers).
+                const spiralT = (n - (flatLayerCount * perLayer) + 1) / perLayer;
+                const virtualT = (flatLayerCount - 1) + spiralT;
+                const layerLow = Math.min(Math.max(0, Math.floor(virtualT)), layers - 2);
                 const layerHigh = Math.min(layerLow + 1, layers - 1);
-                const blend = spiralT - layerLow;
+                const blend = virtualT - layerLow;
                 const lowContour = contourLayers[layerLow].contour;
                 const highContour = contourLayers[layerHigh].contour;
                 const lowPoint = lowContour[k] ?? lowContour[lowContour.length - 1];
                 const highPoint = highContour[k] ?? highContour[highContour.length - 1];
                 sampleX = lerp(lowPoint.x, highPoint.x, blend);
                 sampleZ = lerp(lowPoint.z, highPoint.z, blend);
-                y = settings.layerHeight * (1 + spiralT);
-                segmentExtrusionPerMm = layerIndex === 1
+                y = settings.layerHeight * (1 + virtualT);
+                segmentExtrusionPerMm = layerIndex === flatLayerCount && flatLayerCount === 1
                     ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, blend)
                     : extrusionPerMm;
             }
@@ -1898,7 +1908,9 @@ export class Slicer {
             const extrusionScale = clamp(point.extrusionScale ?? 1, 0, 16);
             const segmentExtrusionPerMm = point.layer === 0
                 ? firstLayerExtrusionPerMm
-                : (point.layer === 1 ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, layerProgress) : extrusionPerMm);
+                : (point.layer === 1 && settings.bottomLayers <= 1
+                    ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, layerProgress)
+                    : extrusionPerMm);
             eAcc += segment * segmentExtrusionPerMm * extrusionScale;
             point.e = eAcc;
         }
@@ -1990,6 +2002,7 @@ export class Slicer {
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Minimum layer time (s): ${settings.minLayerTimeSec.toFixed(2)}`);
         lines.push(`; Travel speed (mm/s): ${settings.travelSpeedMmPerSec.toFixed(1)}`);
+        lines.push(`; Bottom layers: ${settings.bottomLayers}`);
         lines.push(`; Brim width (mm): ${settings.brimWidthMm.toFixed(2)}`);
         lines.push(`; Brim gap (mm): ${settings.brimGapMm.toFixed(2)}`);
         lines.push(`; Iso snap factor: ${settings.sliceIsoSnapFactor.toFixed(2)}`);
@@ -2052,16 +2065,105 @@ export class Slicer {
         lines.push('; FEATURE: Outer wall');
         lines.push(';TYPE:Outer wall');
 
+        // Solid bottom layers: concentric inward fill rings generated from
+        // each flat layer's perimeter, emitted when the layer completes.
+        const bottomFillRings = new Map<number, ToolpathPoint[]>();
+        if (settings.bottomLayers > 0) {
+            for (const point of toolpath.points) {
+                if (point.layer >= settings.bottomLayers) {
+                    break;
+                }
+                const ring = bottomFillRings.get(point.layer);
+                if (ring) {
+                    ring.push(point);
+                } else {
+                    bottomFillRings.set(point.layer, [point]);
+                }
+            }
+        }
+
         // Feedrate is modal in Marlin/Klipper and Z rarely changes on flat
         // layers; emitting them only on change trims the file by 10-20%.
         // The travel G0 above set the travel feedrate and first-layer Z.
         let modalFeedrate = mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0);
         let modalZ = Math.max(settings.layerHeight, p0.y).toFixed(3);
+        const travelFeedrate = mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0);
+        let travelAfterFill = false;
+
+        const emitBottomFill = (layerIdx: number): void => {
+            const ring = bottomFillRings.get(layerIdx);
+            if (!ring || ring.length < 3) {
+                return;
+            }
+            const fillLineWidth = layerIdx === 0 ? settings.firstLayerLineWidth : settings.lineWidth;
+            const fillExtrusionPerMm = calculateExtrusionPerMm(settings, fillLineWidth);
+            const fillFeedrate = mmPerSecToFeedrate(
+                layerIdx === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
+            ).toFixed(0);
+            const ringArea = signedArea2D(ring.map((point) => ({ x: point.x, y: point.z })));
+            const ringSign = Math.sign(ringArea);
+            if (ringSign === 0) {
+                return;
+            }
+
+            let emittedFillHeader = false;
+            for (let loopIndex = 0; loopIndex < 512; loopIndex++) {
+                // First ring sits ~0.9 line widths inside the perimeter for a
+                // slight overlap, then rings advance by one line width.
+                const inset = fillLineWidth * (0.9 + loopIndex);
+                const loop = buildBrimLoop(ring, -inset);
+                if (loop.length < 3) {
+                    break;
+                }
+                const loopArea = signedArea2D(loop);
+                // Stop when the offset collapses: sign flip or sub-bead area.
+                if (Math.sign(loopArea) !== ringSign || Math.abs(loopArea) < fillLineWidth * fillLineWidth * 2) {
+                    break;
+                }
+
+                // Interior fill does not need surface resolution; coarse
+                // segments keep the G-code size proportional to fill area.
+                const fillLoop = decimateLoop2D(loop, Math.max(0.8, settings.targetSegmentMm));
+                if (fillLoop.length < 3) {
+                    break;
+                }
+
+                if (!emittedFillHeader) {
+                    lines.push('; FEATURE: Bottom surface');
+                    lines.push(';TYPE:Bottom surface');
+                    emittedFillHeader = true;
+                }
+
+                const start = fillLoop[0];
+                lines.push(`G0 F${travelFeedrate} X${start.x.toFixed(3)} Y${start.y.toFixed(3)}`);
+                modalFeedrate = travelFeedrate;
+                let previous = start;
+                let fillFeedSet = false;
+                for (let pointIndex = 1; pointIndex <= fillLoop.length; pointIndex++) {
+                    const target = fillLoop[pointIndex % fillLoop.length];
+                    const distance = Math.hypot(target.x - previous.x, target.y - previous.y);
+                    if (distance > 1e-6) {
+                        lines.push(`G1${fillFeedSet ? '' : ` F${fillFeedrate}`} X${target.x.toFixed(3)} Y${target.y.toFixed(3)} E${(distance * fillExtrusionPerMm).toFixed(5)}`);
+                        fillFeedSet = true;
+                        modalFeedrate = fillFeedrate;
+                    }
+                    previous = target;
+                }
+            }
+
+            if (emittedFillHeader) {
+                travelAfterFill = true;
+            }
+        };
+
         for (let i = 1; i < toolpath.points.length; i++) {
             const point = toolpath.points[i];
             const prevPoint = toolpath.points[i - 1];
             const layer = point.layer;
             if (layer !== currentLayer) {
+                if (currentLayer < settings.bottomLayers) {
+                    emitBottomFill(currentLayer);
+                }
                 currentLayer = layer;
                 lines.push('; CHANGE_LAYER');
                 lines.push(`; Z_HEIGHT: ${Math.max(0.0, point.y).toFixed(3)}`);
@@ -2083,6 +2185,15 @@ export class Slicer {
 
             const feedrate = mmPerSecToFeedrate(point.speedMmPerSec).toFixed(0);
             const zText = Math.max(0.0, point.y).toFixed(3);
+            if (travelAfterFill) {
+                // The nozzle is parked at the end of the fill; travel to the
+                // next perimeter point without extruding.
+                lines.push(`G0 F${travelFeedrate} X${point.x.toFixed(3)} Y${point.z.toFixed(3)} Z${zText}`);
+                modalFeedrate = travelFeedrate;
+                modalZ = zText;
+                travelAfterFill = false;
+                continue;
+            }
             let line = 'G1';
             if (feedrate !== modalFeedrate) {
                 line += ` F${feedrate}`;
@@ -3464,7 +3575,9 @@ function buildBrimLoop(
     source: ToolpathPoint[],
     offsetMm: number
 ): Array<{ x: number; y: number }> {
-    if (offsetMm <= 1e-6) {
+    // Positive offsets grow outward (brim), negative offsets shrink inward
+    // (bottom fill).
+    if (Math.abs(offsetMm) <= 1e-6) {
         return source.map((point) => ({ x: point.x, y: point.z }));
     }
 
@@ -3484,7 +3597,7 @@ function buildBrimLoop(
         return contour;
     }
 
-    const miterLimit = Math.max(offsetMm * 6.0, 0.5);
+    const miterLimit = Math.max(Math.abs(offsetMm) * 6.0, 0.5);
     const loop: Array<{ x: number; y: number }> = [];
 
     for (let index = 0; index < edges.length; index++) {
@@ -3543,6 +3656,24 @@ function signedArea2D(points: Array<{ x: number; y: number }>): number {
         area += (a.x * b.y) - (b.x * a.y);
     }
     return area * 0.5;
+}
+
+/** Keeps every vertex at least minSegment apart along the loop. */
+function decimateLoop2D(points: Array<{ x: number; y: number }>, minSegment: number): Array<{ x: number; y: number }> {
+    if (points.length < 4) {
+        return points;
+    }
+
+    const decimated: Array<{ x: number; y: number }> = [points[0]];
+    let accumulated = 0;
+    for (let index = 1; index < points.length; index++) {
+        accumulated += distance2D(points[index - 1], points[index]);
+        if (accumulated >= minSegment) {
+            decimated.push(points[index]);
+            accumulated = 0;
+        }
+    }
+    return decimated;
 }
 
 function dedupeClosedPath2D(points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {

@@ -31,6 +31,7 @@ export type NumericSlicerKey =
     | 'retractMm'
     | 'retractSpeedMmPerSec'
     | 'primeMm'
+    | 'bottomLayers'
     | 'bedWidthMm'
     | 'bedDepthMm'
     | 'maxPrintHeightMm'
