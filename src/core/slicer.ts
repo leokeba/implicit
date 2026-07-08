@@ -82,6 +82,13 @@ export interface VaseSlicerSettings {
      * flat perimeter plus concentric inward fill before the helix starts.
      */
     bottomLayers: number;
+    /**
+     * Adaptive layer height ceiling in mm. 0 (or <= layerHeight) keeps
+     * uniform layers; above layerHeight, near-vertical regions coalesce
+     * consecutive contours into thicker revolutions while sloped regions
+     * keep the base layer height. Extrusion follows the local thickness.
+     */
+    maxLayerHeightMm: number;
     brimWidthMm: number;
     brimGapMm: number;
     enableContourAlignment: boolean;
@@ -98,6 +105,8 @@ export interface ToolpathPoint {
     speedMmPerSec: number;
     layer: number;
     extrusionScale?: number;
+    /** Local layer thickness in mm when adaptive layer heights are active. */
+    layerThicknessMm?: number;
     sceneFields?: Record<string, SceneFieldValue>;
 }
 
@@ -227,6 +236,8 @@ export interface SlicePoint {
 interface SliceContourLayer {
     sampleY: number;
     contour: SlicePoint[];
+    /** Height of the helix pass that deposits this contour, in mm. */
+    printHeightMm?: number;
 }
 
 interface SampledSliceContours {
@@ -412,6 +423,7 @@ export class Slicer {
             retractSpeedMmPerSec: 20,
             primeMm: 0.8,
             bottomLayers: 0,
+            maxLayerHeightMm: 0,
             brimWidthMm: 5,
             brimGapMm: 0.1,
             enableContourAlignment: true,
@@ -661,6 +673,7 @@ export class Slicer {
         merged.retractSpeedMmPerSec = clamp(merged.retractSpeedMmPerSec, 5, 80);
         merged.primeMm = clamp(merged.primeMm, 0, 5);
         merged.bottomLayers = clampInt(merged.bottomLayers, 0, 3);
+        merged.maxLayerHeightMm = clamp(merged.maxLayerHeightMm, 0, 1.5);
         merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
         merged.brimGapMm = clamp(merged.brimGapMm, 0, 5);
         merged.enableContourAlignment = Boolean(merged.enableContourAlignment);
@@ -1089,8 +1102,9 @@ export class Slicer {
     private finalizeSliceLayers(
         rawLayers: SliceContourLayer[],
         settings: VaseSlicerSettings,
-        warnings: string[],
+        initialWarnings: string[],
     ): SampledSliceContours {
+        let warnings = initialWarnings;
         if (rawLayers.length < 2) {
             throw new Error('Planar contour slicer produced too few valid slices.');
         }
@@ -1105,16 +1119,22 @@ export class Slicer {
         }
         settings.pointsPerLayer = clampInt(Math.ceil(maxPerimeterMm / settings.targetSegmentMm), 48, 4096);
 
-        const layers = rawLayers.map((layer) => ({
+        const layers: SliceContourLayer[] = rawLayers.map((layer, index) => ({
             sampleY: layer.sampleY,
             contour: this.buildPrintableContour(layer.contour, settings),
+            printHeightMm: settings.layerHeight * (index + 1),
         }));
 
         if (settings.enableContourAlignment) {
             this.alignContourLayers(layers);
         }
 
-        return { layers, warnings };
+        const adaptiveLayers = decimateContourLayersForAdaptiveHeight(layers, settings);
+        if (adaptiveLayers.length < layers.length) {
+            warnings = [...warnings, `Adaptive layer height merged ${layers.length - adaptiveLayers.length} of ${layers.length} layers (max ${settings.maxLayerHeightMm.toFixed(2)} mm).`];
+        }
+
+        return { layers: adaptiveLayers, warnings };
     }
 
     private async yieldToMainThread(): Promise<void> {
@@ -1314,6 +1334,7 @@ export class Slicer {
             return {
                 sampleY: layer.sampleY,
                 contour: sampled.contour,
+                printHeightMm: layer.printHeightMm,
             };
         });
 
@@ -1332,11 +1353,12 @@ export class Slicer {
     ): VaseBaseToolpath {
         const layers = contourLayers.length;
         const perLayer = settings.pointsPerLayer;
-        // The helix tops out at layerHeight*layers, which stays at or below the
-        // model height because the layer count is floored. No Y clamping: a
-        // clamped tail would flatten part of the last revolution at the top
-        // and then get traced again by the cap (double extrusion at the rim).
-        const printedHeightMm = settings.layerHeight * layers;
+        // The helix tops out at the last contour's deposit height, which stays
+        // at or below the model height because the layer count is floored. No
+        // Y clamping: a clamped tail would flatten part of the last revolution
+        // at the top and then get traced again by the cap (double extrusion at
+        // the rim).
+        const printedHeightMm = contourLayers[layers - 1]?.printHeightMm ?? (settings.layerHeight * layers);
 
         const firstLayerExtrusionPerMm = calculateExtrusionPerMm(settings, settings.firstLayerLineWidth);
         const extrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
@@ -1354,6 +1376,9 @@ export class Slicer {
         // revolution N to k=0 of revolution N+1 is a uniform perimeter step
         // with no flat-Y segment and no XZ jump-back.
         const flatLayerCount = Math.max(1, Math.min(settings.bottomLayers, layers - 1));
+        // Per-contour deposit heights; uniform spacing unless adaptive layer
+        // height decimation merged revolutions upstream.
+        const heights = contourLayers.map((layer, index) => layer.printHeightMm ?? (settings.layerHeight * (index + 1)));
         const totalPoints = layers * perLayer;
         for (let n = 0; n < totalPoints; n++) {
             const layerIndex = Math.floor(n / perLayer);
@@ -1363,13 +1388,14 @@ export class Slicer {
             let sampleZ: number;
             let y: number;
             let segmentExtrusionPerMm: number;
+            let layerThicknessMm = settings.layerHeight;
 
             if (layerIndex < flatLayerCount) {
                 const contour = contourLayers[layerIndex].contour;
                 const point = contour[k] ?? contour[contour.length - 1];
                 sampleX = point.x;
                 sampleZ = point.z;
-                y = settings.layerHeight * (layerIndex + 1);
+                y = heights[layerIndex];
                 segmentExtrusionPerMm = layerIndex === 0 ? firstLayerExtrusionPerMm : extrusionPerMm;
             } else {
                 // spiralT advances by 1/perLayer per sample; virtualT places the
@@ -1386,7 +1412,8 @@ export class Slicer {
                 const highPoint = highContour[k] ?? highContour[highContour.length - 1];
                 sampleX = lerp(lowPoint.x, highPoint.x, blend);
                 sampleZ = lerp(lowPoint.z, highPoint.z, blend);
-                y = settings.layerHeight * (1 + virtualT);
+                y = lerp(heights[layerLow], heights[layerHigh], blend);
+                layerThicknessMm = Math.max(settings.layerHeight, heights[layerHigh] - heights[layerLow]);
                 segmentExtrusionPerMm = layerIndex === flatLayerCount && flatLayerCount === 1
                     ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, blend)
                     : extrusionPerMm;
@@ -1407,6 +1434,7 @@ export class Slicer {
                 e: eAcc,
                 speedMmPerSec: layerIndex === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
                 layer: layerIndex,
+                layerThicknessMm,
             });
 
             prevX = x;
@@ -1426,6 +1454,10 @@ export class Slicer {
             const topContour = contourLayers[layers - 1].contour;
             const topY = printedHeightMm;
             const topLayerIndex = layers;
+            const topThicknessMm = Math.max(
+                settings.layerHeight,
+                printedHeightMm - (contourLayers[layers - 2]?.printHeightMm ?? (printedHeightMm - settings.layerHeight)),
+            );
             const divisor = Math.max(1, perLayer - 1);
             for (let k = 0; k < perLayer; k++) {
                 const sample = topContour[k] ?? topContour[topContour.length - 1];
@@ -1443,6 +1475,7 @@ export class Slicer {
                     speedMmPerSec: settings.printSpeedMmPerSec,
                     layer: topLayerIndex,
                     extrusionScale,
+                    layerThicknessMm: topThicknessMm,
                 });
                 prevX = x;
                 prevY = topY;
@@ -1880,6 +1913,8 @@ export class Slicer {
 
         const firstLayerExtrusionPerMm = calculateExtrusionPerMm(settings, settings.firstLayerLineWidth);
         const extrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
+        let cachedThicknessMm = settings.layerHeight;
+        let cachedThickExtrusionPerMm = extrusionPerMm;
         const transitionProgress = new Array<number>(points.length).fill(0);
 
         let layerStart = 0;
@@ -1906,11 +1941,16 @@ export class Slicer {
             const segment = distance3(prev, point);
             const layerProgress = transitionProgress[i];
             const extrusionScale = clamp(point.extrusionScale ?? 1, 0, 16);
+            const thicknessMm = point.layerThicknessMm ?? settings.layerHeight;
+            if (thicknessMm !== cachedThicknessMm) {
+                cachedThicknessMm = thicknessMm;
+                cachedThickExtrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth, thicknessMm);
+            }
             const segmentExtrusionPerMm = point.layer === 0
                 ? firstLayerExtrusionPerMm
                 : (point.layer === 1 && settings.bottomLayers <= 1
-                    ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, layerProgress)
-                    : extrusionPerMm);
+                    ? lerp(firstLayerExtrusionPerMm, cachedThickExtrusionPerMm, layerProgress)
+                    : cachedThickExtrusionPerMm);
             eAcc += segment * segmentExtrusionPerMm * extrusionScale;
             point.e = eAcc;
         }
@@ -1997,6 +2037,9 @@ export class Slicer {
         lines.push(`; Line width (mm): ${settings.lineWidth.toFixed(3)}`);
         lines.push(`; First layer line width (mm): ${settings.firstLayerLineWidth.toFixed(3)}`);
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
+        if (settings.maxLayerHeightMm > settings.layerHeight) {
+            lines.push(`; Max layer height (mm): ${settings.maxLayerHeightMm.toFixed(3)}`);
+        }
         lines.push(`; Target segment length (mm): ${settings.targetSegmentMm.toFixed(3)}`);
         lines.push(`; First layer print speed (mm/s): ${settings.firstLayerPrintSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
@@ -2058,7 +2101,7 @@ export class Slicer {
         let currentLayer = p0.layer;
         lines.push('; CHANGE_LAYER');
         lines.push(`; Z_HEIGHT: ${Math.max(0.0, p0.y).toFixed(3)}`);
-        lines.push(`; LAYER_HEIGHT: ${settings.layerHeight.toFixed(3)}`);
+        lines.push(`; LAYER_HEIGHT: ${(p0.layerThicknessMm ?? settings.layerHeight).toFixed(3)}`);
         lines.push(';LAYER_CHANGE');
         lines.push(';LAYER:0');
         lines.push(`;Z:${Math.max(0.0, p0.y).toFixed(3)}`);
@@ -2167,7 +2210,7 @@ export class Slicer {
                 currentLayer = layer;
                 lines.push('; CHANGE_LAYER');
                 lines.push(`; Z_HEIGHT: ${Math.max(0.0, point.y).toFixed(3)}`);
-                lines.push(`; LAYER_HEIGHT: ${settings.layerHeight.toFixed(3)}`);
+                lines.push(`; LAYER_HEIGHT: ${(point.layerThicknessMm ?? settings.layerHeight).toFixed(3)}`);
                 lines.push(';LAYER_CHANGE');
                 lines.push(`;LAYER:${layer}`);
                 lines.push(`;Z:${Math.max(0.0, point.y).toFixed(3)}`);
@@ -3332,6 +3375,88 @@ function smoothClosedContourPass(points: SlicePoint[], factor: number): SlicePoi
     return smoothed;
 }
 
+/**
+ * Greedy vertical decimation for adaptive layer heights: consecutive
+ * contours are merged into one thicker revolution wherever the helix's
+ * linear interpolation reproduces the dropped contours within a fraction of
+ * a line width. Flat bottom layers (plus their helix anchor) are protected.
+ */
+function decimateContourLayersForAdaptiveHeight(
+    layers: SliceContourLayer[],
+    settings: VaseSlicerSettings,
+): SliceContourLayer[] {
+    const maxThickness = settings.maxLayerHeightMm;
+    if (maxThickness <= settings.layerHeight + 1e-6) {
+        return layers;
+    }
+
+    const protectedCount = Math.max(1, Math.min(settings.bottomLayers, layers.length - 1));
+    if (layers.length <= protectedCount + 2) {
+        return layers;
+    }
+
+    const toleranceUnits = (settings.lineWidth * 0.2) / Math.max(settings.modelScale, 1e-6);
+    const kept: SliceContourLayer[] = layers.slice(0, protectedCount);
+    let anchor = protectedCount - 1;
+
+    while (anchor < layers.length - 1) {
+        let end = anchor + 1;
+        while (end + 1 < layers.length) {
+            const next = end + 1;
+            const anchorHeight = layers[anchor].printHeightMm ?? 0;
+            const nextHeight = layers[next].printHeightMm ?? 0;
+            if (nextHeight - anchorHeight > maxThickness + 1e-9) {
+                break;
+            }
+            if (!contourRunWithinTolerance(layers, anchor, next, toleranceUnits)) {
+                break;
+            }
+            end = next;
+        }
+        kept.push(layers[end]);
+        anchor = end;
+    }
+
+    return kept;
+}
+
+/** True when every contour strictly between a and b lies within tolerance of the a->b interpolation. */
+function contourRunWithinTolerance(
+    layers: SliceContourLayer[],
+    a: number,
+    b: number,
+    toleranceUnits: number,
+): boolean {
+    const heightA = layers[a].printHeightMm ?? 0;
+    const heightB = layers[b].printHeightMm ?? 0;
+    const span = heightB - heightA;
+    if (span <= 1e-9) {
+        return false;
+    }
+
+    const contourA = layers[a].contour;
+    const contourB = layers[b].contour;
+    const toleranceSq = toleranceUnits * toleranceUnits;
+    for (let j = a + 1; j < b; j++) {
+        const contourJ = layers[j].contour;
+        if (contourJ.length !== contourA.length || contourB.length !== contourA.length) {
+            return false;
+        }
+        const t = ((layers[j].printHeightMm ?? 0) - heightA) / span;
+        const stride = Math.max(1, Math.floor(contourJ.length / 96));
+        for (let k = 0; k < contourJ.length; k += stride) {
+            const x = lerp(contourA[k].x, contourB[k].x, t);
+            const z = lerp(contourA[k].z, contourB[k].z, t);
+            const dx = contourJ[k].x - x;
+            const dz = contourJ[k].z - z;
+            if ((dx * dx) + (dz * dz) > toleranceSq) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 function anchorContourStart(points: SlicePoint[]): SlicePoint[] {
     if (points.length === 0) {
         return points;
@@ -3423,10 +3548,10 @@ function normalizeContourShift(shift: number, length: number): number {
     return ((shift % length) + length) % length;
 }
 
-function calculateExtrusionPerMm(settings: VaseSlicerSettings, targetLineWidth?: number): number {
+function calculateExtrusionPerMm(settings: VaseSlicerSettings, targetLineWidth?: number, layerHeightMm?: number): number {
     const requestedLineWidth = typeof targetLineWidth === 'number' ? targetLineWidth : settings.lineWidth;
     const lineWidth = Math.max(requestedLineWidth, settings.nozzleDiameter);
-    const layerHeight = Math.min(settings.layerHeight, lineWidth);
+    const layerHeight = Math.min(layerHeightMm ?? settings.layerHeight, lineWidth);
 
     // Stadium profile gives a better bead area estimate than a pure rectangle.
     const beadArea = lineWidth > layerHeight

@@ -51,6 +51,8 @@ export interface ToolpathPostprocessMutablePoint {
     layer: number;
     speedMmPerSec: number;
     extrusionScale?: number;
+    /** Local layer thickness in mm; preserved so adaptive-height extrusion survives pipeline steps. */
+    layerThicknessMm?: number;
     /**
      * GPU-sampled scene field values. Preserved across pipeline steps when a
      * step passes points through or mutates them in place; a step that
@@ -237,6 +239,7 @@ export function buildToolpathPostprocessContext(
             layer: point.layer,
             speedMmPerSec: point.speedMmPerSec,
             extrusionScale: point.extrusionScale,
+            layerThicknessMm: point.layerThicknessMm,
             sceneFields: point.sceneFields ? { ...point.sceneFields } : undefined,
             metrics: {
                 pointIndex: index,
@@ -309,6 +312,7 @@ function normalizeReturnedPoint(point: ToolpathPostprocessMutablePoint): Toolpat
         layer: point.layer,
         speedMmPerSec: point.speedMmPerSec,
         extrusionScale: point.extrusionScale,
+        layerThicknessMm: point.layerThicknessMm,
         sceneFields: point.sceneFields,
     };
 }

@@ -136,6 +136,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'number', target: 'slicer', key: 'maxY', id: 'slicer-max-y', label: 'Max Y (SDF)', step: '0.01', min: '-5.0', max: '5.0' },
                     { kind: 'number', target: 'slicer', key: 'modelScale', id: 'slicer-model-scale', label: 'Scale (mm/unit)', step: '1', min: '1', max: '400' },
                     { kind: 'number', target: 'slicer', key: 'layerHeight', id: 'slicer-layer-height', label: 'Layer height', step: '0.01', min: '0.05', max: '1.0' },
+                    { kind: 'number', target: 'slicer', key: 'maxLayerHeightMm', id: 'slicer-max-layer-height', label: 'Max layer height (0 = uniform)', step: '0.05', min: '0', max: '1.5' },
                     { kind: 'number', target: 'slicer', key: 'nozzleDiameter', id: 'slicer-nozzle-diameter', label: 'Nozzle diameter', step: '0.01', min: '0.2', max: '1.2' },
                     { kind: 'number', target: 'slicer', key: 'lineWidth', id: 'slicer-line-width', label: 'Line width', step: '0.01', min: '0.2', max: '1.2' },
                     { kind: 'number', target: 'slicer', key: 'firstLayerLineWidth', id: 'slicer-first-layer-line-width', label: 'First layer line width', step: '0.01', min: '0.2', max: '1.2' },
