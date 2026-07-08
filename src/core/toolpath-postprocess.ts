@@ -142,13 +142,13 @@ export function buildToolpathPostprocessContext(
 ): ToolpathPostprocessContext {
     const sceneFieldDefinitions = getSceneFieldDefinitions();
     const layerSummaries: ToolpathPostprocessLayerSummary[] = [];
-    const segmentPath = new Array<number>(points.length).fill(0);
-    const segmentFilament = new Array<number>(points.length).fill(0);
-    const spiralPath = new Array<number>(points.length).fill(0);
-    const spiralFilament = new Array<number>(points.length).fill(0);
-    const layerPath = new Array<number>(points.length).fill(0);
-    const layerFilament = new Array<number>(points.length).fill(0);
-    const layerPointIndex = new Array<number>(points.length).fill(0);
+    const segmentPath = new Float64Array(points.length);
+    const segmentFilament = new Float64Array(points.length);
+    const spiralPath = new Float64Array(points.length);
+    const spiralFilament = new Float64Array(points.length);
+    const layerPath = new Float64Array(points.length);
+    const layerFilament = new Float64Array(points.length);
+    const layerPointIndex = new Int32Array(points.length);
 
     let currentLayer = -1;
     let layerStartIndex = 0;

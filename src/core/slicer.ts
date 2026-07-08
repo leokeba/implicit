@@ -282,6 +282,24 @@ interface SliceGpuBatchResult {
     field: Float32Array;
 }
 
+/**
+ * A GPU batch whose draw + readback have been issued but not yet consumed.
+ * On WebGL2 the pixels land in a PIXEL_PACK_BUFFER guarded by a fence so the
+ * CPU can extract the previous batch while this one renders; on WebGL1 the
+ * synchronous readback already happened at issue time.
+ */
+interface SliceGpuPendingBatch {
+    firstSampleY: number;
+    sliceYStep: number;
+    batchLayerCount: number;
+    gridSize: number;
+    distanceRange: number;
+    byteLength: number;
+    pbo: WebGLBuffer | null;
+    fence: WebGLSync | null;
+    pixels: Uint8Array | null;
+}
+
 export class Slicer {
     private gl: WebGLRenderingContext | null;
     private framebuffer: WebGLFramebuffer | null;
@@ -293,6 +311,8 @@ export class Slicer {
     private uniformLocations: Map<string, WebGLUniformLocation | null>;
     private positionLocation: number;
     private maxTextureSize: number;
+    private renderTargetWidth: number;
+    private renderTargetHeight: number;
     private sceneControlDefinitions: SceneControlDefinition[];
     private sceneControlValues: SceneControlValueMap;
     private lastSliceDebugSnapshot: SliceDebugSnapshot | null;
@@ -308,6 +328,8 @@ export class Slicer {
         this.uniformLocations = new Map();
         this.positionLocation = -1;
         this.maxTextureSize = 0;
+        this.renderTargetWidth = 0;
+        this.renderTargetHeight = 0;
         this.sceneControlDefinitions = [];
         this.sceneControlValues = {};
         this.lastSliceDebugSnapshot = null;
@@ -623,19 +645,7 @@ export class Slicer {
         const layerStats = createSliceLayerWarningStats();
 
         for (let layerIndex = 0; layerIndex < job.layerCount; layerIndex += job.batchCapacity) {
-            const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
-            const batchResults = this.sampleSignedDistanceFieldGpuBatch(
-                settings,
-                job.bounds,
-                job.gridSize,
-                this.getSliceSampleY(settings, layerIndex),
-                job.sliceYStep,
-                batchLayerCount,
-            );
-
-            for (const batchResult of batchResults) {
-                rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
-            }
+            this.sampleSliceBatchInto(rawLayers, settings, job, layerIndex, layerStats);
         }
 
         return this.finalizeSliceLayers(rawLayers, settings, [...job.warnings, ...summarizeSliceLayerWarnings(layerStats)]);
@@ -651,21 +661,7 @@ export class Slicer {
 
         reportSliceProgress(onProgress, 'sampling', 0, job.layerCount, 0.02, `Sampling signed-distance field (${job.layerCount} layers)...`);
 
-        for (let layerIndex = 0; layerIndex < job.layerCount; layerIndex += job.batchCapacity) {
-            const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
-            const batchResults = this.sampleSignedDistanceFieldGpuBatch(
-                settings,
-                job.bounds,
-                job.gridSize,
-                this.getSliceSampleY(settings, layerIndex),
-                job.sliceYStep,
-                batchLayerCount,
-            );
-
-            for (const batchResult of batchResults) {
-                rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
-            }
-
+        const reportBatchProgress = () => {
             const completedLayers = Math.min(job.layerCount, rawLayers.length);
             const samplingRatio = job.layerCount > 0 ? completedLayers / job.layerCount : 1;
             const overall = 0.02 + samplingRatio * 0.76;
@@ -677,10 +673,67 @@ export class Slicer {
                 overall,
                 `Extracted contours for ${completedLayers}/${job.layerCount} layers...`
             );
-            await this.yieldToMainThread();
+        };
+
+        // Pipelined: batch k+1's draw+readback are enqueued before batch k is
+        // consumed, so contour extraction overlaps the GPU instead of
+        // stalling on readPixels (WebGL2; WebGL1 degrades to serial).
+        let pending: SliceGpuPendingBatch | null = null;
+        for (let layerIndex = 0; layerIndex < job.layerCount; layerIndex += job.batchCapacity) {
+            const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
+            const next = this.issueSliceFieldBatch(
+                settings,
+                job.bounds,
+                job.gridSize,
+                this.getSliceSampleY(settings, layerIndex),
+                job.sliceYStep,
+                batchLayerCount,
+            );
+
+            if (pending) {
+                await this.waitForPendingBatch(pending);
+                for (const batchResult of this.readPendingBatch(pending)) {
+                    rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
+                }
+                reportBatchProgress();
+                await this.yieldToMainThread();
+            }
+
+            pending = next;
+        }
+
+        if (pending) {
+            await this.waitForPendingBatch(pending);
+            for (const batchResult of this.readPendingBatch(pending)) {
+                rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
+            }
+            reportBatchProgress();
         }
 
         return this.finalizeSliceLayers(rawLayers, settings, [...job.warnings, ...summarizeSliceLayerWarnings(layerStats)]);
+    }
+
+    /** Samples one GPU batch and appends the extracted per-layer contours. */
+    private sampleSliceBatchInto(
+        rawLayers: SliceContourLayer[],
+        settings: VaseSlicerSettings,
+        job: SliceJob,
+        layerIndex: number,
+        layerStats: SliceLayerWarningStats,
+    ): void {
+        const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
+        const batchResults = this.sampleSignedDistanceFieldGpuBatch(
+            settings,
+            job.bounds,
+            job.gridSize,
+            this.getSliceSampleY(settings, layerIndex),
+            job.sliceYStep,
+            batchLayerCount,
+        );
+
+        for (const batchResult of batchResults) {
+            rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
+        }
     }
 
     private prepareSliceJob(settings: VaseSlicerSettings): SliceJob {
@@ -897,6 +950,19 @@ export class Slicer {
         sliceYStep: number,
         batchLayerCount: number,
     ): SliceGpuBatchResult[] {
+        return this.readPendingBatch(
+            this.issueSliceFieldBatch(settings, bounds, gridSize, firstSampleY, sliceYStep, batchLayerCount),
+        );
+    }
+
+    private issueSliceFieldBatch(
+        settings: VaseSlicerSettings,
+        bounds: SliceBounds,
+        gridSize: number,
+        firstSampleY: number,
+        sliceYStep: number,
+        batchLayerCount: number,
+    ): SliceGpuPendingBatch {
         const width = gridSize;
         const height = gridSize * batchLayerCount;
         const distanceRange = Math.max(
@@ -959,11 +1025,81 @@ export class Slicer {
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        const pixels = new Uint8Array(width * height * 4);
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        const byteLength = width * height * 4;
+        const pendingBase = {
+            firstSampleY,
+            sliceYStep,
+            batchLayerCount,
+            gridSize,
+            distanceRange,
+            byteLength,
+        };
 
+        const gl2 = this.getGl2();
+        if (gl2) {
+            // Enqueue the readback into a pixel-pack buffer and fence it; the
+            // caller can extract the previous batch while the GPU works.
+            const pbo = gl2.createBuffer();
+            if (pbo) {
+                gl2.bindBuffer(gl2.PIXEL_PACK_BUFFER, pbo);
+                gl2.bufferData(gl2.PIXEL_PACK_BUFFER, byteLength, gl2.STREAM_READ);
+                gl2.readPixels(0, 0, width, height, gl2.RGBA, gl2.UNSIGNED_BYTE, 0);
+                gl2.bindBuffer(gl2.PIXEL_PACK_BUFFER, null);
+                const fence = gl2.fenceSync(gl2.SYNC_GPU_COMMANDS_COMPLETE, 0);
+                gl2.flush();
+                gl2.bindFramebuffer(gl2.FRAMEBUFFER, null);
+                return { ...pendingBase, pbo, fence, pixels: null };
+            }
+        }
+
+        const pixels = new Uint8Array(byteLength);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        return this.decodeSliceBatchFields(pixels, width, gridSize, batchLayerCount, distanceRange, firstSampleY, sliceYStep);
+        return { ...pendingBase, pbo: null, fence: null, pixels };
+    }
+
+    /** Non-blocking fence poll; resolves when the batch's readback is ready. */
+    private async waitForPendingBatch(pending: SliceGpuPendingBatch): Promise<void> {
+        const gl2 = this.getGl2();
+        if (!gl2 || !pending.fence) {
+            return;
+        }
+
+        for (;;) {
+            const status = gl2.clientWaitSync(pending.fence, 0, 0);
+            if (status === gl2.ALREADY_SIGNALED || status === gl2.CONDITION_SATISFIED || status === gl2.WAIT_FAILED) {
+                return;
+            }
+            await this.yieldToMainThread();
+        }
+    }
+
+    private readPendingBatch(pending: SliceGpuPendingBatch): SliceGpuBatchResult[] {
+        let pixels = pending.pixels;
+        if (!pixels) {
+            const gl2 = this.getGl2();
+            if (!gl2 || !pending.pbo) {
+                throw new Error('Slicer batch readback state is inconsistent.');
+            }
+            pixels = new Uint8Array(pending.byteLength);
+            gl2.bindBuffer(gl2.PIXEL_PACK_BUFFER, pending.pbo);
+            gl2.getBufferSubData(gl2.PIXEL_PACK_BUFFER, 0, pixels);
+            gl2.bindBuffer(gl2.PIXEL_PACK_BUFFER, null);
+            gl2.deleteBuffer(pending.pbo);
+            if (pending.fence) {
+                gl2.deleteSync(pending.fence);
+            }
+        }
+
+        return this.decodeSliceBatchFields(
+            pixels,
+            pending.gridSize,
+            pending.gridSize,
+            pending.batchLayerCount,
+            pending.distanceRange,
+            pending.firstSampleY,
+            pending.sliceYStep,
+        );
     }
 
     private buildPlanarSpiralBaseToolpath(
@@ -1808,9 +1944,6 @@ export class Slicer {
     }
 
     private ensureRenderTarget(width: number, height: number): void {
-        this.offscreenCanvas.width = width;
-        this.offscreenCanvas.height = height;
-
         const gl = this.getOrCreateGl();
 
         if (!this.framebuffer) {
@@ -1824,12 +1957,20 @@ export class Slicer {
             throw new Error('Failed to allocate slicer framebuffer resources.');
         }
 
+        if (this.renderTargetWidth === width && this.renderTargetHeight === height) {
+            return;
+        }
+
+        this.offscreenCanvas.width = width;
+        this.offscreenCanvas.height = height;
         gl.bindTexture(gl.TEXTURE_2D, this.renderTargetTexture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        this.renderTargetWidth = width;
+        this.renderTargetHeight = height;
     }
 
     private ensureSlicerProgram(): void {
@@ -1952,13 +2093,16 @@ export class Slicer {
 
     private getOrCreateGl(): WebGLRenderingContext {
         if (!this.gl) {
-            this.gl = this.offscreenCanvas.getContext('webgl', {
+            const attributes: WebGLContextAttributes = {
                 alpha: false,
                 antialias: false,
                 depth: false,
                 stencil: false,
-                preserveDrawingBuffer: true,
-            });
+                // Everything renders to an FBO; the default framebuffer is never read.
+                preserveDrawingBuffer: false,
+            };
+            this.gl = (this.offscreenCanvas.getContext('webgl2', attributes)
+                ?? this.offscreenCanvas.getContext('webgl', attributes)) as WebGLRenderingContext | null;
         }
 
         if (!this.gl) {
@@ -1970,6 +2114,12 @@ export class Slicer {
         }
 
         return this.gl;
+    }
+
+    private getGl2(): WebGL2RenderingContext | null {
+        return typeof WebGL2RenderingContext !== 'undefined' && this.gl instanceof WebGL2RenderingContext
+            ? this.gl
+            : null;
     }
 
     private getMaxTextureSize(): number {
