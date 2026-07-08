@@ -70,6 +70,8 @@ class Renderer {
     private pointerMode: 'orbit' | 'pan' | 'dolly' | null;
     private lastPointerX: number;
     private lastPointerY: number;
+    private activePointers: Map<number, { x: number; y: number }>;
+    private pinchDistance: number | null;
     private targetX: number;
     private targetY: number;
     private targetZ: number;
@@ -132,6 +134,8 @@ class Renderer {
         this.pointerMode = null;
         this.lastPointerX = 0;
         this.lastPointerY = 0;
+        this.activePointers = new Map();
+        this.pinchDistance = null;
         this.viewMode = 0;
         this.slicerUniformState = {
             minY: -1.0,
@@ -528,30 +532,79 @@ class Renderer {
             this.resetCamera();
         });
 
-        canvas.addEventListener('mousedown', (event: MouseEvent) => {
-            if (event.button !== 0 && event.button !== 1 && event.button !== 2) {
+        // Pointer Events cover mouse, touch, and pen with one code path.
+        // Two simultaneous touch pointers drive pinch-dolly plus pan.
+        canvas.style.touchAction = 'none';
+
+        canvas.addEventListener('pointerdown', (event: PointerEvent) => {
+            if (event.pointerType === 'mouse' && event.button !== 0 && event.button !== 1 && event.button !== 2) {
+                return;
+            }
+
+            try {
+                canvas.setPointerCapture(event.pointerId);
+            } catch {
+                // The pointer may already be gone (e.g. touch lifted mid-gesture).
+            }
+            this.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+            if (this.activePointers.size === 2) {
+                this.pinchDistance = this.currentPinchDistance();
+                this.pointerMode = null;
                 return;
             }
 
             this.isPointerDown = true;
             this.lastPointerX = event.clientX;
             this.lastPointerY = event.clientY;
-            if (event.button === 1) {
+            if (event.pointerType === 'mouse' && event.button === 1) {
                 this.pointerMode = 'dolly';
             } else {
-                this.pointerMode = event.button === 2 || event.shiftKey ? 'pan' : 'orbit';
+                this.pointerMode = (event.pointerType === 'mouse' && event.button === 2) || event.shiftKey ? 'pan' : 'orbit';
             }
             canvas.style.cursor = 'grabbing';
         });
 
-        window.addEventListener('mouseup', () => {
+        const releasePointer = (event: PointerEvent): void => {
+            this.activePointers.delete(event.pointerId);
+            this.pinchDistance = null;
+
+            if (this.activePointers.size === 1) {
+                // Pinch ended with one finger still down: continue as orbit from there.
+                const remaining = [...this.activePointers.values()][0];
+                this.lastPointerX = remaining.x;
+                this.lastPointerY = remaining.y;
+                this.isPointerDown = true;
+                this.pointerMode = 'orbit';
+                return;
+            }
+
             this.isPointerDown = false;
             this.pointerMode = null;
             canvas.style.cursor = 'grab';
-        });
+        };
+        canvas.addEventListener('pointerup', releasePointer);
+        canvas.addEventListener('pointercancel', releasePointer);
 
-        window.addEventListener('mousemove', (event: MouseEvent) => {
-            if (!this.isPointerDown || !this.canvas) {
+        canvas.addEventListener('pointermove', (event: PointerEvent) => {
+            if (!this.canvas || !this.activePointers.has(event.pointerId)) {
+                return;
+            }
+
+            this.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+            if (this.activePointers.size === 2) {
+                const distance = this.currentPinchDistance();
+                if (this.pinchDistance !== null && distance > 0 && this.pinchDistance > 0) {
+                    this.orbitDistance *= this.pinchDistance / distance;
+                    this.orbitDistance = Math.max(1.0, Math.min(16.0, this.orbitDistance));
+                    this.storeCameraState();
+                }
+                this.pinchDistance = distance;
+                return;
+            }
+
+            if (!this.isPointerDown) {
                 return;
             }
 
@@ -607,6 +660,14 @@ class Renderer {
             }
             this.resetCamera();
         });
+    }
+
+    private currentPinchDistance(): number {
+        const points = [...this.activePointers.values()];
+        if (points.length < 2) {
+            return 0;
+        }
+        return Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
     }
 
     private readStoredCameraState(): {

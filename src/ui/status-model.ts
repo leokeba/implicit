@@ -111,11 +111,12 @@ export function createStatusModel() {
             pendingLabel: string,
             action: (reportProgress: (next: CommandProgressUpdate) => void) => string | Promise<string>
         ): Promise<string> {
+            // Commands report to the Commands panel only; the Workspace panel
+            // keeps workspace state (scene loaded, folder sync) undisturbed.
             update((state) => ({
                 ...state,
                 actionPending: true,
                 outputStatus: pendingLabel,
-                workspaceStatus: pendingLabel,
                 progressVisible: false,
                 progressPercent: 0,
                 progressPhaseLabel: '',
@@ -138,7 +139,6 @@ export function createStatusModel() {
                     ...state,
                     actionPending: false,
                     outputStatus: message,
-                    workspaceStatus: message,
                     progressVisible: false,
                 }));
                 return message;
@@ -148,7 +148,6 @@ export function createStatusModel() {
                     ...state,
                     actionPending: false,
                     outputStatus: message,
-                    workspaceStatus: message,
                     progressVisible: false,
                 }));
                 return message;

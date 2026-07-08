@@ -14,6 +14,7 @@
         type PostprocessScriptDocument,
     } from './core/postprocess-registry';
     import DocumentEditorPanel from './components/DocumentEditorPanel.svelte';
+    import NameDialog from './components/NameDialog.svelte';
     import InspectorPanel from './components/InspectorPanel.svelte';
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
@@ -162,6 +163,24 @@
     let postprocessAutoUpdatePending = false;
     let viewerFullscreen = false;
     let hasToolpath = false;
+    let nameDialog: {
+        title: string;
+        label: string;
+        initial: string;
+        hint?: string;
+        resolve: (value: string | null) => void;
+    } | null = null;
+
+    function requestName(options: { title: string; label: string; initial: string; hint?: string }): Promise<string | null> {
+        return new Promise((resolve) => {
+            nameDialog = { ...options, resolve };
+        });
+    }
+
+    function settleNameDialog(value: string | null): void {
+        nameDialog?.resolve(value);
+        nameDialog = null;
+    }
 
     function refreshConfig(): void {
         config = studio.getConfigView();
@@ -1127,10 +1146,11 @@
             return;
         }
 
-        const requestedName = window.prompt(
-            'Postprocess script name',
-            activePostprocessDocument ? `${activePostprocessDocument.name} Variant` : 'New Postprocess'
-        );
+        const requestedName = await requestName({
+            title: 'New Postprocess Script',
+            label: 'Script name',
+            initial: activePostprocessDocument ? `${activePostprocessDocument.name} Variant` : 'New Postprocess',
+        });
         if (requestedName === null) {
             return;
         }
@@ -1155,7 +1175,11 @@
             return;
         }
 
-        const requestedName = window.prompt('Scene name', 'New Scene');
+        const requestedName = await requestName({
+            title: 'New Scene',
+            label: 'Scene name',
+            initial: 'New Scene',
+        });
         if (requestedName === null) {
             return;
         }
@@ -1211,7 +1235,12 @@
         }
 
         const suggestion = 'scene.ts' in activeSceneBundle.files ? 'helper.ts' : 'scene.ts';
-        const requestedFileName = window.prompt('New scene file name (.glsl, .ts, .js)', suggestion);
+        const requestedFileName = await requestName({
+            title: 'New Scene File',
+            label: 'File name',
+            initial: suggestion,
+            hint: 'Use a .glsl, .ts, or .js extension.',
+        });
         if (requestedFileName === null) {
             return;
         }
@@ -1383,12 +1412,27 @@
     }
 
     function handleWindowKeydown(event: KeyboardEvent): void {
-        if (event.key !== 'Escape' || !viewerFullscreen) {
+        if (event.key === 'Escape' && viewerFullscreen) {
+            event.preventDefault();
+            void toggleViewerFullscreen();
             return;
         }
 
-        event.preventDefault();
-        void toggleViewerFullscreen();
+        // Save the active document from anywhere; without this, Cmd+S outside
+        // the editor opens the browser's save-page dialog with edits pending.
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's' && !event.shiftKey && !event.altKey) {
+            if (event.defaultPrevented) {
+                return; // the editor panel already handled this save
+            }
+            event.preventDefault();
+            if (editorDocumentMode === 'postprocess') {
+                if (postprocessDirty) {
+                    void saveActivePostprocessDocument();
+                }
+            } else if (sceneEditorDirty) {
+                void saveActiveSceneFile();
+            }
+        }
     }
 
     const inspectorHandlers: InspectorSchemaHandlers = {
@@ -1790,5 +1834,16 @@
         progressDetail={$status.progressDetail}
         shaderStatusDetail={$status.shaderStatusDetail}
     />
+
+    {#if nameDialog}
+        <NameDialog
+            title={nameDialog.title}
+            label={nameDialog.label}
+            initial={nameDialog.initial}
+            hint={nameDialog.hint ?? ''}
+            onSubmit={(value) => settleNameDialog(value)}
+            onCancel={() => settleNameDialog(null)}
+        />
+    {/if}
 
 </div>

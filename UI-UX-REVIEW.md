@@ -49,6 +49,7 @@ After a scene switch it reads `SHADER: LOADED SCENE: SCREWTHREADCYLINDER` — an
 Every numeric parameter in a live-preview shader playground is a `type=number` spinner (zero `type=range` in the codebase). The core loop — nudge a value, watch the surface — currently requires click → type → commit-on-change per attempt. Draggable sliders (or Blender-style scrub-on-drag on labels) would transform the tool. **Highest-leverage improvement on this list.**
 
 ### 8. Duplicated controls with no clear hierarchy
+> **Update 2026-07-08: largely fixed.** The Scene tab no longer duplicates the top bar's Scene/View selects (the top bar is canonical; the tab keeps the per-scene manifest controls). `runCommand` now reports only to the Commands panel, so Workspace keeps workspace state and the two footer panels no longer mirror each other. Retained deliberately: Generate/Download in both the viewport toolbar and the Output tab (primary CTA vs. export workflow), and the editor panel's own close button.
 - Scene and View settable in top bar *and* inspector Scene tab
 - Generate in viewport toolbar *and* Output tab
 - Download in header *and* Output tab
@@ -58,6 +59,7 @@ Every numeric parameter in a live-preview shader playground is a `type=number` s
 Duplication doubles the surface where state can disagree (see #2). Pick one home per action; make the footer panels report different things or merge them.
 
 ### 9. `window.prompt()` for naming scenes and files
+> **Update 2026-07-08: fixed.** All three prompts (new scene, new scene file, new postprocess script) now use a themed native `<dialog>` (`NameDialog.svelte`) with a promise-based `requestName()` helper — focus-trapped, Escape cancels, Create disabled while empty, per-case hint text.
 `src/App.svelte:1121, 1149, 1205`. Native prompts can't be styled, can't validate inline (slug rules, collisions), and look broken next to an otherwise polished dark UI. Use a small inline form in the editor header.
 
 ### 10. No build-volume sanity check
@@ -68,19 +70,20 @@ Screw Thread Cylinder ships with Outer diameter 350mm while the selected machine
 Below the 1180px breakpoint (`styles.css:1081`) everything stacks in one column with a tall viewport on top, so adjusting any parameter scrolls the model off-screen. Consider keeping the inspector beside the viewport down to ~900px, or a bottom-sheet pattern. On a phone (390px) the top bar alone consumes two-thirds of the first screen.
 
 ### 12. The 3D camera is mouse-only
+> **Update 2026-07-08: fixed.** Camera input rewritten on Pointer Events with `touch-action: none` and pointer capture: one code path for mouse/touch/pen, single-finger orbit, two-finger pinch dolly, and a clean handoff back to orbit when one finger lifts. Verified live: touch orbit and pinch zoom both drive the camera; mouse behavior unchanged.
 Handlers are `mousedown/mousemove/wheel` (`src/core/renderer.ts:523-593`) — no pointer/touch events, so on tablets and phones (and this is publicly deployed on GitHub Pages) you cannot orbit at all. Switching to Pointer Events covers mouse + touch + pen in one code path.
 
 ---
 
 ## Polish and accessibility
 
-13. **Tabs aren't tabs.** Inspector tab bar uses `aria-pressed` buttons instead of `role="tablist"/"tab"/"tabpanel"` with arrow-key nav (`src/components/InspectorPanel.svelte:32`). Related: buttons like "Hide Editor" both change label *and* carry `aria-pressed` — announced as "Hide Editor, pressed," which is contradictory. Use static label + `aria-pressed`, or changing label with no pressed state.
+13. **Tabs aren't tabs.** Inspector tab bar uses `aria-pressed` buttons instead of `role="tablist"/"tab"/"tabpanel"` with arrow-key nav (`src/components/InspectorPanel.svelte:32`). Related: buttons like "Hide Editor" both change label *and* carry `aria-pressed` — announced as "Hide Editor, pressed," which is contradictory. Use static label + `aria-pressed`, or changing label with no pressed state. *Partially fixed 2026-07-08: inspector tabs now use tablist/tab/tabpanel with `aria-selected`, roving tabindex, and Arrow/Home/End navigation. The label+`aria-pressed` toggle buttons remain.*
 14. **Five form fields lack `id`/`name`** (Chrome flags on load) — breaks autofill heuristics and label association (top-bar selects). *Fixed 2026-07-08: ids/names added to the four top-bar selects and the editor file select; Chrome reports zero form-field issues.*
 15. **`↺` override-reset button has `title` but no `aria-label`** (`src/components/inspector/InspectorSchemaTab.svelte:45-52`) — invisible to screen readers; `title` doesn't show on touch. *Fixed 2026-07-08: per-field `aria-label` added.*
 16. **Editor resize handle has no keyboard handler** while the inspector one supports Arrow/Home (`src/App.svelte:1357-1374`). Neither uses `role="separator"` + `aria-valuenow`.
 17. **No `prefers-reduced-motion` support**, and the raymarch loop renders continuously when idle — a11y and battery. Pause the render loop when nothing changes.
-18. **Select widths truncate their own options**: "Planar contour (s…", "Screw Thread Cy…" at default inspector width.
-19. **Cmd+S only saves when focus is inside CodeMirror** (`src/components/DocumentEditorPanel.svelte:127-144`); with a dirty file and focus elsewhere it opens the browser save-page dialog. Handle at window level when any document is dirty.
+18. **Select widths truncate their own options**: "Planar contour (s…", "Screw Thread Cy…" at default inspector width. *Fixed 2026-07-08: slicer-mode labels shortened to "Planar (strict)" / "Cylindrical (legacy)" (the tab note keeps the full explanation); the duplicated Scene-preset select was removed with item 8.*
+19. **Cmd+S only saves when focus is inside CodeMirror** (`src/components/DocumentEditorPanel.svelte:127-144`); with a dirty file and focus elsewhere it opens the browser save-page dialog. Handle at window level when any document is dirty. *Fixed 2026-07-08: window-level handler saves the active dirty document and suppresses the browser dialog; defers to the editor's own handler when focus is inside CodeMirror.*
 20. **Locale mismatch in numerals**: number inputs render "0,2" (browser locale) while summary chips show "0.20 mm" — same value, two formats on one screen.
 21. **In fullscreen preview, "Hide Editor"/"Hide Inspector" remain** and toggle state you can't see. Hide them while expanded. *Fixed 2026-07-08: the two panel toggles are hidden in fullscreen; Generate, Exit Preview, Reset View, and the toolpath toggle remain.*
 22. **"SCENE EDITOR" and "FOLDER SYNC" chips are styled like buttons** but are static text — they read as dead controls. Distinguish badges from buttons.

@@ -16,8 +16,8 @@ export const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
 ];
 
 const SLICER_MODE_OPTIONS: InspectorFieldOption[] = [
-    { value: 'planar', label: 'Planar contour (strict)' },
-    { value: 'cylindrical', label: 'Cylindrical radial (legacy)' },
+    { value: 'planar', label: 'Planar (strict)' },
+    { value: 'cylindrical', label: 'Cylindrical (legacy)' },
 ];
 
 const BOOLEAN_TOGGLE_OPTIONS: InspectorFieldOption[] = [
@@ -67,17 +67,9 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
             { label: 'Scene', read: findSceneLabel },
             { label: 'View', read: (state) => getViewModeLabel(state.viewMode) },
         ],
-        sections: [
-            {
-                id: 'scene-controls',
-                title: 'Scene Controls',
-                caption: 'Choose the active scene and how its surface is rendered.',
-                fields: [
-                    { kind: 'select', target: 'viewMode', id: 'view-mode-select', label: 'View mode', options: VIEW_MODE_OPTIONS },
-                    { kind: 'select', target: 'scene', id: 'scene-select', label: 'Scene preset', optionsSource: 'sceneOptions' },
-                ],
-            },
-        ],
+        // Scene and view selection live in the top bar; this tab holds the
+        // per-scene controls appended dynamically from the scene manifest.
+        sections: [],
     },
     {
         id: 'camera',

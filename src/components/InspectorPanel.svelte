@@ -14,6 +14,32 @@
     export let onSelectTab: (tabId: ControlTabId) => void | Promise<void>;
 
     $: activeSchema = buildInspectorTabSchema(activeTab, state);
+
+    function handleTabKeydown(event: KeyboardEvent): void {
+        const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+        if (!keys.includes(event.key)) {
+            return;
+        }
+        event.preventDefault();
+
+        const currentIndex = INSPECTOR_TABS.findIndex((tab) => tab.id === activeTab);
+        let nextIndex = currentIndex;
+        if (event.key === 'ArrowLeft') {
+            nextIndex = (currentIndex - 1 + INSPECTOR_TABS.length) % INSPECTOR_TABS.length;
+        } else if (event.key === 'ArrowRight') {
+            nextIndex = (currentIndex + 1) % INSPECTOR_TABS.length;
+        } else if (event.key === 'Home') {
+            nextIndex = 0;
+        } else {
+            nextIndex = INSPECTOR_TABS.length - 1;
+        }
+
+        const nextTab = INSPECTOR_TABS[nextIndex];
+        void onSelectTab(nextTab.id);
+        const tabBar = (event.currentTarget as HTMLElement);
+        const buttons = tabBar.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+        buttons[nextIndex]?.focus();
+    }
 </script>
 
 <aside id="controls" aria-label="Inspector">
@@ -23,13 +49,18 @@
             <p class="controls-note">Scene, render, and print settings for the active surface.</p>
         </div>
 
-        <div class="tab-bar">
+        <!-- svelte-ignore a11y_interactive_supports_focus -->
+        <div class="tab-bar" role="tablist" aria-label="Inspector sections" on:keydown={handleTabKeydown}>
             {#each INSPECTOR_TABS as tab}
                 <button
                     class:is-active={activeTab === tab.id}
                     class="tab-button"
                     type="button"
-                    aria-pressed={activeTab === tab.id}
+                    role="tab"
+                    id={`inspector-tab-${tab.id}`}
+                    aria-selected={activeTab === tab.id}
+                    aria-controls="inspector-tabpanel"
+                    tabindex={activeTab === tab.id ? 0 : -1}
                     on:click={() => onSelectTab(tab.id)}
                 >
                     {tab.label}
@@ -37,7 +68,7 @@
             {/each}
         </div>
 
-        <div class="tab-panels">
+        <div class="tab-panels" id="inspector-tabpanel" role="tabpanel" aria-labelledby={`inspector-tab-${activeTab}`}>
             <InspectorSchemaTab tab={activeSchema} {state} {handlers} />
         </div>
     </div>
