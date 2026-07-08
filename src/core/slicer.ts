@@ -229,6 +229,16 @@ interface SampledSliceContours {
     warnings: string[];
 }
 
+interface SliceBatchPlan {
+    layerIndex: number;
+    batchLayerCount: number;
+    bounds: SliceBounds;
+    gridSize: number;
+    /** True when bounds are tighter than the job bounds and a failed
+     * extraction should retry at full job bounds before giving up. */
+    tight: boolean;
+}
+
 interface SliceJob {
     layerCount: number;
     bounds: SliceBounds;
@@ -236,6 +246,22 @@ interface SliceJob {
     batchCapacity: number;
     sliceYStep: number;
     warnings: string[];
+    batches: SliceBatchPlan[];
+}
+
+interface SlicePrepassLevel {
+    y: number;
+    minX: number;
+    maxX: number;
+    minZ: number;
+    maxZ: number;
+}
+
+/** Internal signal: tight-bounds extraction hit a suspected clip; retry the batch at full bounds. */
+class SliceBatchRetry extends Error {
+    constructor() {
+        super('retry batch at full bounds');
+    }
 }
 
 interface SliceLayerWarningStats {
@@ -644,8 +670,16 @@ export class Slicer {
         const rawLayers: SliceContourLayer[] = [];
         const layerStats = createSliceLayerWarningStats();
 
-        for (let layerIndex = 0; layerIndex < job.layerCount; layerIndex += job.batchCapacity) {
-            this.sampleSliceBatchInto(rawLayers, settings, job, layerIndex, layerStats);
+        for (const plan of job.batches) {
+            const results = this.sampleSignedDistanceFieldGpuBatch(
+                settings,
+                plan.bounds,
+                plan.gridSize,
+                this.getSliceSampleY(settings, plan.layerIndex),
+                job.sliceYStep,
+                plan.batchLayerCount,
+            );
+            this.extractBatchResults(rawLayers, settings, job, plan, results, layerStats);
         }
 
         return this.finalizeSliceLayers(rawLayers, settings, [...job.warnings, ...summarizeSliceLayerWarnings(layerStats)]);
@@ -678,23 +712,23 @@ export class Slicer {
         // Pipelined: batch k+1's draw+readback are enqueued before batch k is
         // consumed, so contour extraction overlaps the GPU instead of
         // stalling on readPixels (WebGL2; WebGL1 degrades to serial).
-        let pending: SliceGpuPendingBatch | null = null;
-        for (let layerIndex = 0; layerIndex < job.layerCount; layerIndex += job.batchCapacity) {
-            const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
-            const next = this.issueSliceFieldBatch(
-                settings,
-                job.bounds,
-                job.gridSize,
-                this.getSliceSampleY(settings, layerIndex),
-                job.sliceYStep,
-                batchLayerCount,
-            );
+        let pending: { plan: SliceBatchPlan; batch: SliceGpuPendingBatch } | null = null;
+        for (const plan of job.batches) {
+            const next = {
+                plan,
+                batch: this.issueSliceFieldBatch(
+                    settings,
+                    plan.bounds,
+                    plan.gridSize,
+                    this.getSliceSampleY(settings, plan.layerIndex),
+                    job.sliceYStep,
+                    plan.batchLayerCount,
+                ),
+            };
 
             if (pending) {
-                await this.waitForPendingBatch(pending);
-                for (const batchResult of this.readPendingBatch(pending)) {
-                    rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
-                }
+                await this.waitForPendingBatch(pending.batch);
+                this.extractBatchResults(rawLayers, settings, job, pending.plan, this.readPendingBatch(pending.batch), layerStats);
                 reportBatchProgress();
                 await this.yieldToMainThread();
             }
@@ -703,36 +737,55 @@ export class Slicer {
         }
 
         if (pending) {
-            await this.waitForPendingBatch(pending);
-            for (const batchResult of this.readPendingBatch(pending)) {
-                rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
-            }
+            await this.waitForPendingBatch(pending.batch);
+            this.extractBatchResults(rawLayers, settings, job, pending.plan, this.readPendingBatch(pending.batch), layerStats);
             reportBatchProgress();
         }
 
         return this.finalizeSliceLayers(rawLayers, settings, [...job.warnings, ...summarizeSliceLayerWarnings(layerStats)]);
     }
 
-    /** Samples one GPU batch and appends the extracted per-layer contours. */
-    private sampleSliceBatchInto(
+    /**
+     * Extracts a batch's contours; a tight-bounds batch that fails or looks
+     * clipped is transparently resampled at the full job bounds first.
+     */
+    private extractBatchResults(
         rawLayers: SliceContourLayer[],
         settings: VaseSlicerSettings,
         job: SliceJob,
-        layerIndex: number,
+        plan: SliceBatchPlan,
+        results: SliceGpuBatchResult[],
         layerStats: SliceLayerWarningStats,
     ): void {
-        const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
-        const batchResults = this.sampleSignedDistanceFieldGpuBatch(
+        const startCount = rawLayers.length;
+        const statsBackup = { ...layerStats };
+        try {
+            for (const batchResult of results) {
+                rawLayers.push(this.extractSliceLayer(
+                    batchResult, plan.bounds, plan.gridSize, job.layerCount, settings, rawLayers.length, layerStats, plan.tight,
+                ));
+            }
+            return;
+        } catch (error) {
+            if (!(error instanceof SliceBatchRetry)) {
+                throw error;
+            }
+            rawLayers.length = startCount;
+            Object.assign(layerStats, statsBackup);
+        }
+
+        const fullResults = this.sampleSignedDistanceFieldGpuBatch(
             settings,
             job.bounds,
             job.gridSize,
-            this.getSliceSampleY(settings, layerIndex),
+            this.getSliceSampleY(settings, plan.layerIndex),
             job.sliceYStep,
-            batchLayerCount,
+            plan.batchLayerCount,
         );
-
-        for (const batchResult of batchResults) {
-            rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
+        for (const batchResult of fullResults) {
+            rawLayers.push(this.extractSliceLayer(
+                batchResult, job.bounds, job.gridSize, job.layerCount, settings, rawLayers.length, layerStats, false,
+            ));
         }
     }
 
@@ -747,14 +800,107 @@ export class Slicer {
         // the final contour resample can keep.
         const gridPitchMm = Math.max(0.02, settings.targetSegmentMm * 0.5);
         const gridSize = clampInt(Math.ceil(sliceSpanMm / gridPitchMm) + 1, 32, maxGridSize);
+        const batchCapacity = this.getSliceBatchCapacity(gridSize);
 
-        return {
+        const job: SliceJob = {
             layerCount,
             bounds: fit.bounds,
             gridSize,
-            batchCapacity: this.getSliceBatchCapacity(gridSize),
+            batchCapacity,
             sliceYStep: settings.layerHeight / settings.modelScale,
             warnings: fit.warnings,
+            batches: [],
+        };
+
+        for (let layerIndex = 0; layerIndex < layerCount; layerIndex += batchCapacity) {
+            const batchLayerCount = Math.min(batchCapacity, layerCount - layerIndex);
+            job.batches.push(this.planSliceBatch(settings, job, fit, layerIndex, batchLayerCount, gridPitchMm, maxGridSize));
+        }
+
+        return job;
+    }
+
+    /**
+     * Bounds for one batch, tightened to the pre-pass footprint of the
+     * batch's height band. Tapered models sample far fewer cells on their
+     * narrow layers; extraction falls back to the full job bounds if a tight
+     * batch ever looks clipped.
+     */
+    private planSliceBatch(
+        settings: VaseSlicerSettings,
+        job: SliceJob,
+        fit: { bounds: SliceBounds; levels: SlicePrepassLevel[]; margin: number },
+        layerIndex: number,
+        batchLayerCount: number,
+        gridPitchMm: number,
+        maxGridSize: number,
+    ): SliceBatchPlan {
+        const fullBatch: SliceBatchPlan = {
+            layerIndex,
+            batchLayerCount,
+            bounds: job.bounds,
+            gridSize: job.gridSize,
+            tight: false,
+        };
+        if (fit.levels.length === 0) {
+            return fullBatch;
+        }
+
+        const yLow = this.getSliceSampleY(settings, layerIndex);
+        const yHigh = this.getSliceSampleY(settings, layerIndex + batchLayerCount - 1);
+        // Include one pre-pass level of slack on each side of the band.
+        const levelSpacing = fit.levels.length > 1
+            ? Math.abs(fit.levels[1].y - fit.levels[0].y)
+            : Number.POSITIVE_INFINITY;
+        let minX = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let minZ = Number.POSITIVE_INFINITY;
+        let maxZ = Number.NEGATIVE_INFINITY;
+        for (const level of fit.levels) {
+            if (level.y < yLow - levelSpacing || level.y > yHigh + levelSpacing) {
+                continue;
+            }
+            minX = Math.min(minX, level.minX);
+            maxX = Math.max(maxX, level.maxX);
+            minZ = Math.min(minZ, level.minZ);
+            maxZ = Math.max(maxZ, level.maxZ);
+        }
+        if (!Number.isFinite(minX)) {
+            return fullBatch;
+        }
+
+        // Grow by the pre-pass margin plus a slice of the span for slope the
+        // coarse levels missed, then square and clamp inside the job bounds.
+        const growth = fit.margin + (Math.max(maxX - minX, maxZ - minZ) * 0.05);
+        minX -= growth;
+        maxX += growth;
+        minZ -= growth;
+        maxZ += growth;
+        const jobHalfSpan = Math.max(job.bounds.maxX - job.bounds.minX, job.bounds.maxZ - job.bounds.minZ) * 0.5;
+        const halfSpan = Math.min(Math.max(maxX - minX, maxZ - minZ) * 0.5, jobHalfSpan);
+        const centerX = clamp((minX + maxX) * 0.5, job.bounds.minX + halfSpan, job.bounds.maxX - halfSpan);
+        const centerZ = clamp((minZ + maxZ) * 0.5, job.bounds.minZ + halfSpan, job.bounds.maxZ - halfSpan);
+        const bounds: SliceBounds = {
+            minX: Math.max(job.bounds.minX, centerX - halfSpan),
+            maxX: Math.min(job.bounds.maxX, centerX + halfSpan),
+            minZ: Math.max(job.bounds.minZ, centerZ - halfSpan),
+            maxZ: Math.min(job.bounds.maxZ, centerZ + halfSpan),
+        };
+
+        const batchSpan = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ);
+        const jobSpan = Math.max(job.bounds.maxX - job.bounds.minX, job.bounds.maxZ - job.bounds.minZ);
+        if (batchSpan >= jobSpan * 0.9) {
+            // Not enough savings to justify a divergent grid.
+            return fullBatch;
+        }
+
+        const gridSize = clampInt(Math.ceil((batchSpan * settings.modelScale) / gridPitchMm) + 1, 32, maxGridSize);
+        return {
+            layerIndex,
+            batchLayerCount,
+            bounds,
+            gridSize,
+            tight: true,
         };
     }
 
@@ -768,7 +914,7 @@ export class Slicer {
         settings: VaseSlicerSettings,
         layerCount: number,
         window: SliceBounds,
-    ): { bounds: SliceBounds; warnings: string[] } {
+    ): { bounds: SliceBounds; warnings: string[]; levels: SlicePrepassLevel[]; margin: number } {
         const warnings: string[] = [];
         const coarseGrid = 64;
         const coarseLayerCount = Math.min(24, layerCount);
@@ -789,29 +935,48 @@ export class Slicer {
         let minRow = coarseGrid;
         let maxRow = -1;
         let insideTouchesEdge = false;
+        const levels: SlicePrepassLevel[] = [];
         for (const batch of batches) {
             const field = batch.field;
+            let levelMinCol = coarseGrid;
+            let levelMaxCol = -1;
+            let levelMinRow = coarseGrid;
+            let levelMaxRow = -1;
             for (let row = 0; row < coarseGrid; row++) {
                 const base = row * coarseGrid;
                 for (let col = 0; col < coarseGrid; col++) {
                     const value = field[base + col];
                     if (value <= nearSurface) {
-                        if (col < minCol) minCol = col;
-                        if (col > maxCol) maxCol = col;
-                        if (row < minRow) minRow = row;
-                        if (row > maxRow) maxRow = row;
+                        if (col < levelMinCol) levelMinCol = col;
+                        if (col > levelMaxCol) levelMaxCol = col;
+                        if (row < levelMinRow) levelMinRow = row;
+                        if (row > levelMaxRow) levelMaxRow = row;
                         if (value <= 0 && (col === 0 || row === 0 || col === coarseGrid - 1 || row === coarseGrid - 1)) {
                             insideTouchesEdge = true;
                         }
                     }
                 }
             }
+
+            if (levelMaxCol >= 0) {
+                if (levelMinCol < minCol) minCol = levelMinCol;
+                if (levelMaxCol > maxCol) maxCol = levelMaxCol;
+                if (levelMinRow < minRow) minRow = levelMinRow;
+                if (levelMaxRow > maxRow) maxRow = levelMaxRow;
+                levels.push({
+                    y: batch.sampleY,
+                    minX: window.minX + (levelMinCol * cellX),
+                    maxX: window.minX + (levelMaxCol * cellX),
+                    minZ: window.minZ + (levelMinRow * cellZ),
+                    maxZ: window.minZ + (levelMaxRow * cellZ),
+                });
+            }
         }
 
         if (maxCol < 0) {
             // Nothing near the surface anywhere; keep the full window so the
             // fine pass produces its own diagnostics.
-            return { bounds: window, warnings };
+            return { bounds: window, warnings, levels: [], margin: 0 };
         }
 
         // Only warn when the interior actually reaches the window boundary;
@@ -839,31 +1004,41 @@ export class Slicer {
                 maxZ: Math.min(window.maxZ, centerZ + halfSpan),
             },
             warnings,
+            levels,
+            margin,
         };
     }
 
     private extractSliceLayer(
         batchResult: SliceGpuBatchResult,
-        job: SliceJob,
+        bounds: SliceBounds,
+        gridSize: number,
+        layerCount: number,
         settings: VaseSlicerSettings,
         acceptedLayerCount: number,
         layerStats: SliceLayerWarningStats,
+        tight: boolean,
     ): SliceContourLayer {
-        const contourExtraction = extractContoursFromField(batchResult.field, job.gridSize, job.bounds);
+        const contourExtraction = extractContoursFromField(batchResult.field, gridSize, bounds);
         const contourSelection = selectPrimaryContour(
             contourExtraction.closedContours,
-            job.bounds,
-            job.gridSize,
+            bounds,
+            gridSize,
             settings,
         );
 
         if (!contourSelection.ok) {
+            if (tight) {
+                // The tightened batch window may have clipped real geometry;
+                // let the caller retry at the full job bounds.
+                throw new SliceBatchRetry();
+            }
             this.lastSliceDebugSnapshot = buildSliceDebugSnapshot(
                 batchResult.field,
-                job.bounds,
-                job.gridSize,
+                bounds,
+                gridSize,
                 batchResult.sampleY,
-                job.layerCount,
+                layerCount,
                 acceptedLayerCount,
                 settings,
                 contourSelection,
@@ -872,13 +1047,17 @@ export class Slicer {
             throw new Error(buildContourFailureMessage(
                 contourSelection,
                 contourExtraction,
-                job.bounds,
-                job.gridSize,
+                bounds,
+                gridSize,
                 settings,
                 batchResult.sampleY,
                 acceptedLayerCount,
-                job.layerCount,
+                layerCount,
             ));
+        }
+
+        if (tight && extractionTouchesBounds(contourExtraction, bounds, gridSize)) {
+            throw new SliceBatchRetry();
         }
 
         if (contourSelection.ignoredHoleCount > 0) {
