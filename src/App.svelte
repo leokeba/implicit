@@ -166,12 +166,14 @@
         config = studio.getConfigView();
     }
 
-    function buildSliceSignature(): string {
+    // Dependencies are passed as arguments so the reactive statement below
+    // re-runs when they change; a zero-argument call would never invalidate.
+    function buildSliceSignature(id: string, bundle: SceneBundle | null, view: SceneConfigView): string {
         return JSON.stringify({
-            sceneId,
-            sceneGlsl: activeSceneBundle?.files[SCENE_GLSL_FILE] ?? '',
-            uniformValues: config.uniformValues,
-            settings: config.settings,
+            sceneId: id,
+            sceneGlsl: bundle?.files[SCENE_GLSL_FILE] ?? '',
+            uniformValues: view.uniformValues,
+            settings: view.settings,
         });
     }
 
@@ -413,7 +415,7 @@
     );
     $: postprocessModeLabel = sceneEditorModeLabel;
     $: printerConfigured = printerTarget.baseUrl.trim().length > 0;
-    $: currentSliceSignature = buildSliceSignature();
+    $: currentSliceSignature = buildSliceSignature(sceneId, activeSceneBundle, config);
     $: currentPostprocessSignature = buildPostprocessSignature(config);
     $: hasGeneratedArtifactForCurrentSlice = Boolean(
         generatedGcodeArtifact && generatedGcodeArtifact.sliceSignature === currentSliceSignature
@@ -800,7 +802,7 @@
 
     async function buildFullArtifactWithProgress(
         reportProgress: (update: { percent: number; phaseLabel: string; detail: string }) => void,
-    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number; warnings: string[] }> {
         const progressStartMs = performance.now();
         let lastPhase = '';
         let samplingPhaseStartMs: number | null = null;
@@ -877,7 +879,7 @@
 
     async function buildUpdatedArtifactFromCachedBase(
         reportProgress: (update: { percent: number; phaseLabel: string; detail: string }) => void,
-    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number; warnings: string[] }> {
         reportProgress({
             percent: 12,
             phaseLabel: 'Postprocess',
@@ -906,7 +908,10 @@
 
                 setGeneratedArtifactForCurrentState(artifact);
                 const actionVerb = shouldUpdateFromCachedSlice ? 'Updated' : 'Generated';
-                return `${actionVerb} ${artifact.filename} (${(artifact.bytes / 1024).toFixed(1)} KB, ${artifact.points} points). Use Download to save locally.`;
+                const warningSuffix = artifact.warnings.length > 0
+                    ? ` Warning${artifact.warnings.length === 1 ? '' : 's'}: ${artifact.warnings.join(' ')}`
+                    : '';
+                return `${actionVerb} ${artifact.filename} (${(artifact.bytes / 1024).toFixed(1)} KB, ${artifact.points} points). Use Download to save locally.${warningSuffix}`;
             } finally {
                 sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
                 if (sliceDebugSnapshot) {

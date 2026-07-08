@@ -139,7 +139,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'number', target: 'slicer', key: 'nozzleDiameter', id: 'slicer-nozzle-diameter', label: 'Nozzle diameter', step: '0.01', min: '0.2', max: '1.2' },
                     { kind: 'number', target: 'slicer', key: 'lineWidth', id: 'slicer-line-width', label: 'Line width', step: '0.01', min: '0.2', max: '1.2' },
                     { kind: 'number', target: 'slicer', key: 'firstLayerLineWidth', id: 'slicer-first-layer-line-width', label: 'First layer line width', step: '0.01', min: '0.2', max: '1.2' },
-                    { kind: 'number', target: 'slicer', key: 'pointsPerLayer', id: 'slicer-points', label: 'Points per layer', step: '1', min: '48', max: '2048' },
+                    { kind: 'number', target: 'slicer', key: 'targetSegmentMm', id: 'slicer-target-segment', label: 'Target segment (mm)', step: '0.05', min: '0.05', max: '2.0' },
                     { kind: 'number', target: 'slicer', key: 'maxRadius', id: 'slicer-max-radius', label: 'Slice half-extent', step: '0.01', min: '0.1', max: '3.0' },
                 ],
             },
@@ -148,8 +148,6 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                 title: 'Sampling And Debug',
                 caption: 'These controls isolate grid artifacts from alignment and path-merging artifacts.',
                 fields: [
-                    { kind: 'number', target: 'slicer', key: 'sliceTargetGridPitchMm', id: 'slicer-target-grid-pitch', label: 'Target grid pitch (mm)', step: '0.01', min: '0.025', max: '2.0' },
-                    { kind: 'number', target: 'slicer', key: 'radialSteps', id: 'slicer-radial-steps', label: 'Minimum slice grid', step: '1', min: '32', max: '512' },
                     { kind: 'number', target: 'slicer', key: 'hitEpsilon', id: 'slicer-hit-eps', label: 'Iso epsilon', step: '0.0001', min: '0.0001', max: '0.02' },
                     { kind: 'number', target: 'slicer', key: 'sliceIsoSnapFactor', id: 'slicer-iso-snap-factor', label: 'Iso snap factor', step: '0.05', min: '0.0', max: '4.0' },
                     { kind: 'select', target: 'slicerBoolean', key: 'enableContourAlignment', id: 'slicer-align-contours', label: 'Align contours', options: BOOLEAN_TOGGLE_OPTIONS },

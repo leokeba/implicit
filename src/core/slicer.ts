@@ -43,10 +43,18 @@ export interface VaseSlicerSettings {
     maxPrintHeightMm: number;
     nozzleDiameter: number;
     layerHeight: number;
+    /**
+     * Target toolpath segment length in mm. Single quality knob for slicing:
+     * drives both the sampling grid pitch and the per-layer contour point
+     * count (derived from the largest layer perimeter).
+     */
+    targetSegmentMm: number;
+    /**
+     * Contour points per layer. Derived from targetSegmentMm and the largest
+     * layer perimeter during slicing; not a user-facing setting.
+     */
     pointsPerLayer: number;
     maxRadius: number;
-    radialSteps: number;
-    sliceTargetGridPitchMm: number;
     hitEpsilon: number;
     sliceIsoSnapFactor: number;
     centerX: number;
@@ -98,17 +106,21 @@ export interface VaseBaseToolpath {
     layerCount: number;
     pointsPerLayer: number;
     estimatedHeight: number;
+    /** Non-fatal issues from sampling (ignored holes, dropped loops, window fit). */
+    warnings?: string[];
 }
 
 export interface VaseSliceResult {
     settings: VaseSlicerSettings;
     toolpath: VaseToolpath;
     gcode: string;
+    warnings: string[];
 }
 
 export interface VaseSliceBaseResult {
     settings: VaseSlicerSettings;
     baseToolpath: VaseBaseToolpath;
+    warnings: string[];
 }
 
 export interface SliceDebugBounds {
@@ -209,6 +221,29 @@ interface SliceContourLayer {
     contour: SlicePoint[];
 }
 
+interface SampledSliceContours {
+    layers: SliceContourLayer[];
+    warnings: string[];
+}
+
+interface SliceJob {
+    layerCount: number;
+    bounds: SliceBounds;
+    gridSize: number;
+    batchCapacity: number;
+    sliceYStep: number;
+    warnings: string[];
+}
+
+interface SliceLayerWarningStats {
+    holeLayers: number;
+    maxHoleCount: number;
+    droppedLayers: number;
+    droppedLargestAreaMm2: number;
+    islandLayers: number;
+    islandLargestAreaMm2: number;
+}
+
 interface SliceContourCandidate {
     contour: SlicePoint[];
     area: number;
@@ -227,18 +262,21 @@ interface SliceContourExtractionDebug {
 }
 
 interface SliceSegmentVertex {
-    key: string;
+    key: number;
     point: SlicePoint;
 }
 
 type SliceSegment = [SliceSegmentVertex, SliceSegmentVertex];
 
 const SLICE_BATCH_SIZE = 16;
+// Disjoint islands smaller than this are skipped with a warning; larger ones fail the slice.
+const MAX_SKIPPABLE_ISLAND_AREA_MM2 = 4.0;
 const MAX_SLICE_GRID_SIZE = 2048;
 
 interface SliceGpuBatchResult {
     sampleY: number;
-    field: number[][];
+    /** Row-major gridSize×gridSize signed distances. */
+    field: Float32Array;
 }
 
 export class Slicer {
@@ -292,10 +330,9 @@ export class Slicer {
             maxPrintHeightMm: 250,
             nozzleDiameter: 0.4,
             layerHeight: 0.2,
+            targetSegmentMm: 0.3,
             pointsPerLayer: 640,
             maxRadius: 1.1,
-            radialSteps: 256,
-            sliceTargetGridPitchMm: 0.10,
             hitEpsilon: 0.0014,
             sliceIsoSnapFactor: 0.0,
             centerX: 110,
@@ -335,6 +372,7 @@ export class Slicer {
             settings: result.settings,
             toolpath: result.toolpath,
             gcode: result.gcode,
+            warnings: result.warnings,
         };
     }
 
@@ -349,6 +387,7 @@ export class Slicer {
             settings: result.settings,
             toolpath: result.toolpath,
             gcode: result.gcode,
+            warnings: result.warnings,
         };
     }
 
@@ -371,6 +410,7 @@ export class Slicer {
                 settings: result.settings,
                 toolpath: result.toolpath,
                 gcode: result.gcode,
+                warnings: result.warnings,
             };
             runs.push({
                 runIndex,
@@ -404,6 +444,7 @@ export class Slicer {
         return {
             settings,
             baseToolpath,
+            warnings: baseToolpath.warnings ?? [],
         };
     }
 
@@ -414,12 +455,20 @@ export class Slicer {
         extraHeaderLines?: string[],
     ): VaseSliceResult {
         const settings = this.getMergedSettings(next);
+        // The base toolpath already fixed its contour density; keep the
+        // settings copy consistent for pipeline scripts and G-code metadata.
+        settings.pointsPerLayer = baseToolpath.pointsPerLayer;
+        const warnings = baseToolpath.warnings ?? [];
         const finalized = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
-        const gcode = this.buildGcode(finalized, settings, extraHeaderLines);
+        const gcode = this.buildGcode(finalized, settings, [
+            ...(extraHeaderLines ?? []),
+            ...warnings.map((warning) => `Slicer warning: ${warning}`),
+        ]);
         return {
             settings,
             toolpath: finalized,
             gcode,
+            warnings,
         };
     }
 
@@ -433,20 +482,21 @@ export class Slicer {
     ): VaseSliceExecution {
         this.lastSliceDebugSnapshot = null;
         const startTime = performance.now();
-        const contourLayers = this.sampleSliceContoursGpu(settings);
+        const sampled = this.sampleSliceContoursGpu(settings);
         const contourSamplingEndTime = performance.now();
         const baseToolpath = settings.slicerMode === 'cylindrical'
-            ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
-            : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
+            ? this.buildCylindricalSpiralBaseToolpath(sampled.layers, settings)
+            : this.buildPlanarSpiralBaseToolpath(sampled.layers, settings);
         const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
         const toolpathEndTime = performance.now();
-        const gcode = this.buildGcode(toolpath, settings);
+        const gcode = this.buildGcode(toolpath, settings, sampled.warnings.map((warning) => `Slicer warning: ${warning}`));
         const endTime = performance.now();
 
         return {
             settings,
             toolpath,
             gcode,
+            warnings: sampled.warnings,
             timings: {
                 contourSamplingMs: contourSamplingEndTime - startTime,
                 toolpathBuildMs: toolpathEndTime - contourSamplingEndTime,
@@ -466,20 +516,20 @@ export class Slicer {
         await this.yieldToMainThread();
 
         const startTime = performance.now();
-        const contourLayers = await this.sampleSliceContoursGpuAsync(settings, onProgress);
+        const sampled = await this.sampleSliceContoursGpuAsync(settings, onProgress);
         const contourSamplingEndTime = performance.now();
 
         reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
         await this.yieldToMainThread();
         const baseToolpath = settings.slicerMode === 'cylindrical'
-            ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
-            : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
+            ? this.buildCylindricalSpiralBaseToolpath(sampled.layers, settings)
+            : this.buildPlanarSpiralBaseToolpath(sampled.layers, settings);
         const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
         const toolpathEndTime = performance.now();
 
         reportSliceProgress(onProgress, 'gcode', 0, 1, 0.92, 'Encoding G-code...');
         await this.yieldToMainThread();
-        const gcode = this.buildGcode(toolpath, settings);
+        const gcode = this.buildGcode(toolpath, settings, sampled.warnings.map((warning) => `Slicer warning: ${warning}`));
         const endTime = performance.now();
 
         reportSliceProgress(onProgress, 'finalizing', 1, 1, 1.0, 'Finalizing export...');
@@ -488,6 +538,7 @@ export class Slicer {
             settings,
             toolpath,
             gcode,
+            warnings: sampled.warnings,
             timings: {
                 contourSamplingMs: contourSamplingEndTime - startTime,
                 toolpathBuildMs: toolpathEndTime - contourSamplingEndTime,
@@ -505,13 +556,14 @@ export class Slicer {
         reportSliceProgress(onProgress, 'preparing', 0, 1, 0.0, 'Preparing slicer settings...');
         await this.yieldToMainThread();
 
-        const contourLayers = await this.sampleSliceContoursGpuAsync(settings, onProgress);
+        const sampled = await this.sampleSliceContoursGpuAsync(settings, onProgress);
         reportSliceProgress(onProgress, 'toolpath', 0, 1, 0.78, `Building ${settings.slicerMode} spiral toolpath...`);
         await this.yieldToMainThread();
 
         const baseToolpath = settings.slicerMode === 'cylindrical'
-            ? this.buildCylindricalSpiralBaseToolpath(contourLayers, settings)
-            : this.buildPlanarSpiralBaseToolpath(contourLayers, settings);
+            ? this.buildCylindricalSpiralBaseToolpath(sampled.layers, settings)
+            : this.buildPlanarSpiralBaseToolpath(sampled.layers, settings);
+        baseToolpath.warnings = sampled.warnings;
 
         reportSliceProgress(onProgress, 'finalizing', 1, 1, 1.0, 'Toolpath ready for export.');
         return baseToolpath;
@@ -526,10 +578,9 @@ export class Slicer {
         merged.maxPrintHeightMm = clamp(merged.maxPrintHeightMm, 10, 1000);
         merged.nozzleDiameter = clamp(merged.nozzleDiameter, 0.2, 1.2);
         merged.layerHeight = clamp(merged.layerHeight, 0.05, 1.0);
-        merged.pointsPerLayer = clampInt(merged.pointsPerLayer, 48, 2048);
+        merged.targetSegmentMm = clamp(merged.targetSegmentMm, 0.05, 2.0);
+        merged.pointsPerLayer = clampInt(merged.pointsPerLayer, 48, 4096);
         merged.maxRadius = clamp(merged.maxRadius, 0.1, 3.0);
-        merged.radialSteps = clampInt(merged.radialSteps, 32, 512);
-        merged.sliceTargetGridPitchMm = clamp(merged.sliceTargetGridPitchMm, 0.025, 2.0);
         merged.hitEpsilon = clamp(merged.hitEpsilon, 0.0001, 0.02);
         merged.sliceIsoSnapFactor = clamp(merged.sliceIsoSnapFactor, 0.0, 4.0);
         merged.lineWidth = clamp(merged.lineWidth, 0.2, 1.2);
@@ -555,157 +606,265 @@ export class Slicer {
         return merged;
     }
 
-    private sampleSliceContoursGpu(settings: VaseSlicerSettings): SliceContourLayer[] {
-        const modelHeightMm = this.getModelHeightMm(settings);
-        const layerCount = Math.max(2, Math.floor(modelHeightMm / settings.layerHeight) + 1);
-        const bounds = this.getSliceBounds(settings);
-        const maxGridSize = this.getMaxSliceGridSize();
-        const sliceSpanMm = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) * settings.modelScale;
-        const requestedGridSize = clampInt(settings.radialSteps, 32, Math.max(32, maxGridSize - 1)) + 1;
-        const pointDrivenGridSize = Math.ceil(settings.pointsPerLayer * 0.5) + 1;
-        const pitchDrivenGridSize = Math.ceil(sliceSpanMm / Math.max(settings.sliceTargetGridPitchMm, 1e-6)) + 1;
-        const gridSize = clampInt(
-            Math.max(requestedGridSize, pointDrivenGridSize, pitchDrivenGridSize),
-            32,
-            maxGridSize,
-        );
-        const layers: SliceContourLayer[] = [];
-        const batchCapacity = this.getSliceBatchCapacity(gridSize);
+    private sampleSliceContoursGpu(settings: VaseSlicerSettings): SampledSliceContours {
+        const job = this.prepareSliceJob(settings);
+        const rawLayers: SliceContourLayer[] = [];
+        const layerStats = createSliceLayerWarningStats();
 
-        for (let layerIndex = 0; layerIndex < layerCount; layerIndex += batchCapacity) {
-            const batchLayerCount = Math.min(batchCapacity, layerCount - layerIndex);
-            const batchResults = this.sampleSignedDistanceFieldGpuBatch(settings, bounds, gridSize, layerCount, layerIndex, batchLayerCount);
+        for (let layerIndex = 0; layerIndex < job.layerCount; layerIndex += job.batchCapacity) {
+            const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
+            const batchResults = this.sampleSignedDistanceFieldGpuBatch(
+                settings,
+                job.bounds,
+                job.gridSize,
+                this.getSliceSampleY(settings, layerIndex),
+                job.sliceYStep,
+                batchLayerCount,
+            );
 
             for (const batchResult of batchResults) {
-                const field = batchResult.field;
-                const sampleY = batchResult.sampleY;
-                const contourExtraction = extractContoursFromFieldWithDebug(field, bounds);
-                const contourSelection = selectPrimaryContour(
-                    contourExtraction.closedContours,
-                    bounds,
-                    gridSize,
-                    settings,
-                );
-
-                if (!contourSelection.ok) {
-                    const sliceHeightMm = Math.max(settings.layerHeight, (sampleY - settings.minY) * settings.modelScale);
-                    this.lastSliceDebugSnapshot = buildSliceDebugSnapshot(
-                        field,
-                        bounds,
-                        gridSize,
-                        sampleY,
-                        layerCount,
-                        layers.length,
-                        settings,
-                        contourSelection,
-                        contourExtraction,
-                    );
-                    throw new Error(
-                        `Spiral mode requires exactly one closed contour per slice. Layer ${layers.length + 1} at Z ${sliceHeightMm.toFixed(2)} mm produced ${contourSelection.contourCount}${contourSelection.detail ? ` (${contourSelection.detail})` : ''}.`
-                    );
-                }
-
-                layers.push({
-                    sampleY,
-                    contour: this.buildPrintableContour(contourSelection.contour, settings),
-                });
+                rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
             }
         }
 
-        if (layers.length < 2) {
-            throw new Error('Planar contour slicer produced too few valid slices.');
-        }
-
-        if (settings.enableContourAlignment) {
-            this.alignContourLayers(layers);
-        }
-        return layers;
+        return this.finalizeSliceLayers(rawLayers, settings, [...job.warnings, ...summarizeSliceLayerWarnings(layerStats)]);
     }
 
     private async sampleSliceContoursGpuAsync(
         settings: VaseSlicerSettings,
         onProgress?: SliceProgressReporter
-    ): Promise<SliceContourLayer[]> {
-        const modelHeightMm = this.getModelHeightMm(settings);
-        const layerCount = Math.max(2, Math.floor(modelHeightMm / settings.layerHeight) + 1);
-        const bounds = this.getSliceBounds(settings);
-        const maxGridSize = this.getMaxSliceGridSize();
-        const sliceSpanMm = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) * settings.modelScale;
-        const requestedGridSize = clampInt(settings.radialSteps, 32, Math.max(32, maxGridSize - 1)) + 1;
-        const pointDrivenGridSize = Math.ceil(settings.pointsPerLayer * 0.5) + 1;
-        const pitchDrivenGridSize = Math.ceil(sliceSpanMm / Math.max(settings.sliceTargetGridPitchMm, 1e-6)) + 1;
-        const gridSize = clampInt(
-            Math.max(requestedGridSize, pointDrivenGridSize, pitchDrivenGridSize),
-            32,
-            maxGridSize,
-        );
+    ): Promise<SampledSliceContours> {
+        const job = this.prepareSliceJob(settings);
+        const rawLayers: SliceContourLayer[] = [];
+        const layerStats = createSliceLayerWarningStats();
 
-        reportSliceProgress(onProgress, 'sampling', 0, layerCount, 0.02, `Sampling signed-distance field (${layerCount} layers)...`);
+        reportSliceProgress(onProgress, 'sampling', 0, job.layerCount, 0.02, `Sampling signed-distance field (${job.layerCount} layers)...`);
 
-        const layers: SliceContourLayer[] = [];
-        const batchCapacity = this.getSliceBatchCapacity(gridSize);
-
-        for (let layerIndex = 0; layerIndex < layerCount; layerIndex += batchCapacity) {
-            const batchLayerCount = Math.min(batchCapacity, layerCount - layerIndex);
-            const batchResults = this.sampleSignedDistanceFieldGpuBatch(settings, bounds, gridSize, layerCount, layerIndex, batchLayerCount);
+        for (let layerIndex = 0; layerIndex < job.layerCount; layerIndex += job.batchCapacity) {
+            const batchLayerCount = Math.min(job.batchCapacity, job.layerCount - layerIndex);
+            const batchResults = this.sampleSignedDistanceFieldGpuBatch(
+                settings,
+                job.bounds,
+                job.gridSize,
+                this.getSliceSampleY(settings, layerIndex),
+                job.sliceYStep,
+                batchLayerCount,
+            );
 
             for (const batchResult of batchResults) {
-                const field = batchResult.field;
-                const sampleY = batchResult.sampleY;
-                const contourExtraction = extractContoursFromFieldWithDebug(field, bounds);
-                const contourSelection = selectPrimaryContour(
-                    contourExtraction.closedContours,
-                    bounds,
-                    gridSize,
-                    settings,
-                );
-
-                if (!contourSelection.ok) {
-                    const sliceHeightMm = Math.max(settings.layerHeight, (sampleY - settings.minY) * settings.modelScale);
-                    this.lastSliceDebugSnapshot = buildSliceDebugSnapshot(
-                        field,
-                        bounds,
-                        gridSize,
-                        sampleY,
-                        layerCount,
-                        layers.length,
-                        settings,
-                        contourSelection,
-                        contourExtraction,
-                    );
-                    throw new Error(
-                        `Spiral mode requires exactly one closed contour per slice. Layer ${layers.length + 1} at Z ${sliceHeightMm.toFixed(2)} mm produced ${contourSelection.contourCount}${contourSelection.detail ? ` (${contourSelection.detail})` : ''}.`
-                    );
-                }
-
-                layers.push({
-                    sampleY,
-                    contour: this.buildPrintableContour(contourSelection.contour, settings),
-                });
+                rawLayers.push(this.extractSliceLayer(batchResult, job, settings, rawLayers.length, layerStats));
             }
 
-            const completedLayers = Math.min(layerCount, layers.length);
-            const samplingRatio = layerCount > 0 ? completedLayers / layerCount : 1;
+            const completedLayers = Math.min(job.layerCount, rawLayers.length);
+            const samplingRatio = job.layerCount > 0 ? completedLayers / job.layerCount : 1;
             const overall = 0.02 + samplingRatio * 0.76;
             reportSliceProgress(
                 onProgress,
                 'sampling',
                 completedLayers,
-                layerCount,
+                job.layerCount,
                 overall,
-                `Extracted contours for ${completedLayers}/${layerCount} layers...`
+                `Extracted contours for ${completedLayers}/${job.layerCount} layers...`
             );
             await this.yieldToMainThread();
         }
 
-        if (layers.length < 2) {
+        return this.finalizeSliceLayers(rawLayers, settings, [...job.warnings, ...summarizeSliceLayerWarnings(layerStats)]);
+    }
+
+    private prepareSliceJob(settings: VaseSlicerSettings): SliceJob {
+        const modelHeightMm = this.getModelHeightMm(settings);
+        const layerCount = Math.max(2, Math.floor(modelHeightMm / settings.layerHeight));
+        const searchWindow = this.getSliceBounds(settings);
+        const fit = this.fitSliceBounds(settings, layerCount, searchWindow);
+        const maxGridSize = this.getMaxSliceGridSize();
+        const sliceSpanMm = Math.max(fit.bounds.maxX - fit.bounds.minX, fit.bounds.maxZ - fit.bounds.minZ) * settings.modelScale;
+        // Grid pitch at half the target segment length resolves every feature
+        // the final contour resample can keep.
+        const gridPitchMm = Math.max(0.02, settings.targetSegmentMm * 0.5);
+        const gridSize = clampInt(Math.ceil(sliceSpanMm / gridPitchMm) + 1, 32, maxGridSize);
+
+        return {
+            layerCount,
+            bounds: fit.bounds,
+            gridSize,
+            batchCapacity: this.getSliceBatchCapacity(gridSize),
+            sliceYStep: settings.layerHeight / settings.modelScale,
+            warnings: fit.warnings,
+        };
+    }
+
+    /**
+     * Coarse GPU pre-pass over the ±maxRadius search window that shrinks the
+     * slicing bounds to the model's actual XZ extent. Keeps grid resolution
+     * where the model is instead of spending it on empty window, and supports
+     * off-center models. Falls back to the full window when nothing is found.
+     */
+    private fitSliceBounds(
+        settings: VaseSlicerSettings,
+        layerCount: number,
+        window: SliceBounds,
+    ): { bounds: SliceBounds; warnings: string[] } {
+        const warnings: string[] = [];
+        const coarseGrid = 64;
+        const coarseLayerCount = Math.min(24, layerCount);
+        const firstY = this.getSliceSampleY(settings, 0);
+        const lastY = this.getSliceSampleY(settings, layerCount - 1);
+        const stepY = coarseLayerCount > 1 ? (lastY - firstY) / (coarseLayerCount - 1) : 0;
+
+        const batches = this.sampleSignedDistanceFieldGpuBatch(settings, window, coarseGrid, firstY, stepY, coarseLayerCount);
+
+        const cellX = (window.maxX - window.minX) / (coarseGrid - 1);
+        const cellZ = (window.maxZ - window.minZ) / (coarseGrid - 1);
+        // Treat any sample within ~a cell of the surface as occupied so thin
+        // walls narrower than the coarse pitch cannot slip between samples
+        // (the field is a signed distance, so proximity is reliable).
+        const nearSurface = Math.hypot(cellX, cellZ) * 1.25;
+        let minCol = coarseGrid;
+        let maxCol = -1;
+        let minRow = coarseGrid;
+        let maxRow = -1;
+        let insideTouchesEdge = false;
+        for (const batch of batches) {
+            const field = batch.field;
+            for (let row = 0; row < coarseGrid; row++) {
+                const base = row * coarseGrid;
+                for (let col = 0; col < coarseGrid; col++) {
+                    const value = field[base + col];
+                    if (value <= nearSurface) {
+                        if (col < minCol) minCol = col;
+                        if (col > maxCol) maxCol = col;
+                        if (row < minRow) minRow = row;
+                        if (row > maxRow) maxRow = row;
+                        if (value <= 0 && (col === 0 || row === 0 || col === coarseGrid - 1 || row === coarseGrid - 1)) {
+                            insideTouchesEdge = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (maxCol < 0) {
+            // Nothing near the surface anywhere; keep the full window so the
+            // fine pass produces its own diagnostics.
+            return { bounds: window, warnings };
+        }
+
+        // Only warn when the interior actually reaches the window boundary;
+        // merely being near it is normal for scenes whose maxRadius hugs the
+        // model.
+        if (insideTouchesEdge) {
+            warnings.push('Model reaches the edge of the slice window; geometry is being clipped. Increase "Slice half-extent" or re-center the model.');
+        }
+
+        const margin = (2 * Math.max(cellX, cellZ)) + (settings.lineWidth / Math.max(settings.modelScale, 1e-6));
+        const minX = Math.max(window.minX, window.minX + (minCol * cellX) - margin);
+        const maxX = Math.min(window.maxX, window.minX + (maxCol * cellX) + margin);
+        const minZ = Math.max(window.minZ, window.minZ + (minRow * cellZ) - margin);
+        const maxZ = Math.min(window.maxZ, window.minZ + (maxRow * cellZ) + margin);
+
+        // Square bounds centered on the fit keep the sampling pitch isotropic.
+        const halfSpan = Math.max(maxX - minX, maxZ - minZ) * 0.5;
+        const centerX = (minX + maxX) * 0.5;
+        const centerZ = (minZ + maxZ) * 0.5;
+        return {
+            bounds: {
+                minX: Math.max(window.minX, centerX - halfSpan),
+                maxX: Math.min(window.maxX, centerX + halfSpan),
+                minZ: Math.max(window.minZ, centerZ - halfSpan),
+                maxZ: Math.min(window.maxZ, centerZ + halfSpan),
+            },
+            warnings,
+        };
+    }
+
+    private extractSliceLayer(
+        batchResult: SliceGpuBatchResult,
+        job: SliceJob,
+        settings: VaseSlicerSettings,
+        acceptedLayerCount: number,
+        layerStats: SliceLayerWarningStats,
+    ): SliceContourLayer {
+        const contourExtraction = extractContoursFromField(batchResult.field, job.gridSize, job.bounds);
+        const contourSelection = selectPrimaryContour(
+            contourExtraction.closedContours,
+            job.bounds,
+            job.gridSize,
+            settings,
+        );
+
+        if (!contourSelection.ok) {
+            this.lastSliceDebugSnapshot = buildSliceDebugSnapshot(
+                batchResult.field,
+                job.bounds,
+                job.gridSize,
+                batchResult.sampleY,
+                job.layerCount,
+                acceptedLayerCount,
+                settings,
+                contourSelection,
+                contourExtraction,
+            );
+            throw new Error(buildContourFailureMessage(
+                contourSelection,
+                contourExtraction,
+                job.bounds,
+                job.gridSize,
+                settings,
+                batchResult.sampleY,
+                acceptedLayerCount,
+                job.layerCount,
+            ));
+        }
+
+        if (contourSelection.ignoredHoleCount > 0) {
+            layerStats.holeLayers += 1;
+            layerStats.maxHoleCount = Math.max(layerStats.maxHoleCount, contourSelection.ignoredHoleCount);
+        }
+        if (contourSelection.droppedLoopCount > 0) {
+            layerStats.droppedLayers += 1;
+            layerStats.droppedLargestAreaMm2 = Math.max(layerStats.droppedLargestAreaMm2, contourSelection.droppedLargestAreaMm2);
+        }
+        if (contourSelection.skippedIslandCount > 0) {
+            layerStats.islandLayers += 1;
+            layerStats.islandLargestAreaMm2 = Math.max(layerStats.islandLargestAreaMm2, contourSelection.skippedIslandLargestAreaMm2);
+        }
+
+        return {
+            sampleY: batchResult.sampleY,
+            contour: contourSelection.contour,
+        };
+    }
+
+    private finalizeSliceLayers(
+        rawLayers: SliceContourLayer[],
+        settings: VaseSlicerSettings,
+        warnings: string[],
+    ): SampledSliceContours {
+        if (rawLayers.length < 2) {
             throw new Error('Planar contour slicer produced too few valid slices.');
         }
+
+        // Single quality knob: derive the per-layer point count from the
+        // largest perimeter so segments come out near targetSegmentMm on every
+        // layer. Mutates the merged settings copy so downstream consumers and
+        // G-code metadata report the derived value.
+        let maxPerimeterMm = 0;
+        for (const layer of rawLayers) {
+            maxPerimeterMm = Math.max(maxPerimeterMm, contourPerimeter(layer.contour) * settings.modelScale);
+        }
+        settings.pointsPerLayer = clampInt(Math.ceil(maxPerimeterMm / settings.targetSegmentMm), 48, 4096);
+
+        const layers = rawLayers.map((layer) => ({
+            sampleY: layer.sampleY,
+            contour: this.buildPrintableContour(layer.contour, settings),
+        }));
 
         if (settings.enableContourAlignment) {
             this.alignContourLayers(layers);
         }
-        return layers;
+
+        return { layers, warnings };
     }
 
     private async yieldToMainThread(): Promise<void> {
@@ -723,8 +882,8 @@ export class Slicer {
         settings: VaseSlicerSettings,
         bounds: SliceBounds,
         gridSize: number,
-        layerCount: number,
-        layerStartIndex: number,
+        firstSampleY: number,
+        sliceYStep: number,
         batchLayerCount: number,
     ): SliceGpuBatchResult[] {
         const width = gridSize;
@@ -733,11 +892,6 @@ export class Slicer {
             settings.hitEpsilon * 8.0,
             Math.hypot(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ)
         );
-        const firstSampleY = this.getSliceSampleY(settings, layerCount, layerStartIndex);
-        const nextSampleY = layerStartIndex + 1 < layerCount
-            ? this.getSliceSampleY(settings, layerCount, layerStartIndex + 1)
-            : firstSampleY;
-        const sliceYStep = nextSampleY - firstSampleY;
 
         this.ensureRenderTarget(width, height);
         this.ensureSlicerProgram();
@@ -833,7 +987,11 @@ export class Slicer {
     ): VaseBaseToolpath {
         const layers = contourLayers.length;
         const perLayer = settings.pointsPerLayer;
-        const modelHeightMm = this.getModelHeightMm(settings);
+        // The helix tops out at layerHeight*layers, which stays at or below the
+        // model height because the layer count is floored. No Y clamping: a
+        // clamped tail would flatten part of the last revolution at the top
+        // and then get traced again by the cap (double extrusion at the rim).
+        const printedHeightMm = settings.layerHeight * layers;
 
         const firstLayerExtrusionPerMm = calculateExtrusionPerMm(settings, settings.firstLayerLineWidth);
         const extrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
@@ -865,7 +1023,7 @@ export class Slicer {
                 const point = contour[k] ?? contour[contour.length - 1];
                 sampleX = point.x;
                 sampleZ = point.z;
-                y = Math.min(modelHeightMm, settings.layerHeight);
+                y = settings.layerHeight;
                 segmentExtrusionPerMm = firstLayerExtrusionPerMm;
             } else {
                 // spiralT advances by 1/perLayer per sample; at n=perLayer it is 1/perLayer
@@ -880,7 +1038,7 @@ export class Slicer {
                 const highPoint = highContour[k] ?? highContour[highContour.length - 1];
                 sampleX = lerp(lowPoint.x, highPoint.x, blend);
                 sampleZ = lerp(lowPoint.z, highPoint.z, blend);
-                y = Math.min(modelHeightMm, settings.layerHeight * (1 + spiralT));
+                y = settings.layerHeight * (1 + spiralT);
                 segmentExtrusionPerMm = layerIndex === 1
                     ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, blend)
                     : extrusionPerMm;
@@ -918,7 +1076,7 @@ export class Slicer {
         // a group.
         if (layers >= 2 && perLayer >= 3) {
             const topContour = contourLayers[layers - 1].contour;
-            const topY = Math.min(modelHeightMm, settings.layerHeight * layers);
+            const topY = printedHeightMm;
             const topLayerIndex = layers;
             const divisor = Math.max(1, perLayer - 1);
             for (let k = 0; k < perLayer; k++) {
@@ -948,7 +1106,7 @@ export class Slicer {
             points,
             layerCount: layers,
             pointsPerLayer: perLayer,
-            estimatedHeight: this.getModelHeightMm(settings),
+            estimatedHeight: printedHeightMm,
         };
     }
 
@@ -1221,10 +1379,13 @@ export class Slicer {
         };
     }
 
-    private getSliceSampleY(settings: VaseSlicerSettings, layerCount: number, layerIndex: number): number {
-        const height = settings.maxY - settings.minY;
-        const t = (layerIndex + 0.5) / layerCount;
-        return settings.minY + (height * t);
+    private getSliceSampleY(settings: VaseSlicerSettings, layerIndex: number): number {
+        // Contour j is deposited while the helix climbs from layerHeight*j to
+        // layerHeight*(j+1); sample the SDF at the mid-height of that band so
+        // printed geometry lines up with the field instead of lagging behind
+        // it by up to a layer.
+        const midHeightMm = settings.layerHeight * (layerIndex + 0.5);
+        return settings.minY + (midHeightMm / settings.modelScale);
     }
 
     private sampleYToPrintHeightMm(sampleY: number, settings: VaseSlicerSettings): number {
@@ -1446,8 +1607,7 @@ export class Slicer {
         lines.push(`; Line width (mm): ${settings.lineWidth.toFixed(3)}`);
         lines.push(`; First layer line width (mm): ${settings.firstLayerLineWidth.toFixed(3)}`);
         lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
-        lines.push(`; Target slice grid pitch (mm): ${settings.sliceTargetGridPitchMm.toFixed(3)}`);
-        lines.push(`; Minimum slice grid: ${settings.radialSteps}`);
+        lines.push(`; Target segment length (mm): ${settings.targetSegmentMm.toFixed(3)}`);
         lines.push(`; First layer print speed (mm/s): ${settings.firstLayerPrintSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Print speed (mm/s): ${settings.printSpeedMmPerSec.toFixed(1)}`);
         lines.push(`; Minimum layer time (s): ${settings.minLayerTimeSec.toFixed(2)}`);
@@ -1647,25 +1807,15 @@ export class Slicer {
         sliceYStep: number,
     ): SliceGpuBatchResult[] {
         const results: SliceGpuBatchResult[] = [];
+        const decodeScale = (2.0 * distanceRange) / 65535;
         for (let batchIndex = 0; batchIndex < batchLayerCount; batchIndex++) {
-            const field: number[][] = [];
-            const rowOffset = batchIndex * gridSize;
-            for (let y = 0; y < gridSize; y++) {
-                const row: number[] = [];
-                const sourceRow = rowOffset + y;
-                for (let x = 0; x < width; x++) {
-                    const idx = ((sourceRow * width) + x) * 4;
-                    const alpha = pixels[idx + 3];
-                    if (alpha < 1) {
-                        row.push(distanceRange);
-                        continue;
-                    }
-
-                    const packed = pixels[idx] * 256 + pixels[idx + 1];
-                    const normalized = packed / 65535;
-                    row.push(((normalized * 2.0) - 1.0) * distanceRange);
-                }
-                field.push(row);
+            const field = new Float32Array(gridSize * gridSize);
+            let idx = batchIndex * gridSize * width * 4;
+            for (let out = 0; out < field.length; out++, idx += 4) {
+                const alpha = pixels[idx + 3];
+                field[out] = alpha < 1
+                    ? distanceRange
+                    : (((pixels[idx] * 256) + pixels[idx + 1]) * decodeScale) - distanceRange;
             }
             results.push({
                 sampleY: firstSampleY + (sliceYStep * batchIndex),
@@ -1886,10 +2036,14 @@ function worldPointToScenePoint(point: ToolpathPoint, settings: VaseSlicerSettin
     };
 }
 
-function extractContoursFromFieldWithDebug(field: number[][], bounds: SliceBounds): SliceContourExtractionDebug {
-    const rows = field.length;
-    const cols = field[0]?.length ?? 0;
-    if (rows < 2 || cols < 2) {
+/**
+ * Marching squares over a flat row-major field. Only boundary cells (mixed
+ * corner signs) pay for interpolation or allocation; the full-grid scan is a
+ * tight typed-array loop. Shared cell edges are keyed by integer edge ids so
+ * segment joining is exact.
+ */
+function extractContoursFromField(field: Float32Array, gridSize: number, bounds: SliceBounds): SliceContourExtractionDebug {
+    if (gridSize < 2) {
         return {
             closedContours: [],
             openPolylines: [],
@@ -1898,10 +2052,33 @@ function extractContoursFromFieldWithDebug(field: number[][], bounds: SliceBound
     }
 
     const segments: SliceSegment[] = [];
-    for (let row = 0; row < rows - 1; row++) {
-        for (let col = 0; col < cols - 1; col++) {
-            const cellSegments = extractCellSegments(field, bounds, rows, cols, row, col);
-            segments.push(...cellSegments);
+    const inv = 1 / (gridSize - 1);
+    for (let row = 0; row < gridSize - 1; row++) {
+        const rowBase = row * gridSize;
+        const nextBase = rowBase + gridSize;
+        const z0 = lerp(bounds.minZ, bounds.maxZ, row * inv);
+        const z1 = lerp(bounds.minZ, bounds.maxZ, (row + 1) * inv);
+        for (let col = 0; col < gridSize - 1; col++) {
+            const bl = field[rowBase + col];
+            const br = field[rowBase + col + 1];
+            const tl = field[nextBase + col];
+            const tr = field[nextBase + col + 1];
+
+            const caseIndex =
+                ((tl <= 0 ? 1 : 0) << 3) |
+                ((tr <= 0 ? 1 : 0) << 2) |
+                ((br <= 0 ? 1 : 0) << 1) |
+                (bl <= 0 ? 1 : 0);
+            if (caseIndex === 0 || caseIndex === 15) {
+                continue;
+            }
+
+            const x0 = lerp(bounds.minX, bounds.maxX, col * inv);
+            const x1 = lerp(bounds.minX, bounds.maxX, (col + 1) * inv);
+            const cellSegments = extractCellSegments(gridSize, row, col, x0, x1, z0, z1, bl, br, tr, tl, caseIndex);
+            for (const segment of cellSegments) {
+                segments.push(segment);
+            }
         }
     }
 
@@ -1919,29 +2096,19 @@ function extractContoursFromFieldWithDebug(field: number[][], bounds: SliceBound
 }
 
 function extractCellSegments(
-    field: number[][],
-    bounds: SliceBounds,
-    rowCount: number,
-    columnCount: number,
+    gridSize: number,
     row: number,
-    col: number
+    col: number,
+    x0: number,
+    x1: number,
+    z0: number,
+    z1: number,
+    bl: number,
+    br: number,
+    tr: number,
+    tl: number,
+    caseIndex: number,
 ): SliceSegment[] {
-    const x0 = lerp(bounds.minX, bounds.maxX, col / Math.max(1, columnCount - 1));
-    const x1 = lerp(bounds.minX, bounds.maxX, (col + 1) / Math.max(1, columnCount - 1));
-    const z0 = lerp(bounds.minZ, bounds.maxZ, row / Math.max(1, rowCount - 1));
-    const z1 = lerp(bounds.minZ, bounds.maxZ, (row + 1) / Math.max(1, rowCount - 1));
-
-    const bl = field[row][col];
-    const br = field[row][col + 1];
-    const tr = field[row + 1][col + 1];
-    const tl = field[row + 1][col];
-
-    const caseIndex =
-        ((tl <= 0 ? 1 : 0) << 3) |
-        ((tr <= 0 ? 1 : 0) << 2) |
-        ((br <= 0 ? 1 : 0) << 1) |
-        (bl <= 0 ? 1 : 0);
-
     const center = 0.25 * (bl + br + tr + tl);
     switch (caseIndex) {
         case 0:
@@ -1949,135 +2116,136 @@ function extractCellSegments(
             return [];
         case 1:
             return [[
-                createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                createBottomVertex(row, col, x0, x1, z0, bl, br),
+                createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
             ]];
         case 2:
             return [[
-                createBottomVertex(row, col, x0, x1, z0, bl, br),
-                createRightVertex(row, col, x1, z0, z1, br, tr),
+                createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
+                createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
             ]];
         case 3:
             return [[
-                createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                createRightVertex(row, col, x1, z0, z1, br, tr),
+                createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
             ]];
         case 4:
             return [[
-                createRightVertex(row, col, x1, z0, z1, br, tr),
-                createTopVertex(row, col, x0, x1, z1, tr, tl),
+                createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
+                createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
             ]];
         case 5:
             return center <= 0
                 ? [[
-                    createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                    createTopVertex(row, col, x0, x1, z1, tr, tl),
+                    createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                    createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
                 ], [
-                    createBottomVertex(row, col, x0, x1, z0, bl, br),
-                    createRightVertex(row, col, x1, z0, z1, br, tr),
+                    createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
+                    createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
                 ]]
                 : [[
-                    createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                    createBottomVertex(row, col, x0, x1, z0, bl, br),
+                    createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                    createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
                 ], [
-                    createTopVertex(row, col, x0, x1, z1, tr, tl),
-                    createRightVertex(row, col, x1, z0, z1, br, tr),
+                    createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
+                    createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
                 ]];
         case 6:
             return [[
-                createBottomVertex(row, col, x0, x1, z0, bl, br),
-                createTopVertex(row, col, x0, x1, z1, tr, tl),
+                createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
+                createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
             ]];
         case 7:
             return [[
-                createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                createTopVertex(row, col, x0, x1, z1, tr, tl),
+                createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
             ]];
         case 8:
             return [[
-                createTopVertex(row, col, x0, x1, z1, tr, tl),
-                createLeftVertex(row, col, x0, z0, z1, tl, bl),
+                createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
+                createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
             ]];
         case 9:
             return [[
-                createBottomVertex(row, col, x0, x1, z0, bl, br),
-                createTopVertex(row, col, x0, x1, z1, tr, tl),
+                createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
+                createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
             ]];
         case 10:
             return center <= 0
                 ? [[
-                    createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                    createBottomVertex(row, col, x0, x1, z0, bl, br),
+                    createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                    createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
                 ], [
-                    createTopVertex(row, col, x0, x1, z1, tr, tl),
-                    createRightVertex(row, col, x1, z0, z1, br, tr),
+                    createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
+                    createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
                 ]]
                 : [[
-                    createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                    createTopVertex(row, col, x0, x1, z1, tr, tl),
+                    createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                    createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
                 ], [
-                    createBottomVertex(row, col, x0, x1, z0, bl, br),
-                    createRightVertex(row, col, x1, z0, z1, br, tr),
+                    createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
+                    createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
                 ]];
         case 11:
             return [[
-                createTopVertex(row, col, x0, x1, z1, tr, tl),
-                createRightVertex(row, col, x1, z0, z1, br, tr),
+                createTopVertex(gridSize, row, col, x0, x1, z1, tr, tl),
+                createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
             ]];
         case 12:
             return [[
-                createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                createRightVertex(row, col, x1, z0, z1, br, tr),
+                createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
             ]];
         case 13:
             return [[
-                createBottomVertex(row, col, x0, x1, z0, bl, br),
-                createRightVertex(row, col, x1, z0, z1, br, tr),
+                createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
+                createRightVertex(gridSize, row, col, x1, z0, z1, br, tr),
             ]];
         case 14:
             return [[
-                createLeftVertex(row, col, x0, z0, z1, tl, bl),
-                createBottomVertex(row, col, x0, x1, z0, bl, br),
+                createLeftVertex(gridSize, row, col, x0, z0, z1, tl, bl),
+                createBottomVertex(gridSize, row, col, x0, x1, z0, bl, br),
             ]];
         default:
             return [];
     }
 }
 
-function createBottomVertex(row: number, col: number, x0: number, x1: number, z0: number, bl: number, br: number): SliceSegmentVertex {
+function createBottomVertex(gridSize: number, row: number, col: number, x0: number, x1: number, z0: number, bl: number, br: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
-        edgeKey('h', row, col),
+        edgeKey(0, gridSize, row, col),
         interpolateIsoPoint({ x: x0, z: z0 }, bl, { x: x1, z: z0 }, br),
     );
 }
 
-function createRightVertex(row: number, col: number, x1: number, z0: number, z1: number, br: number, tr: number): SliceSegmentVertex {
+function createRightVertex(gridSize: number, row: number, col: number, x1: number, z0: number, z1: number, br: number, tr: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
-        edgeKey('v', row, col + 1),
+        edgeKey(1, gridSize, row, col + 1),
         interpolateIsoPoint({ x: x1, z: z0 }, br, { x: x1, z: z1 }, tr),
     );
 }
 
-function createTopVertex(row: number, col: number, x0: number, x1: number, z1: number, tr: number, tl: number): SliceSegmentVertex {
+function createTopVertex(gridSize: number, row: number, col: number, x0: number, x1: number, z1: number, tr: number, tl: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
-        edgeKey('h', row + 1, col),
+        edgeKey(0, gridSize, row + 1, col),
         interpolateIsoPoint({ x: x1, z: z1 }, tr, { x: x0, z: z1 }, tl),
     );
 }
 
-function createLeftVertex(row: number, col: number, x0: number, z0: number, z1: number, tl: number, bl: number): SliceSegmentVertex {
+function createLeftVertex(gridSize: number, row: number, col: number, x0: number, z0: number, z1: number, tl: number, bl: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
-        edgeKey('v', row, col),
+        edgeKey(1, gridSize, row, col),
         interpolateIsoPoint({ x: x0, z: z1 }, tl, { x: x0, z: z0 }, bl),
     );
 }
 
-function createSliceSegmentVertex(key: string, point: SlicePoint): SliceSegmentVertex {
+function createSliceSegmentVertex(key: number, point: SlicePoint): SliceSegmentVertex {
     return { key, point };
 }
 
-function edgeKey(axis: 'h' | 'v', row: number, col: number): string {
-    return `${axis}:${row}:${col}`;
+/** Integer id for a grid edge: axis 0 = horizontal, 1 = vertical. */
+function edgeKey(axis: 0 | 1, gridSize: number, row: number, col: number): number {
+    return (((row * (gridSize + 1)) + col) * 2) + axis;
 }
 
 function interpolateIsoPoint(a: SlicePoint, aValue: number, b: SlicePoint, bValue: number): SlicePoint {
@@ -2097,7 +2265,7 @@ function joinSegmentsIntoContours(segments: SliceSegment[]): { closedContours: S
         };
     }
 
-    const adjacency = new Map<string, Array<{ segmentIndex: number; endpointIndex: 0 | 1 }>>();
+    const adjacency = new Map<number, Array<{ segmentIndex: number; endpointIndex: 0 | 1 }>>();
     const contours: SlicePoint[][] = [];
     const openPolylines: SlicePoint[][] = [];
 
@@ -2198,14 +2366,33 @@ function dedupeClosedContour(points: SlicePoint[]): SlicePoint[] {
     return cleaned;
 }
 
+interface SliceContourSelectionOk {
+    ok: true;
+    contour: SlicePoint[];
+    contourCount: number;
+    /** Significant contours nested inside the outer wall (holes) that vase mode skips. */
+    ignoredHoleCount: number;
+    /** Sub-printable loops dropped by the significance filter. */
+    droppedLoopCount: number;
+    droppedLargestAreaMm2: number;
+    /** Small disconnected islands skipped instead of failing the slice. */
+    skippedIslandCount: number;
+    skippedIslandLargestAreaMm2: number;
+}
+
+interface SliceContourSelectionFail {
+    ok: false;
+    contourCount: number;
+    detail: string;
+    kind: 'none' | 'islands';
+}
+
 function selectPrimaryContour(
     rawContours: SlicePoint[][],
     bounds: SliceBounds,
     gridSize: number,
     settings: VaseSlicerSettings,
-):
-    | { ok: true; contour: SlicePoint[]; contourCount: number; detail: string }
-    | { ok: false; contourCount: number; detail: string } {
+): SliceContourSelectionOk | SliceContourSelectionFail {
     const candidates = rawContours
         .map((contour) => buildContourCandidate(contour))
         .filter((candidate) => candidate !== null)
@@ -2217,13 +2404,95 @@ function selectPrimaryContour(
         });
 
     if (candidates.length === 0) {
-        return { ok: false, contourCount: 0, detail: 'no valid closed loops' };
-    }
-    if (candidates.length === 1) {
-        return { ok: true, contour: candidates[0].contour, contourCount: 1, detail: '' };
+        return { ok: false, contourCount: 0, detail: 'no valid closed loops', kind: 'none' };
     }
 
     const primary = candidates[0];
+    const areaToMm2 = settings.modelScale * settings.modelScale;
+    if (candidates.length === 1) {
+        return {
+            ok: true,
+            contour: primary.contour,
+            contourCount: 1,
+            ignoredHoleCount: 0,
+            droppedLoopCount: 0,
+            droppedLargestAreaMm2: 0,
+            skippedIslandCount: 0,
+            skippedIslandLargestAreaMm2: 0,
+        };
+    }
+
+    // Absolute printable-size thresholds only: a secondary loop is significant
+    // as soon as it is big enough to print, regardless of how large the
+    // primary is. (A relative cut silently discards real features on large
+    // slices.) A thin fin qualifies via perimeter even when its area is tiny.
+    const thresholds = getContourSignificanceThresholds(bounds, gridSize, settings);
+    const significantSecondaries: SliceContourCandidate[] = [];
+    let droppedLoopCount = 0;
+    let droppedLargestArea = 0;
+    for (let index = 1; index < candidates.length; index++) {
+        const candidate = candidates[index];
+        if (candidate.area >= thresholds.minArea || candidate.perimeter >= thresholds.minPerimeter) {
+            significantSecondaries.push(candidate);
+        } else {
+            droppedLoopCount++;
+            droppedLargestArea = Math.max(droppedLargestArea, candidate.area);
+        }
+    }
+
+    // Nested loops are holes in the outer wall: vase mode prints the outer
+    // wall only, so proceed and report. Disjoint loops are separate islands a
+    // single spiral cannot reach. (Deeper nesting — an island inside a hole —
+    // is classified as a hole here; the warning still points at the layer.)
+    let holeCount = 0;
+    const islandAreasMm2: number[] = [];
+    let skippedIslandCount = 0;
+    let skippedIslandLargest = 0;
+    for (const candidate of significantSecondaries) {
+        if (pointInContour(candidate.contour[0], primary.contour)) {
+            holeCount++;
+            continue;
+        }
+        const areaMm2 = candidate.area * areaToMm2;
+        // A spiral physically cannot reach a disjoint island of any size, but
+        // failing an entire slice over a speck (typical for noise-displaced
+        // surfaces) is worse than omitting it visibly. Below this area the
+        // island is skipped with a warning; above it the slice fails.
+        if (areaMm2 < MAX_SKIPPABLE_ISLAND_AREA_MM2) {
+            skippedIslandCount++;
+            skippedIslandLargest = Math.max(skippedIslandLargest, areaMm2);
+        } else {
+            islandAreasMm2.push(areaMm2);
+        }
+    }
+
+    if (islandAreasMm2.length > 0) {
+        const areas = [primary.area * areaToMm2, ...islandAreasMm2];
+        return {
+            ok: false,
+            contourCount: islandAreasMm2.length + 1,
+            kind: 'islands',
+            detail: `${islandAreasMm2.length + 1} separate islands (${areas.slice(0, 3).map((area) => `${area.toFixed(2)} mm^2`).join(', ')}${areas.length > 3 ? ', ...' : ''})`,
+        };
+    }
+
+    return {
+        ok: true,
+        contour: primary.contour,
+        contourCount: candidates.length,
+        ignoredHoleCount: holeCount,
+        droppedLoopCount,
+        droppedLargestAreaMm2: droppedLargestArea * areaToMm2,
+        skippedIslandCount,
+        skippedIslandLargestAreaMm2: skippedIslandLargest,
+    };
+}
+
+function getContourSignificanceThresholds(
+    bounds: SliceBounds,
+    gridSize: number,
+    settings: VaseSlicerSettings,
+): { minArea: number; minPerimeter: number } {
     const gridPitch = Math.max(
         (bounds.maxX - bounds.minX) / Math.max(1, gridSize - 1),
         (bounds.maxZ - bounds.minZ) / Math.max(1, gridSize - 1),
@@ -2233,57 +2502,125 @@ function selectPrimaryContour(
         settings.hitEpsilon * 6.0,
         (Math.max(settings.nozzleDiameter, settings.lineWidth) * 0.35) / Math.max(settings.modelScale, 1e-6),
     );
-    const minSecondaryArea = Math.max(
-        primary.area * 0.08,
-        printableFeatureSize * printableFeatureSize * 2.0,
-    );
-    const minSecondaryPerimeter = Math.max(
-        primary.perimeter * 0.12,
-        printableFeatureSize * 8.0,
-    );
-
-    const significant = candidates.filter((candidate, index) => (
-        index === 0 || (candidate.area >= minSecondaryArea && candidate.perimeter >= minSecondaryPerimeter)
-    ));
-
-    if (significant.length > 1) {
-        return {
-            ok: false,
-            contourCount: significant.length,
-            detail: significant
-                .slice(0, 3)
-                .map((candidate) => `${(candidate.area * settings.modelScale * settings.modelScale).toFixed(2)}mm^2`)
-                .join(', '),
-        };
-    }
-
-    const ignoredCount = Math.max(0, candidates.length - 1);
     return {
-        ok: true,
-        contour: primary.contour,
-        contourCount: candidates.length,
-        detail: ignoredCount > 0 ? `ignored ${ignoredCount} tiny loop${ignoredCount === 1 ? '' : 's'}` : '',
+        minArea: printableFeatureSize * printableFeatureSize * 2.0,
+        minPerimeter: printableFeatureSize * 4.0,
     };
 }
 
+function pointInContour(point: SlicePoint, contour: SlicePoint[]): boolean {
+    let inside = false;
+    for (let i = 0, j = contour.length - 1; i < contour.length; j = i++) {
+        const a = contour[i];
+        const b = contour[j];
+        if ((a.z > point.z) !== (b.z > point.z)) {
+            const t = (point.z - a.z) / (b.z - a.z);
+            if (point.x < a.x + ((b.x - a.x) * t)) {
+                inside = !inside;
+            }
+        }
+    }
+    return inside;
+}
+
+function buildContourFailureMessage(
+    selection: SliceContourSelectionFail,
+    extraction: SliceContourExtractionDebug,
+    bounds: SliceBounds,
+    gridSize: number,
+    settings: VaseSlicerSettings,
+    sampleY: number,
+    acceptedLayerCount: number,
+    layerCount: number,
+): string {
+    const sliceHeightMm = Math.max(settings.layerHeight, (sampleY - settings.minY) * settings.modelScale);
+    const layerLabel = `Layer ${acceptedLayerCount + 1}/${layerCount} at Z ${sliceHeightMm.toFixed(2)} mm`;
+    let message = selection.kind === 'islands'
+        ? `Spiral vase mode needs a single connected outline per layer. ${layerLabel} has ${selection.detail}.`
+        : `${layerLabel} produced no closed outline${selection.detail ? ` (${selection.detail})` : ''}.`;
+    if (extractionTouchesBounds(extraction, bounds, gridSize)) {
+        message += ' The surface crosses the slice window edge - increase "Slice half-extent" or re-center the model in XZ.';
+    }
+    return message;
+}
+
+function extractionTouchesBounds(
+    extraction: SliceContourExtractionDebug,
+    bounds: SliceBounds,
+    gridSize: number,
+): boolean {
+    const tolerance = (Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) / Math.max(1, gridSize - 1)) * 1.5;
+    for (const polyline of extraction.openPolylines) {
+        if (polyline.length === 0) {
+            continue;
+        }
+        for (const point of [polyline[0], polyline[polyline.length - 1]]) {
+            if (
+                point.x - bounds.minX <= tolerance ||
+                bounds.maxX - point.x <= tolerance ||
+                point.z - bounds.minZ <= tolerance ||
+                bounds.maxZ - point.z <= tolerance
+            ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+function createSliceLayerWarningStats(): SliceLayerWarningStats {
+    return {
+        holeLayers: 0,
+        maxHoleCount: 0,
+        droppedLayers: 0,
+        droppedLargestAreaMm2: 0,
+        islandLayers: 0,
+        islandLargestAreaMm2: 0,
+    };
+}
+
+function summarizeSliceLayerWarnings(stats: SliceLayerWarningStats): string[] {
+    const warnings: string[] = [];
+    if (stats.holeLayers > 0) {
+        warnings.push(
+            `Ignored inner contour${stats.maxHoleCount === 1 ? '' : 's'} (holes) on ${stats.holeLayers} layer${stats.holeLayers === 1 ? '' : 's'} - vase mode prints only the outer wall.`
+        );
+    }
+    if (stats.droppedLayers > 0) {
+        warnings.push(
+            `Ignored sub-printable loops on ${stats.droppedLayers} layer${stats.droppedLayers === 1 ? '' : 's'} (largest ${stats.droppedLargestAreaMm2.toFixed(2)} mm^2).`
+        );
+    }
+    if (stats.islandLayers > 0) {
+        warnings.push(
+            `Skipped small disconnected island${stats.islandLargestAreaMm2 === 0 ? '' : 's'} on ${stats.islandLayers} layer${stats.islandLayers === 1 ? '' : 's'} (largest ${stats.islandLargestAreaMm2.toFixed(2)} mm^2) - a single spiral cannot reach them.`
+        );
+    }
+    return warnings;
+}
+
 function buildSliceDebugSnapshot(
-    field: number[][],
+    field: Float32Array,
     bounds: SliceBounds,
     gridSize: number,
     sampleY: number,
     layerCount: number,
     acceptedLayerCount: number,
     settings: VaseSlicerSettings,
-    contourSelection: { ok: false; contourCount: number; detail: string },
+    contourSelection: SliceContourSelectionFail,
     extraction: SliceContourExtractionDebug,
 ): SliceDebugSnapshot {
     let minDistance = Number.POSITIVE_INFINITY;
     let maxDistance = Number.NEGATIVE_INFINITY;
-    for (const row of field) {
-        for (const value of row) {
-            minDistance = Math.min(minDistance, value);
-            maxDistance = Math.max(maxDistance, value);
-        }
+    for (let index = 0; index < field.length; index++) {
+        const value = field[index];
+        minDistance = Math.min(minDistance, value);
+        maxDistance = Math.max(maxDistance, value);
+    }
+
+    const fieldRows: number[][] = [];
+    for (let row = 0; row < gridSize; row++) {
+        fieldRows.push(Array.from(field.subarray(row * gridSize, (row + 1) * gridSize)));
     }
 
     const debugSelection = evaluateContourSignificance(
@@ -2308,7 +2645,7 @@ function buildSliceDebugSnapshot(
         openPolylines: extraction.openPolylines,
         segments: extraction.segments,
         contourMetrics: debugSelection.metrics,
-        field,
+        field: fieldRows,
     };
 }
 
@@ -2335,30 +2672,15 @@ function evaluateContourSignificance(
         };
     }
 
-    const primary = candidates[0];
-    const gridPitch = Math.max(
-        (bounds.maxX - bounds.minX) / Math.max(1, gridSize - 1),
-        (bounds.maxZ - bounds.minZ) / Math.max(1, gridSize - 1),
-    );
-    const printableFeatureSize = Math.max(
-        gridPitch * 3.0,
-        settings.hitEpsilon * 6.0,
-        (Math.max(settings.nozzleDiameter, settings.lineWidth) * 0.35) / Math.max(settings.modelScale, 1e-6),
-    );
-    const minSecondaryArea = Math.max(
-        primary.area * 0.08,
-        printableFeatureSize * printableFeatureSize * 2.0,
-    );
-    const minSecondaryPerimeter = Math.max(
-        primary.perimeter * 0.12,
-        printableFeatureSize * 8.0,
-    );
+    // Mirror selectPrimaryContour's absolute thresholds so the debug view
+    // shows the same significance verdicts as the selection itself.
+    const thresholds = getContourSignificanceThresholds(bounds, gridSize, settings);
 
     const significantIndices = new Set<number>();
     const metrics: SliceDebugContourMetric[] = [];
     for (let index = 0; index < candidates.length; index++) {
         const candidate = candidates[index];
-        const significant = index === 0 || (candidate.area >= minSecondaryArea && candidate.perimeter >= minSecondaryPerimeter);
+        const significant = index === 0 || candidate.area >= thresholds.minArea || candidate.perimeter >= thresholds.minPerimeter;
         if (significant) {
             significantIndices.add(index);
         }

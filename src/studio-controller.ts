@@ -555,7 +555,7 @@ export class StudioController {
     public async buildVaseGcodeArtifact(
         cacheKey: string,
         onProgress?: (update: SliceProgressUpdate) => void
-    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number; warnings: string[] }> {
         return this.runWhilePreviewPausedAsync(async () => {
             const baseResult = await this.slicer.generateVaseBaseToolpathWithProgress(this.resolvedSettings, onProgress);
             this.cachedBaseToolpath = {
@@ -571,7 +571,7 @@ export class StudioController {
 
     public async buildVaseGcodeArtifactFromCachedBase(
         cacheKey: string,
-    ): Promise<{ filename: string; gcode: string; bytes: number; points: number }> {
+    ): Promise<{ filename: string; gcode: string; bytes: number; points: number; warnings: string[] }> {
         return this.runWhilePreviewPausedAsync(async () => {
             if (!this.cachedBaseToolpath || this.cachedBaseToolpath.cacheKey !== cacheKey) {
                 throw new Error('No cached slice is available. Generate toolpath first.');
@@ -731,7 +731,7 @@ export class StudioController {
         return this.resolvedPipeline.filter((step) => step.enabled && !step.error);
     }
 
-    private finishArtifactFromBase(baseToolpath: VaseBaseToolpath): { filename: string; gcode: string; bytes: number; points: number } {
+    private finishArtifactFromBase(baseToolpath: VaseBaseToolpath): { filename: string; gcode: string; bytes: number; points: number; warnings: string[] } {
         const result = this.slicer.generateVaseGcodeFromBaseToolpath(
             baseToolpath,
             this.resolvedSettings,
@@ -752,6 +752,7 @@ export class StudioController {
             gcode: result.gcode,
             bytes: result.gcode.length,
             points: result.toolpath.points.length,
+            warnings: result.warnings,
         };
     }
 
