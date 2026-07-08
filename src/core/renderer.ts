@@ -72,6 +72,8 @@ class Renderer {
     private lastPointerY: number;
     private activePointers: Map<number, { x: number; y: number }>;
     private pinchDistance: number | null;
+    private needsRender: boolean;
+    private reducedMotionQuery: MediaQueryList | null;
     private targetX: number;
     private targetY: number;
     private targetZ: number;
@@ -136,6 +138,13 @@ class Renderer {
         this.lastPointerY = 0;
         this.activePointers = new Map();
         this.pinchDistance = null;
+        this.needsRender = true;
+        this.reducedMotionQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+            ? window.matchMedia('(prefers-reduced-motion: reduce)')
+            : null;
+        this.reducedMotionQuery?.addEventListener?.('change', () => {
+            this.needsRender = true;
+        });
         this.viewMode = 0;
         this.slicerUniformState = {
             minY: -1.0,
@@ -226,6 +235,7 @@ class Renderer {
         }
 
         this.isPaused = paused;
+        this.needsRender = true;
         if (paused) {
             this.pauseStartedAtMs = nowMs;
             return;
@@ -240,6 +250,7 @@ class Renderer {
 
     public hotReloadShaders(updates: ShaderSourceUpdates): ShaderReloadResult {
         applyShaderSourceUpdates(updates);
+        this.needsRender = true;
 
         if (!this.gl) {
             return {
@@ -285,6 +296,18 @@ class Renderer {
         }
 
         this.resize();
+
+        // Static scenes only re-render when state changed (camera, uniforms,
+        // size, theme). A scene counts as animated when the compiled program
+        // actually reads uTime/uFrameModulo (unused uniforms are stripped, so
+        // a null location means the scene ignores them). Reduced-motion users
+        // get the static path: animation freezes unless they interact.
+        const sceneIsAnimated = this.timeLocation !== null || this.frameModuloLocation !== null;
+        const reduceMotion = this.reducedMotionQuery?.matches ?? false;
+        if ((!sceneIsAnimated || reduceMotion) && !this.needsRender) {
+            return false;
+        }
+        this.needsRender = false;
 
         const gl = this.gl;
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -417,10 +440,12 @@ class Renderer {
     public setViewMode(mode: number): void {
         if (mode === 1 || mode === 2 || mode === 3) {
             this.viewMode = mode;
+            this.needsRender = true;
             return;
         }
 
         this.viewMode = 0;
+        this.needsRender = true;
     }
 
     public getViewMode(): number {
@@ -443,6 +468,8 @@ class Renderer {
         if (this.slicerUniformState.maxY <= this.slicerUniformState.minY) {
             this.slicerUniformState.maxY = this.slicerUniformState.minY + this.slicerUniformState.layerHeight;
         }
+
+        this.needsRender = true;
     }
 
     public setSceneControlState(definitions: SceneControlDefinition[], values: SceneControlValueMap): void {
@@ -455,6 +482,8 @@ class Renderer {
         if (shouldResetLocations) {
             this.sceneUniformLocations.clear();
         }
+
+        this.needsRender = true;
     }
 
     public getRaymarchParams(): RaymarchParams {
@@ -472,6 +501,7 @@ class Renderer {
             normalEpsilon: this.clampFloat(next.normalEpsilon ?? this.raymarchParams.normalEpsilon, 0.00005, 0.05),
             refineSteps: this.clampInt(next.refineSteps ?? this.raymarchParams.refineSteps, 0, 12),
         };
+        this.needsRender = true;
     }
 
     public getViewportParams(): ViewportParams {
@@ -496,6 +526,7 @@ class Renderer {
             targetFrameRate: this.clampInt(next.targetFrameRate ?? this.animationParams.targetFrameRate, 0, 120),
             framePeriod: this.clampInt(next.framePeriod ?? this.animationParams.framePeriod, 1, 4096),
         };
+        this.needsRender = true;
     }
 
     public getCameraState(): CameraState | null {
@@ -723,6 +754,7 @@ class Renderer {
     }
 
     private storeCameraState(): void {
+        this.needsRender = true;
         try {
             sessionStorage.setItem(
                 CAMERA_STATE_STORAGE_KEY,
@@ -934,9 +966,15 @@ class Renderer {
         if (this.canvas.width !== displayWidth || this.canvas.height !== displayHeight) {
             this.canvas.width = displayWidth;
             this.canvas.height = displayHeight;
+            this.needsRender = true;
         }
 
         this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    }
+
+    /** Mark the next frame dirty; static scenes skip rendering otherwise. */
+    public requestRender(): void {
+        this.needsRender = true;
     }
 
     private registerThemeClearColorSync(): void {
@@ -958,6 +996,7 @@ class Renderer {
     }
 
     private applyThemeClearColor(): void {
+        this.needsRender = true;
         const isDarkTheme = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
         this.uiLightTheme = isDarkTheme ? 0 : 1;
 

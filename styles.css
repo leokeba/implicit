@@ -466,23 +466,25 @@ h1 {
   pointer-events: auto;
 }
 
+/* Badges are static labels; keep them visually lighter than buttons so
+   they don't read as dead controls. */
 .viewport-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: 20px;
+  padding: 1px 8px;
   border-radius: 3px;
-  background: var(--bg-overlay);
-  border: 1px solid var(--line);
-  color: var(--ink);
-  font-size: 0.75rem;
+  background: color-mix(in srgb, var(--line) 35%, transparent);
+  border: none;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .viewport-badge-muted {
-  background: var(--bg-panel);
+  background: transparent;
   color: var(--ink-muted);
 }
 
@@ -1213,6 +1215,23 @@ textarea:focus {
 }
 
 @media (max-width: 640px) {
+  .topbar-selectors {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .topbar-selectors .topbar-field {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .topbar-selectors .topbar-field select {
+    width: 100%;
+    min-width: 0;
+  }
+
   .field-row {
     grid-template-columns: 1fr;
     align-items: start;

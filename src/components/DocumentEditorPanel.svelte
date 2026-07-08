@@ -34,6 +34,7 @@
     export let onSwitchDocument: () => void | Promise<void>;
     export let onClose: () => void;
     export let onStartResize: (event: PointerEvent) => void;
+    export let onResizeKeydown: ((event: KeyboardEvent) => void) | null = null;
 
     const editorThemeStyles = {
         '&': {
@@ -145,7 +146,13 @@
 </script>
 
 <section class="scene-editor-shell" aria-label={panelLabel} bind:this={panelElement}>
-    <button class="scene-editor-resizer" type="button" aria-label={`Resize ${panelLabel.toLowerCase()}`} on:pointerdown={onStartResize}></button>
+    <button
+        class="scene-editor-resizer"
+        type="button"
+        aria-label={`Resize ${panelLabel.toLowerCase()}`}
+        on:pointerdown={onStartResize}
+        on:keydown={(event) => onResizeKeydown?.(event)}
+    ></button>
 
     <header class="scene-editor-header">
         <div class="scene-editor-title-block">

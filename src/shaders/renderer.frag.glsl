@@ -73,6 +73,8 @@ void main() {
         }
     }
 
-    float pulse = (uViewMode == 2 || uViewMode == 3) ? 0.0 : 0.02 * sin(uTime * 0.8);
-    gl_FragColor = vec4(color + pulse, 1.0);
+    // No ambient uTime pulse here: reading uTime in shared code would mark
+    // every scene animated and force continuous rendering. Scenes that use
+    // uTime themselves still animate at full rate.
+    gl_FragColor = vec4(color, 1.0);
 }

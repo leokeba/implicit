@@ -33,8 +33,12 @@ function getViewModeLabel(viewMode: number): string {
     return VIEW_MODE_OPTIONS.find((option) => Number(option.value) === viewMode)?.label ?? 'Shaded';
 }
 
+/** Locale-aware so chip values match how the browser renders number inputs. */
 function formatFixed(value: number, digits = 2): string {
-    return Number.isFinite(value) ? value.toFixed(digits) : '0.00';
+    if (!Number.isFinite(value)) {
+        value = 0;
+    }
+    return value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 function formatBedSize(settings: VaseSlicerSettings): string {

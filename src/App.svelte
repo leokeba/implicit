@@ -62,7 +62,10 @@
     export let studio: StudioController;
 
     const EDITOR_SIDE_LAYOUT_MIN_WIDTH = 1440;
-    const COMPACT_WORKSPACE_MAX_WIDTH = 1180;
+    // Below this the inspector stacks under the viewport. The 981-1180 range
+    // keeps the narrow side-by-side grid (max-width:1180 media query) so
+    // parameters stay visible next to the model on small laptops.
+    const COMPACT_WORKSPACE_MAX_WIDTH = 980;
 
     const snapshot = studio.getSnapshot();
 
@@ -1411,6 +1414,33 @@
         }
     }
 
+    function handleEditorResizeKeydown(event: KeyboardEvent): void {
+        const growKey = editorDockSide ? 'ArrowRight' : 'ArrowUp';
+        const shrinkKey = editorDockSide ? 'ArrowLeft' : 'ArrowDown';
+
+        if (event.key === growKey || event.key === shrinkKey) {
+            event.preventDefault();
+            const delta = event.key === growKey ? 16 : -16;
+            if (editorDockSide) {
+                workspace.setEditorWidth($workspace.editorWidth + delta);
+            } else {
+                workspace.setEditorHeight($workspace.editorHeight + delta);
+            }
+            void resizeViewportAfterLayout();
+            return;
+        }
+
+        if (event.key === 'Home') {
+            event.preventDefault();
+            if (editorDockSide) {
+                workspace.resetEditorWidth();
+            } else {
+                workspace.resetEditorHeight();
+            }
+            void resizeViewportAfterLayout();
+        }
+    }
+
     function handleWindowKeydown(event: KeyboardEvent): void {
         if (event.key === 'Escape' && viewerFullscreen) {
             event.preventDefault();
@@ -1739,14 +1769,16 @@
                         onSwitchDocument={switchEditorDocument}
                         onClose={toggleEditor}
                         onStartResize={startEditorResize}
+                        onResizeKeydown={handleEditorResizeKeydown}
                     />
                 </div>
 
                 <button
                     class="editor-dock-resizer"
                     type="button"
-                    aria-label="Resize scene editor"
+                    aria-label="Resize scene editor (arrow keys adjust, Home resets)"
                     on:pointerdown={startEditorResize}
+                    on:keydown={handleEditorResizeKeydown}
                     on:dblclick={() => { workspace.resetEditorWidth(); void resizeViewportAfterLayout(); }}
                 ></button>
             {/if}
@@ -1771,7 +1803,7 @@
                 <button
                     class="dock-resizer"
                     type="button"
-                    aria-label="Resize inspector"
+                    aria-label="Resize inspector (arrow keys adjust, Home resets)"
                     on:pointerdown={startInspectorResize}
                     on:dblclick={resetInspectorWidth}
                     on:keydown={handleDockKeydown}
@@ -1818,6 +1850,7 @@
                 onSwitchDocument={switchEditorDocument}
                 onClose={toggleEditor}
                 onStartResize={startEditorResize}
+                onResizeKeydown={handleEditorResizeKeydown}
             />
         {/if}
     </div>

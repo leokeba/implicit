@@ -366,6 +366,7 @@ export class StudioController {
         this.overrides = { ...emptyOverrides(), ...(overrides ?? {}) } as SceneOverrides;
         this.cachedBaseToolpath = null;
         this.preview.setToolpathOverlayWorldPoints([]);
+        this.renderer.requestRender();
         this.resolveConfiguration();
         return {
             ok: true,
@@ -535,6 +536,7 @@ export class StudioController {
 
     public setToolpathOverlayVisible(visible: boolean): void {
         this.preview.setOverlayVisible(visible);
+        this.renderer.requestRender();
     }
 
     public hasToolpathOverlay(): boolean {
@@ -601,6 +603,7 @@ export class StudioController {
             this.preview.setToolpathOverlayWorldPoints(
                 convertToolpathToScenePoints(benchmark.lastResult.toolpath.points, benchmark.settings)
             );
+            this.renderer.requestRender();
             return summarizeBenchmarkRuns(benchmark.runs, benchmark.warmupRuns, benchmark.measuredRuns);
         });
     }
@@ -746,6 +749,7 @@ export class StudioController {
         this.preview.setToolpathOverlayWorldPoints(
             convertToolpathToScenePoints(result.toolpath.points, this.resolvedSettings)
         );
+        this.renderer.requestRender();
         const filename = buildSlicerFilename(
             this.resolvedSettings,
             getActiveSceneManifest(),

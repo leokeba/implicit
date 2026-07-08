@@ -20,22 +20,24 @@
             <div class="viewport-command-surface">
                 <div class="viewport-toolbar-actions">
                     <button class="chrome-button" type="button" disabled={actionPending} on:click={onGenerateVaseGcode}>{generateActionLabel}</button>
-                    <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={viewerFullscreen} on:click={onToggleViewerFullscreen}>
+                    <!-- Labels flip to describe the action, so no aria-pressed:
+                         a changing label plus pressed state reads contradictorily. -->
+                    <button class="chrome-button chrome-button-ghost" type="button" on:click={onToggleViewerFullscreen}>
                         {viewerFullscreen ? 'Exit Preview' : 'Expand Preview'}
                     </button>
                     {#if !viewerFullscreen}
-                        <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={editorVisible} on:click={onToggleEditor}>
+                        <button class="chrome-button chrome-button-ghost" type="button" on:click={onToggleEditor}>
                             {editorVisible ? 'Hide Editor' : 'Show Editor'}
                         </button>
                     {/if}
                     <button class="chrome-button chrome-button-ghost" type="button" on:click={onResetView}>Reset View</button>
                     {#if hasToolpath}
-                        <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={toolpathVisible} on:click={onToggleToolpath}>
+                        <button class="chrome-button chrome-button-ghost" type="button" on:click={onToggleToolpath}>
                             {toolpathVisible ? 'Hide Toolpath' : 'Show Toolpath'}
                         </button>
                     {/if}
                     {#if !viewerFullscreen}
-                        <button class="chrome-button chrome-button-ghost" type="button" aria-expanded={!inspectorCollapsed} on:click={onToggleInspector}>
+                        <button class="chrome-button chrome-button-ghost" type="button" on:click={onToggleInspector}>
                             {inspectorCollapsed ? 'Show Inspector' : 'Hide Inspector'}
                         </button>
                     {/if}
