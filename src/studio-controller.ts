@@ -365,12 +365,13 @@ export class StudioController {
 
         this.overrides = { ...emptyOverrides(), ...(overrides ?? {}) } as SceneOverrides;
         this.cachedBaseToolpath = null;
+        this.preview.setToolpathOverlayWorldPoints([]);
         this.resolveConfiguration();
         return {
             ok: true,
             sceneId,
             config: this.getConfigView(),
-            shaderMessage: `Loaded scene: ${sceneId}`,
+            shaderMessage: `Loaded ${this.getSceneLabel(sceneId)}`,
             workspaceStatus: `Scene loaded: ${this.getSceneLabel(sceneId)}.`,
         };
     }
@@ -534,6 +535,10 @@ export class StudioController {
 
     public setToolpathOverlayVisible(visible: boolean): void {
         this.preview.setOverlayVisible(visible);
+    }
+
+    public hasToolpathOverlay(): boolean {
+        return this.preview.hasOverlayPoints();
     }
 
     public getLastSliceDebugSnapshot(): SliceDebugSnapshot | null {

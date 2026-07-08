@@ -593,9 +593,19 @@ class Renderer {
         }, { passive: false });
 
         window.addEventListener('keydown', (event: KeyboardEvent) => {
-            if (event.key.toLowerCase() === 'f') {
-                this.resetCamera();
+            if (event.key.toLowerCase() !== 'f' || event.metaKey || event.ctrlKey || event.altKey) {
+                return;
             }
+            const target = event.target;
+            if (target instanceof HTMLElement && (
+                target instanceof HTMLInputElement
+                || target instanceof HTMLTextAreaElement
+                || target instanceof HTMLSelectElement
+                || target.isContentEditable
+            )) {
+                return;
+            }
+            this.resetCamera();
         });
     }
 

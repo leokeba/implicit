@@ -20,7 +20,7 @@
     <div class="controls-shell">
         <div class="controls-header">
             <h2>Inspector</h2>
-            <p class="controls-note">Task-oriented tabs replace the old stacked form so the viewport can stay dominant.</p>
+            <p class="controls-note">Scene, render, and print settings for the active surface.</p>
         </div>
 
         <div class="tab-bar">

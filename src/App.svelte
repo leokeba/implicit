@@ -161,6 +161,7 @@
     let postprocessAutoUpdateTimer: number | null = null;
     let postprocessAutoUpdatePending = false;
     let viewerFullscreen = false;
+    let hasToolpath = false;
 
     function refreshConfig(): void {
         config = studio.getConfigView();
@@ -578,6 +579,7 @@
         sceneId = result.sceneId;
         config = result.config;
         status.applySceneChange(result);
+        hasToolpath = studio.hasToolpathOverlay();
     }
 
     function applySceneRegistryResult(result: SceneRegistrySyncResult): void {
@@ -798,6 +800,7 @@
             sliceSignature: currentSliceSignature,
             postprocessSignature: currentPostprocessSignature,
         };
+        hasToolpath = studio.hasToolpathOverlay();
     }
 
     async function buildFullArtifactWithProgress(
@@ -1011,6 +1014,7 @@
         await status.runCommand(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, () => {
             const summary = studio.benchmarkVaseGcode(iterations, warmups);
             sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
+            hasToolpath = studio.hasToolpathOverlay();
             return `Benchmark settled on ${summary.measuredRuns} measured run${summary.measuredRuns === 1 ? '' : 's'} after ${summary.warmupRuns} warmup run${summary.warmupRuns === 1 ? '' : 's'}: avg ${summary.averageMs.toFixed(1)} ms, median ${summary.medianMs.toFixed(1)} ms, min ${summary.minMs.toFixed(1)} ms, max ${summary.maxMs.toFixed(1)} ms, spread ${summary.spreadMs.toFixed(1)} ms. Phase avg: sample ${summary.averageContourSamplingMs.toFixed(1)} ms, toolpath ${summary.averageToolpathBuildMs.toFixed(1)} ms, gcode ${summary.averageGcodeBuildMs.toFixed(1)} ms. Last output: ${(summary.bytes / 1024).toFixed(1)} KB, ${summary.points} points, ${summary.layers} layers.`;
         });
     }
@@ -1714,6 +1718,9 @@
                 onToggleViewerFullscreen={toggleViewerFullscreen}
                 onGenerateVaseGcode={generateVaseGcode}
                 generateActionLabel={generateActionLabel}
+                {hasToolpath}
+                toolpathVisible={$workspace.overlayVisible}
+                onToggleToolpath={() => workspace.toggleOverlay()}
             />
 
             {#if !$workspace.inspectorCollapsed && !compactWorkspaceLayout}

@@ -73,6 +73,13 @@ export class Preview {
 
     public setToolpathOverlayWorldPoints(points: WorldPoint[]): void {
         this.overlayWorldPoints = points;
+        if (points.length === 0 && this.overlayContext && this.overlayCanvas) {
+            this.overlayContext.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
+        }
+    }
+
+    public hasOverlayPoints(): boolean {
+        return this.overlayWorldPoints.length > 1;
     }
 
     public setOverlayVisible(visible: boolean): void {
@@ -193,9 +200,15 @@ export class Preview {
             prevScreen = screen;
         }
 
-        ctx.fillStyle = 'rgba(20, 46, 38, 0.78)';
+        const label = 'Toolpath in scene';
         ctx.font = '600 12px "IBM Plex Sans", sans-serif';
-        ctx.fillText('Toolpath in scene', 14, height - 14);
+        const labelWidth = ctx.measureText(label).width;
+        ctx.fillStyle = 'rgba(13, 24, 20, 0.72)';
+        ctx.beginPath();
+        ctx.roundRect(8, height - 32, labelWidth + 16, 24, 6);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(140, 226, 186, 0.95)';
+        ctx.fillText(label, 16, height - 16);
     }
 
     private syncOverlayVisibility(): void {

@@ -3,6 +3,7 @@
     import {
         canResetField,
         commitFieldValue,
+        formatNumberFieldValue,
         isFieldDisabled,
         isFieldOverridden,
         normalizeNumberFieldValue,
@@ -88,7 +89,7 @@
                                 step={field.step}
                                 min={field.min}
                                 max={field.max}
-                                value={Number(readFieldValue(field, state))}
+                                value={formatNumberFieldValue(field, readFieldValue(field, state))}
                                 disabled={isFieldDisabled(field, state)}
                                 on:change={(event) => {
                                     const input = event.currentTarget as HTMLInputElement;

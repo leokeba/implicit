@@ -9,6 +9,7 @@ Overall: the fundamentals are unusually solid for a hand-rolled tool — real la
 ## Critical — verified live
 
 ### 1. Typing "f" in the code editor resets the camera
+> **Update 2026-07-08: fixed.** The window keydown handler now ignores the shortcut when the event target is an input, textarea, select, or contenteditable (CodeMirror), and when a modifier is held. Verified live: typing "f" in the editor preserves the camera; pressing F elsewhere still resets.
 The reset shortcut is a bare `window` keydown listener with no focus guard (`src/core/renderer.ts:595-600`). Verified: with focus inside CodeMirror, dispatching an "f" keystroke snapped the stored camera from `yaw: 1.95` back to the default `0.45`. Every `float`, `if`, or `for` typed while a camera angle is set up whacks the viewport.
 
 **Fix:** ignore the shortcut when `event.target` is an input/textarea or inside `.cm-editor`, or only handle the key when the viewport has focus.
@@ -20,11 +21,13 @@ After generating G-code for the Default Scene and switching to Screw Thread Cyli
 **Fix:** invalidate (or clearly mark stale) the generated artifact whenever scene, machine, material, or any print parameter changes.
 
 ### 3. Viewport silently stays in toolpath mode with an unreadable label
+> **Update 2026-07-08: fixed.** The overlay is now cleared on scene switch (`changeScene` clears the preview points). A "Hide/Show Toolpath" toggle appears in the viewport toolbar whenever a toolpath exists (wired to the previously orphaned `workspace.toggleOverlay()`), and the "Toolpath in scene" label is rendered as light green text on a dark pill — legible in both themes. Verified live: toggle works, scene switch clears the overlay to fully transparent.
 After Generate, the viewport switches to the green toolpath render — and it keeps showing the *old scene's* toolpath after a scene switch. The only indicator is canvas-drawn text in the bottom-left, dark green on dark navy (had to enhance a screenshot to read it: "Toolpath in scene"). Meanwhile the VIEW dropdown still says "Shaded" — the single source of truth for view mode is wrong, and the actual mode indicator is illegible.
 
 **Fix:** make toolpath preview a real state of the VIEW control (or an obvious toggle chip in the viewport toolbar); render the mode label in UI-contrast colors.
 
 ### 4. Print-tab inputs load in an invalid state with float garbage
+> **Update 2026-07-08: fixed.** `formatNumberFieldValue` (in `src/ui/inspector/commit.ts`) rounds the *displayed* value to the field's step precision (fallback: 6 significant digits when no step); committed values are untouched. Verified live on both the default and screw-thread scenes: 0 invalid inputs, clean values (e.g. auto-fit Min Y shows `-0.13` instead of `-0.12857142857142856`).
 Four number inputs on the Print tab are `:invalid` on load — values like `-0.12857142857142856` against `step="0.01"`, and min/max attributes like `1.2000000476837158`. Float32→float64 noise is written raw into `value`/`min`/`max`. Consequences: 17-digit values when the user clicks a field, odd spinner snapping, form invalid before the user touches anything.
 
 **Fix:** round to the field's step precision when populating inputs — the schema in `src/ui/inspector/tabs.ts` already knows each field's `step`.
@@ -34,9 +37,11 @@ Four number inputs on the Print tab are `:invalid` on load — values like `-0.1
 ## Major UX
 
 ### 5. Development changelog copy has leaked into the UI
+> **Update 2026-07-08: fixed.** Inspector subtitle now reads "Scene, render, and print settings for the active surface."; the four changelog-style section captions in `tabs.ts` (Scene Controls, Adhesion And Merge, Machine, Material) were rewritten to describe the feature.
 The Inspector subtitle: "Task-oriented tabs replace the old stacked form so the viewport can stay dominant" (`src/components/InspectorPanel.svelte:23`). Section blurbs follow the same pattern: "Brim and simplification controls stay together in the print workflow," "Scene choice and surface visualization stay close to the viewport workflow." These justify the redesign to a reviewer; they tell a user nothing. Delete or rewrite to describe the feature.
 
 ### 6. Shader status pill is developer-speak and reflows the header
+> **Update 2026-07-08: partially fixed.** The pill now uses the scene's display label ("Shader: Loaded Screw Thread Cylinder" instead of "LOADED SCENE: SCREWTHREADCYLINDER"). The pill already had `max-width` + ellipsis, so with the shorter copy it no longer wraps the header at 1440px. A fixed-width/icon treatment remains an option if longer scene names still feel noisy.
 After a scene switch it reads `SHADER: LOADED SCENE: SCREWTHREADCYLINDER` — an uppercased internal id. The pill grows with content; at 1440px it pushed MATERIAL onto a second row and shifted the whole header. Status text should be short, human ("Ready", "Compiled Screw Thread Cylinder"), and stable in width (`src/components/TopBar.svelte:79`).
 
 ### 7. No sliders anywhere

@@ -53,7 +53,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
             {
                 id: 'scene-controls',
                 title: 'Scene Controls',
-                caption: 'Scene choice and surface visualization stay close to the viewport workflow.',
+                caption: 'Choose the active scene and how its surface is rendered.',
                 fields: [
                     { kind: 'select', target: 'viewMode', id: 'view-mode-select', label: 'View mode', options: VIEW_MODE_OPTIONS },
                     { kind: 'select', target: 'scene', id: 'scene-select', label: 'Scene preset', optionsSource: 'sceneOptions' },
@@ -159,7 +159,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
             {
                 id: 'print-adhesion',
                 title: 'Adhesion And Merge',
-                caption: 'Brim and simplification controls stay together in the print workflow.',
+                caption: 'Bed adhesion and toolpath simplification.',
                 fields: [
                     { kind: 'number', target: 'slicer', key: 'brimWidthMm', id: 'slicer-brim-width', label: 'Brim width (mm)', step: '0.1', min: '0', max: '30' },
                     { kind: 'number', target: 'slicer', key: 'brimGapMm', id: 'slicer-brim-gap', label: 'Brim gap (mm)', step: '0.05', min: '0', max: '5' },
@@ -182,7 +182,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
             {
                 id: 'machine-setup',
                 title: 'Machine Setup',
-                caption: 'Machine geometry, preset selection, and bed placement belong here.',
+                caption: 'Printer preset, build volume, and bed placement.',
                 fields: [
                     { kind: 'select', target: 'printerModel', id: 'slicer-printer-model', label: 'Printer model', optionsSource: 'printerModels' },
                     { kind: 'number', target: 'slicer', key: 'bedWidthMm', id: 'slicer-bed-width', label: 'Bed width (mm)', step: '1', min: '50', max: '1000' },
@@ -226,7 +226,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
             {
                 id: 'material-setup',
                 title: 'Material Setup',
-                caption: 'Thermals and extrusion settings are grouped under the filament profile.',
+                caption: 'Temperatures and extrusion settings for the selected filament.',
                 fields: [
                     { kind: 'select', target: 'filamentProfile', id: 'slicer-filament-profile', label: 'Filament profile', optionsSource: 'filamentProfiles' },
                     { kind: 'number', target: 'slicer', key: 'filamentDiameter', id: 'slicer-filament', label: 'Filament diameter', step: '0.01', min: '1.0', max: '3.0' },

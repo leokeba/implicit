@@ -9,6 +9,9 @@
     export let onToggleViewerFullscreen: () => void | Promise<void>;
     export let onGenerateVaseGcode: () => void | Promise<void>;
     export let generateActionLabel: string;
+    export let hasToolpath: boolean;
+    export let toolpathVisible: boolean;
+    export let onToggleToolpath: () => void;
 </script>
 
 <main class="workspace-main">
@@ -24,6 +27,11 @@
                         {editorVisible ? 'Hide Editor' : 'Show Editor'}
                     </button>
                     <button class="chrome-button chrome-button-ghost" type="button" on:click={onResetView}>Reset View</button>
+                    {#if hasToolpath}
+                        <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={toolpathVisible} on:click={onToggleToolpath}>
+                            {toolpathVisible ? 'Hide Toolpath' : 'Show Toolpath'}
+                        </button>
+                    {/if}
                     <button class="chrome-button chrome-button-ghost" type="button" aria-expanded={!inspectorCollapsed} on:click={onToggleInspector}>
                         {inspectorCollapsed ? 'Show Inspector' : 'Hide Inspector'}
                     </button>

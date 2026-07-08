@@ -6,6 +6,30 @@ function coerceNumber(rawValue: string): number {
     return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function stepDecimals(step: string | undefined): number | null {
+    const parsed = Number(step);
+    if (!step || !Number.isFinite(parsed) || parsed <= 0) {
+        return null;
+    }
+    const dot = step.indexOf('.');
+    return dot === -1 ? 0 : step.length - dot - 1;
+}
+
+/**
+ * Values arrive from float32 uniforms and auto-fit bounds with noise like
+ * 0.20000000298023224; rendering them raw makes the input unreadable and
+ * fails the browser's step validation. Round the *displayed* value to the
+ * field's step precision (the committed value is normalized separately).
+ */
+export function formatNumberFieldValue(field: Extract<InspectorFieldSchema, { kind: 'number' }>, rawValue: unknown): number {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+    const decimals = stepDecimals(field.step);
+    return decimals === null ? Number(value.toPrecision(6)) : Number(value.toFixed(decimals));
+}
+
 export function normalizeNumberFieldValue(field: Extract<InspectorFieldSchema, { kind: 'number' }>, rawValue: string): string {
     const parsed = coerceNumber(rawValue);
     const min = Number(field.min);
