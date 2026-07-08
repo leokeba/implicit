@@ -1,16 +1,21 @@
 # Slicing Algorithm Review — Implicit
 
-> **Status update (2026-07-08):** C1, C2, C3, C4, C8, E1/G1 (merged into a single
-> `targetSegmentMm` parameter), E2, E3 (fast-scan variant), and G4 are implemented.
-> Grid sizing is now driven by one knob — Target segment (mm) — which sets both the
-> sampling pitch (segment/2) and the per-layer point count (max perimeter / segment).
-> Bounds auto-fit runs as a coarse 64² GPU pre-pass. Non-fatal issues (skipped holes,
-> sub-printable loops, small islands) surface as warnings in the UI and G-code header;
-> disjoint islands ≥ 4 mm² still fail with a classified error. Measured on the screw
-> scene: 9.7 s → 5.9 s at equivalent resolution (grid still capped at 2048), 1.9 s at
-> 0.6 mm segments. Also fixed en route: a stale `currentSliceSignature` reactive in
-> App.svelte (root cause of UI-review finding #2). Still open: C5, C6, C7, E4–E9,
-> G3, G5, G6.
+> **Status update (2026-07-08): every item in this review is implemented.**
+> Highlights beyond the first batch (C1–C4, C8, E1/G1, E2/E3, G4): sceneFields and
+> layer thickness survive postprocess steps (C5); move merging bounds accumulated
+> chord error (C6); cylindrical mode detects and reports bridged reentrant geometry
+> (C7); retract/prime are Material-tab settings (G6); G-code emits modal F and
+> Z-on-change (~15% smaller, E7); WebGL2 context with fence-guarded PBO readback
+> pipelines extraction against the GPU (E5); per-batch bounds follow the pre-pass
+> footprint of each height band with a full-bounds retry (E6); contour sampling runs
+> in a dedicated Web Worker with graceful fallback (E4); solid bottom layers via
+> concentric inward fill, 0–3 (G3); slope-adaptive layer heights coalesce
+> near-vertical regions up to a Max-layer-height cap with thickness-correct
+> extrusion (G5). Screw scene: 9.7 s before the work began → ~1.4 s at 0.6 mm
+> segments; straight-wall prints halve their layer count and file size at a 0.5 mm
+> adaptive cap. Also fixed en route: stale `currentSliceSignature` reactivity in
+> App.svelte (root cause of UI-review finding #2) and `buildBrimLoop` rejecting
+> negative offsets.
 
 *Reviewed 2026-07-08. Full read of `src/core/slicer.ts` (2,924 lines), `src/shaders/slicer.frag.glsl`, `src/core/toolpath-postprocess.ts`, and the invocation path in `src/studio-controller.ts`, plus live benchmarks in Chrome using the built-in Benchmark tool.*
 
