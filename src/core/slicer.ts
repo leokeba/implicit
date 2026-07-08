@@ -74,6 +74,9 @@ export interface VaseSlicerSettings {
     moveMergeMaxDeviationMm: number;
     moveMergeMaxTurnDeg: number;
     moveMergeKeepStride: number;
+    retractMm: number;
+    retractSpeedMmPerSec: number;
+    primeMm: number;
     brimWidthMm: number;
     brimGapMm: number;
     enableContourAlignment: boolean;
@@ -352,6 +355,9 @@ export class Slicer {
             moveMergeMaxDeviationMm: 0.025,
             moveMergeMaxTurnDeg: 1.0,
             moveMergeKeepStride: 12,
+            retractMm: 1.2,
+            retractSpeedMmPerSec: 20,
+            primeMm: 0.8,
             brimWidthMm: 5,
             brimGapMm: 0.1,
             enableContourAlignment: true,
@@ -489,14 +495,15 @@ export class Slicer {
             : this.buildPlanarSpiralBaseToolpath(sampled.layers, settings);
         const toolpath = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
         const toolpathEndTime = performance.now();
-        const gcode = this.buildGcode(toolpath, settings, sampled.warnings.map((warning) => `Slicer warning: ${warning}`));
+        const warnings = [...sampled.warnings, ...(baseToolpath.warnings ?? [])];
+        const gcode = this.buildGcode(toolpath, settings, warnings.map((warning) => `Slicer warning: ${warning}`));
         const endTime = performance.now();
 
         return {
             settings,
             toolpath,
             gcode,
-            warnings: sampled.warnings,
+            warnings,
             timings: {
                 contourSamplingMs: contourSamplingEndTime - startTime,
                 toolpathBuildMs: toolpathEndTime - contourSamplingEndTime,
@@ -529,7 +536,8 @@ export class Slicer {
 
         reportSliceProgress(onProgress, 'gcode', 0, 1, 0.92, 'Encoding G-code...');
         await this.yieldToMainThread();
-        const gcode = this.buildGcode(toolpath, settings, sampled.warnings.map((warning) => `Slicer warning: ${warning}`));
+        const warnings = [...sampled.warnings, ...(baseToolpath.warnings ?? [])];
+        const gcode = this.buildGcode(toolpath, settings, warnings.map((warning) => `Slicer warning: ${warning}`));
         const endTime = performance.now();
 
         reportSliceProgress(onProgress, 'finalizing', 1, 1, 1.0, 'Finalizing export...');
@@ -538,7 +546,7 @@ export class Slicer {
             settings,
             toolpath,
             gcode,
-            warnings: sampled.warnings,
+            warnings,
             timings: {
                 contourSamplingMs: contourSamplingEndTime - startTime,
                 toolpathBuildMs: toolpathEndTime - contourSamplingEndTime,
@@ -563,7 +571,7 @@ export class Slicer {
         const baseToolpath = settings.slicerMode === 'cylindrical'
             ? this.buildCylindricalSpiralBaseToolpath(sampled.layers, settings)
             : this.buildPlanarSpiralBaseToolpath(sampled.layers, settings);
-        baseToolpath.warnings = sampled.warnings;
+        baseToolpath.warnings = [...sampled.warnings, ...(baseToolpath.warnings ?? [])];
 
         reportSliceProgress(onProgress, 'finalizing', 1, 1, 1.0, 'Toolpath ready for export.');
         return baseToolpath;
@@ -595,6 +603,9 @@ export class Slicer {
         merged.moveMergeMaxDeviationMm = clamp(merged.moveMergeMaxDeviationMm, 0.001, 0.5);
         merged.moveMergeMaxTurnDeg = clamp(merged.moveMergeMaxTurnDeg, 0.5, 45);
         merged.moveMergeKeepStride = clampInt(merged.moveMergeKeepStride, 1, 200);
+        merged.retractMm = clamp(merged.retractMm, 0, 10);
+        merged.retractSpeedMmPerSec = clamp(merged.retractSpeedMmPerSec, 5, 80);
+        merged.primeMm = clamp(merged.primeMm, 0, 5);
         merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
         merged.brimGapMm = clamp(merged.brimGapMm, 0, 5);
         merged.enableContourAlignment = Boolean(merged.enableContourAlignment);
@@ -966,19 +977,31 @@ export class Slicer {
         contourLayers: SliceContourLayer[],
         settings: VaseSlicerSettings,
     ): VaseBaseToolpath {
+        let bridgedRayCount = 0;
+        let bridgedLayerCount = 0;
         const cylindricalLayers: SliceContourLayer[] = contourLayers.map((layer, layerIndex) => {
-            const contour = this.sampleCylindricalContour(layer.contour, settings.pointsPerLayer);
-            if (contour.length !== settings.pointsPerLayer) {
+            const sampled = this.sampleCylindricalContour(layer.contour, settings.pointsPerLayer, layerIndex);
+            if (sampled.contour.length !== settings.pointsPerLayer) {
                 throw new Error(`Cylindrical slicer failed to sample layer ${layerIndex + 1}.`);
+            }
+            if (sampled.bridgedRays > 0) {
+                bridgedRayCount += sampled.bridgedRays;
+                bridgedLayerCount += 1;
             }
 
             return {
                 sampleY: layer.sampleY,
-                contour,
+                contour: sampled.contour,
             };
         });
 
-        return this.buildInterpolatedSpiralBaseToolpath(cylindricalLayers, settings);
+        const baseToolpath = this.buildInterpolatedSpiralBaseToolpath(cylindricalLayers, settings);
+        if (bridgedLayerCount > 0) {
+            baseToolpath.warnings = [
+                `Cylindrical mode bridged reentrant geometry on ${bridgedRayCount} ray${bridgedRayCount === 1 ? '' : 's'} across ${bridgedLayerCount} layer${bridgedLayerCount === 1 ? '' : 's'} - the radial resample keeps only the outermost surface. Use planar mode for exact contours.`,
+            ];
+        }
+        return baseToolpath;
     }
 
     private buildInterpolatedSpiralBaseToolpath(
@@ -1131,9 +1154,14 @@ export class Slicer {
         };
     }
 
-    private sampleCylindricalContour(contour: SlicePoint[], pointCount: number): SlicePoint[] {
+    private sampleCylindricalContour(
+        contour: SlicePoint[],
+        pointCount: number,
+        layerIndex: number,
+    ): { contour: SlicePoint[]; bridgedRays: number } {
         const radial: SlicePoint[] = [];
         const step = (Math.PI * 2.0) / Math.max(1, pointCount);
+        let bridgedRays = 0;
 
         for (let i = 0; i < pointCount; i++) {
             const angle = i * step;
@@ -1141,16 +1169,29 @@ export class Slicer {
             const directionZ = Math.sin(angle);
             const intersection = this.rayIntersectContourOuter(contour, directionX, directionZ);
             if (!intersection) {
-                throw new Error('Cylindrical slicer requires a contour that is visible from the center axis at every angle.');
+                throw new Error(
+                    `Cylindrical mode requires the slice contour to enclose the center axis. Layer ${layerIndex + 1}: the ray at ${((angle * 180) / Math.PI).toFixed(0)} deg found no boundary - re-center the model or use planar mode.`
+                );
             }
-            radial.push(intersection);
+            // An enclosing contour crosses an outbound ray an odd number of
+            // times; three or more means reentrant geometry that the
+            // outermost-hit resample silently bridges.
+            if (intersection.crossings >= 3) {
+                bridgedRays++;
+            }
+            radial.push(intersection.point);
         }
 
-        return radial;
+        return { contour: radial, bridgedRays };
     }
 
-    private rayIntersectContourOuter(contour: SlicePoint[], directionX: number, directionZ: number): SlicePoint | null {
+    private rayIntersectContourOuter(
+        contour: SlicePoint[],
+        directionX: number,
+        directionZ: number,
+    ): { point: SlicePoint; crossings: number } | null {
         let bestDistance = -1;
+        let crossings = 0;
 
         for (let i = 0; i < contour.length; i++) {
             const a = contour[i];
@@ -1168,6 +1209,7 @@ export class Slicer {
                 continue;
             }
 
+            crossings++;
             if (t > bestDistance) {
                 bestDistance = t;
             }
@@ -1178,8 +1220,11 @@ export class Slicer {
         }
 
         return {
-            x: directionX * bestDistance,
-            z: directionZ * bestDistance,
+            point: {
+                x: directionX * bestDistance,
+                z: directionZ * bestDistance,
+            },
+            crossings,
         };
     }
 
@@ -1441,7 +1486,11 @@ export class Slicer {
         const keepStride = settings.moveMergeKeepStride;
 
         const out: ToolpathPoint[] = [points[0]];
-        let skipped = 0;
+        // Points dropped since the last kept point. Every merge decision
+        // re-checks all of them against the candidate chord so accumulated
+        // deviation stays bounded by maxDeviationMm relative to the original
+        // path, not just to the local point triple.
+        const dropped: ToolpathPoint[] = [];
 
         for (let i = 1; i < points.length - 1; i++) {
             const prev = out[out.length - 1];
@@ -1466,19 +1515,33 @@ export class Slicer {
                 Math.abs(prevExtrusionScale - curExtrusionScale) <= 1e-4 &&
                 Math.abs(curExtrusionScale - nextExtrusionScale) <= 1e-4;
 
-            const canMerge =
+            let canMerge =
                 (isTinyMove || isSmoothEnough) &&
                 speedStable &&
                 extrusionStable &&
-                skipped < keepStride;
+                dropped.length < keepStride;
+
+            if (canMerge && dropped.length > 0) {
+                // Tiny-move runs may legitimately wander up to the tiny-move
+                // radius itself; smooth runs are held to the deviation limit.
+                const chordBound = isTinyMove && !isSmoothEnough
+                    ? Math.max(maxDeviationMm, minMoveMm * 0.5)
+                    : maxDeviationMm;
+                for (const droppedPoint of dropped) {
+                    if (pointLineDistance3(droppedPoint, prev, next) > chordBound) {
+                        canMerge = false;
+                        break;
+                    }
+                }
+            }
 
             if (canMerge) {
-                skipped++;
+                dropped.push(cur);
                 continue;
             }
 
             out.push(cur);
-            skipped = 0;
+            dropped.length = 0;
         }
 
         out.push(points[points.length - 1]);
@@ -1658,7 +1721,9 @@ export class Slicer {
         lines.push(`G0 F${mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0)} X${p0.x.toFixed(3)} Y${p0.z.toFixed(3)} Z${Math.max(settings.layerHeight, p0.y).toFixed(3)}`);
         if (!emittedBrim) {
             // Mirror Orca's small restore pulse only when no brim path already primed the nozzle.
-            lines.push('G1 F900 E0.8000');
+            if (settings.primeMm > 0) {
+                lines.push(`G1 F${mmPerSecToFeedrate(settings.retractSpeedMmPerSec).toFixed(0)} E${settings.primeMm.toFixed(4)}`);
+            }
             lines.push('G92 E0');
         }
 
@@ -1672,6 +1737,11 @@ export class Slicer {
         lines.push('; FEATURE: Outer wall');
         lines.push(';TYPE:Outer wall');
 
+        // Feedrate is modal in Marlin/Klipper and Z rarely changes on flat
+        // layers; emitting them only on change trims the file by 10-20%.
+        // The travel G0 above set the travel feedrate and first-layer Z.
+        let modalFeedrate = mmPerSecToFeedrate(settings.travelSpeedMmPerSec).toFixed(0);
+        let modalZ = Math.max(settings.layerHeight, p0.y).toFixed(3);
         for (let i = 1; i < toolpath.points.length; i++) {
             const point = toolpath.points[i];
             const prevPoint = toolpath.points[i - 1];
@@ -1696,14 +1766,27 @@ export class Slicer {
                 }
             }
 
-            lines.push(
-                `G1 F${mmPerSecToFeedrate(point.speedMmPerSec).toFixed(0)} X${point.x.toFixed(3)} Y${point.z.toFixed(3)} Z${Math.max(0.0, point.y).toFixed(3)} E${Math.max(0, point.e - prevPoint.e).toFixed(5)}`
-            );
+            const feedrate = mmPerSecToFeedrate(point.speedMmPerSec).toFixed(0);
+            const zText = Math.max(0.0, point.y).toFixed(3);
+            let line = 'G1';
+            if (feedrate !== modalFeedrate) {
+                line += ` F${feedrate}`;
+                modalFeedrate = feedrate;
+            }
+            line += ` X${point.x.toFixed(3)} Y${point.z.toFixed(3)}`;
+            if (zText !== modalZ) {
+                line += ` Z${zText}`;
+                modalZ = zText;
+            }
+            line += ` E${Math.max(0, point.e - prevPoint.e).toFixed(5)}`;
+            lines.push(line);
         }
 
         const lastPoint = toolpath.points[toolpath.points.length - 1];
 
-        lines.push('G1 F1200 E-1.20000');
+        if (settings.retractMm > 0) {
+            lines.push(`G1 F${mmPerSecToFeedrate(settings.retractSpeedMmPerSec).toFixed(0)} E-${settings.retractMm.toFixed(4)}`);
+        }
         lines.push('; FEATURE: Travel');
         lines.push('G0 F6000 Z' + Math.max(0.0, lastPoint.y).toFixed(3));
 
@@ -3019,23 +3102,29 @@ function appendBrimGcode(
         lines.push(';TYPE:Brim');
         lines.push(`G0 F${travelFeed} X${start.x.toFixed(3)} Y${start.y.toFixed(3)} Z${firstLayerZ.toFixed(3)}`);
         if (isFirstBrimLoop) {
-            lines.push('G1 F900 E0.6000');
+            if (settings.primeMm > 0) {
+                lines.push(`G1 F${mmPerSecToFeedrate(settings.retractSpeedMmPerSec).toFixed(0)} E${(settings.primeMm * 0.75).toFixed(4)}`);
+            }
             isFirstBrimLoop = false;
         }
 
         let previous = start;
+        // The G0 above set the travel feedrate; only the first print move of
+        // the loop needs to restate F.
+        let brimFeedSet = false;
         for (let i = 1; i < loop.length; i++) {
             const point = loop[i];
             const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
             if (distance > 0) {
-                lines.push(`G1 F${printFeed} X${point.x.toFixed(3)} Y${point.y.toFixed(3)} E${(distance * extrusionPerMm).toFixed(5)}`);
+                lines.push(`G1${brimFeedSet ? '' : ` F${printFeed}`} X${point.x.toFixed(3)} Y${point.y.toFixed(3)} E${(distance * extrusionPerMm).toFixed(5)}`);
+                brimFeedSet = true;
             }
             previous = point;
         }
 
         const closingDistance = Math.hypot(start.x - previous.x, start.y - previous.y);
         if (closingDistance > 0) {
-            lines.push(`G1 F${printFeed} X${start.x.toFixed(3)} Y${start.y.toFixed(3)} E${(closingDistance * extrusionPerMm).toFixed(5)}`);
+            lines.push(`G1${brimFeedSet ? '' : ` F${printFeed}`} X${start.x.toFixed(3)} Y${start.y.toFixed(3)} E${(closingDistance * extrusionPerMm).toFixed(5)}`);
         }
     }
 

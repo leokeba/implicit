@@ -51,12 +51,18 @@ export interface ToolpathPostprocessMutablePoint {
     layer: number;
     speedMmPerSec: number;
     extrusionScale?: number;
+    /**
+     * GPU-sampled scene field values. Preserved across pipeline steps when a
+     * step passes points through or mutates them in place; a step that
+     * fabricates new points at new positions cannot supply meaningful values
+     * and may omit them.
+     */
+    sceneFields?: Readonly<Record<string, SceneFieldValue>>;
 }
 
 export interface ToolpathPostprocessPoint extends ToolpathPostprocessMutablePoint {
     e: number;
     metrics: ToolpathPostprocessPointMetrics;
-    sceneFields?: Readonly<Record<string, SceneFieldValue>>;
 }
 
 export interface ToolpathPostprocessContext {
@@ -303,6 +309,7 @@ function normalizeReturnedPoint(point: ToolpathPostprocessMutablePoint): Toolpat
         layer: point.layer,
         speedMmPerSec: point.speedMmPerSec,
         extrusionScale: point.extrusionScale,
+        sceneFields: point.sceneFields,
     };
 }
 
