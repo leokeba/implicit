@@ -23,18 +23,22 @@
                     <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={viewerFullscreen} on:click={onToggleViewerFullscreen}>
                         {viewerFullscreen ? 'Exit Preview' : 'Expand Preview'}
                     </button>
-                    <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={editorVisible} on:click={onToggleEditor}>
-                        {editorVisible ? 'Hide Editor' : 'Show Editor'}
-                    </button>
+                    {#if !viewerFullscreen}
+                        <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={editorVisible} on:click={onToggleEditor}>
+                            {editorVisible ? 'Hide Editor' : 'Show Editor'}
+                        </button>
+                    {/if}
                     <button class="chrome-button chrome-button-ghost" type="button" on:click={onResetView}>Reset View</button>
                     {#if hasToolpath}
                         <button class="chrome-button chrome-button-ghost" type="button" aria-pressed={toolpathVisible} on:click={onToggleToolpath}>
                             {toolpathVisible ? 'Hide Toolpath' : 'Show Toolpath'}
                         </button>
                     {/if}
-                    <button class="chrome-button chrome-button-ghost" type="button" aria-expanded={!inspectorCollapsed} on:click={onToggleInspector}>
-                        {inspectorCollapsed ? 'Show Inspector' : 'Hide Inspector'}
-                    </button>
+                    {#if !viewerFullscreen}
+                        <button class="chrome-button chrome-button-ghost" type="button" aria-expanded={!inspectorCollapsed} on:click={onToggleInspector}>
+                            {inspectorCollapsed ? 'Show Inspector' : 'Hide Inspector'}
+                        </button>
+                    {/if}
                 </div>
             </div>
         </div>

@@ -45,6 +45,7 @@ The Inspector subtitle: "Task-oriented tabs replace the old stacked form so the 
 After a scene switch it reads `SHADER: LOADED SCENE: SCREWTHREADCYLINDER` — an uppercased internal id. The pill grows with content; at 1440px it pushed MATERIAL onto a second row and shifted the whole header. Status text should be short, human ("Ready", "Compiled Screw Thread Cylinder"), and stable in width (`src/components/TopBar.svelte:79`).
 
 ### 7. No sliders anywhere
+> **Update 2026-07-08: fixed.** Every numeric field with finite min/max now renders a slider next to the number input (`.field-row-slider` three-column layout). Sliders commit on `input` for live feedback while dragging; the number input keeps commit-on-change for precision. Verified live: dragging Layer height updates the value, summary chips, and resolved config in real time.
 Every numeric parameter in a live-preview shader playground is a `type=number` spinner (zero `type=range` in the codebase). The core loop — nudge a value, watch the surface — currently requires click → type → commit-on-change per attempt. Draggable sliders (or Blender-style scrub-on-drag on labels) would transform the tool. **Highest-leverage improvement on this list.**
 
 ### 8. Duplicated controls with no clear hierarchy
@@ -60,6 +61,7 @@ Duplication doubles the surface where state can disagree (see #2). Pick one home
 `src/App.svelte:1121, 1149, 1205`. Native prompts can't be styled, can't validate inline (slug rules, collisions), and look broken next to an otherwise polished dark UI. Use a small inline form in the editor header.
 
 ### 10. No build-volume sanity check
+> **Update 2026-07-08: fixed.** The Print tab summary now has a "Part" chip showing the estimated printed envelope (slice window x scale, plus brim). When the footprint exceeds the machine bed it switches to an amber warn style and reads "~354 x 45 mm - exceeds bed". Verified live with Screw Thread Cylinder on the Bambu P1S.
 Screw Thread Cylinder ships with Outer diameter 350mm while the selected machine is a Bambu P1S (256mm bed). No warning at parameter-entry or Generate time. The app knows machine dimensions — show a "part exceeds build volume" badge near the summary chips.
 
 ### 11. Compact layouts lose the tune-while-watching loop
@@ -73,14 +75,14 @@ Handlers are `mousedown/mousemove/wheel` (`src/core/renderer.ts:523-593`) — no
 ## Polish and accessibility
 
 13. **Tabs aren't tabs.** Inspector tab bar uses `aria-pressed` buttons instead of `role="tablist"/"tab"/"tabpanel"` with arrow-key nav (`src/components/InspectorPanel.svelte:32`). Related: buttons like "Hide Editor" both change label *and* carry `aria-pressed` — announced as "Hide Editor, pressed," which is contradictory. Use static label + `aria-pressed`, or changing label with no pressed state.
-14. **Five form fields lack `id`/`name`** (Chrome flags on load) — breaks autofill heuristics and label association (top-bar selects).
-15. **`↺` override-reset button has `title` but no `aria-label`** (`src/components/inspector/InspectorSchemaTab.svelte:45-52`) — invisible to screen readers; `title` doesn't show on touch.
+14. **Five form fields lack `id`/`name`** (Chrome flags on load) — breaks autofill heuristics and label association (top-bar selects). *Fixed 2026-07-08: ids/names added to the four top-bar selects and the editor file select; Chrome reports zero form-field issues.*
+15. **`↺` override-reset button has `title` but no `aria-label`** (`src/components/inspector/InspectorSchemaTab.svelte:45-52`) — invisible to screen readers; `title` doesn't show on touch. *Fixed 2026-07-08: per-field `aria-label` added.*
 16. **Editor resize handle has no keyboard handler** while the inspector one supports Arrow/Home (`src/App.svelte:1357-1374`). Neither uses `role="separator"` + `aria-valuenow`.
 17. **No `prefers-reduced-motion` support**, and the raymarch loop renders continuously when idle — a11y and battery. Pause the render loop when nothing changes.
 18. **Select widths truncate their own options**: "Planar contour (s…", "Screw Thread Cy…" at default inspector width.
 19. **Cmd+S only saves when focus is inside CodeMirror** (`src/components/DocumentEditorPanel.svelte:127-144`); with a dirty file and focus elsewhere it opens the browser save-page dialog. Handle at window level when any document is dirty.
 20. **Locale mismatch in numerals**: number inputs render "0,2" (browser locale) while summary chips show "0.20 mm" — same value, two formats on one screen.
-21. **In fullscreen preview, "Hide Editor"/"Hide Inspector" remain** and toggle state you can't see. Hide them while expanded.
+21. **In fullscreen preview, "Hide Editor"/"Hide Inspector" remain** and toggle state you can't see. Hide them while expanded. *Fixed 2026-07-08: the two panel toggles are hidden in fullscreen; Generate, Exit Preview, Reset View, and the toolpath toggle remain.*
 22. **"SCENE EDITOR" and "FOLDER SYNC" chips are styled like buttons** but are static text — they read as dead controls. Distinguish badges from buttons.
 
 ---

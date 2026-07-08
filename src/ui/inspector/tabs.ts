@@ -41,6 +41,24 @@ function formatBedSize(settings: VaseSlicerSettings): string {
     return `${Math.round(settings.bedWidthMm)} x ${Math.round(settings.bedDepthMm)} mm`;
 }
 
+/** Printed footprint estimate: slice window plus brim, in machine millimetres. */
+function partFootprintMm(settings: VaseSlicerSettings): number {
+    const brim = settings.brimWidthMm > 0 ? settings.brimWidthMm + settings.brimGapMm : 0;
+    return (2 * settings.maxRadius * settings.modelScale) + (2 * brim);
+}
+
+function partExceedsBed(settings: VaseSlicerSettings): boolean {
+    const footprint = partFootprintMm(settings);
+    return footprint > settings.bedWidthMm || footprint > settings.bedDepthMm;
+}
+
+function formatPartEnvelope(settings: VaseSlicerSettings): string {
+    const footprint = partFootprintMm(settings);
+    const height = Math.max(0, settings.maxY - settings.minY) * settings.modelScale;
+    const size = `~${Math.round(footprint)} x ${Math.round(height)} mm`;
+    return partExceedsBed(settings) ? `${size} - exceeds bed` : size;
+}
+
 export const INSPECTOR_TABS: InspectorTabSchema[] = [
     {
         id: 'scene',
@@ -124,6 +142,11 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
             { label: 'Mode', read: (state) => state.slicerSettings.slicerMode },
             { label: 'Layer', read: (state) => `${formatFixed(state.slicerSettings.layerHeight, 2)} mm` },
             { label: 'Line', read: (state) => `${formatFixed(state.slicerSettings.lineWidth, 2)} mm` },
+            {
+                label: 'Part',
+                read: (state) => formatPartEnvelope(state.slicerSettings),
+                warn: (state) => partExceedsBed(state.slicerSettings),
+            },
         ],
         sections: [
             {

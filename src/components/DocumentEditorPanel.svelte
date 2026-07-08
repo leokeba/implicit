@@ -166,6 +166,8 @@
         <div class="scene-editor-actions">
             {#if fileOptions.length > 0 && onSelectFileOption}
                 <select
+                    id="scene-editor-file-select"
+                    name="editor-file"
                     class="scene-editor-file-select"
                     aria-label="Active editor file"
                     value={activeFileOption ?? ''}

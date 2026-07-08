@@ -616,6 +616,20 @@ h1 {
   font-size: 0.82rem;
 }
 
+.summary-chip-warn {
+  background: var(--shader-warn-bg);
+  border-color: var(--shader-warn-border);
+}
+
+.summary-chip-warn .summary-chip-label,
+.summary-chip-warn .summary-chip-value {
+  color: var(--shader-warn-fg);
+}
+
+.summary-chip-warn .summary-chip-value {
+  white-space: normal;
+}
+
 .tab-panel[hidden] {
   display: none;
 }
@@ -658,6 +672,31 @@ h1 {
 .field-row-textarea {
   grid-template-columns: 1fr;
   align-items: start;
+}
+
+.field-row-slider {
+  grid-template-columns: minmax(96px, 1fr) minmax(72px, 1fr) 76px;
+}
+
+input[type='range'].field-slider {
+  height: 34px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  accent-color: var(--accent, #2f81f7);
+  cursor: pointer;
+}
+
+input[type='range'].field-slider:hover,
+input[type='range'].field-slider:focus {
+  border: none;
+  box-shadow: none;
+}
+
+.field-row-slider input[type='number'] {
+  min-width: 0;
+  padding: 0 6px;
 }
 
 .field-row-overridden > label {
@@ -1138,6 +1177,15 @@ textarea:focus {
   .field-row {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .field-row-slider {
+    grid-template-columns: 1fr 76px;
+    align-items: center;
+  }
+
+  .field-row-slider > label {
+    grid-column: 1 / -1;
   }
 
   .viewport-command-surface,

@@ -25,9 +25,9 @@
     {#if tab.summary.length > 0}
         <section class="inspector-summary" aria-label={`${tab.label} summary`}>
             {#each tab.summary as item}
-                <article class="summary-chip">
+                <article class="summary-chip" class:summary-chip-warn={item.warn?.(state)}>
                     <span class="summary-chip-label">{item.label}</span>
-                    <strong class="summary-chip-value">{item.read(state)}</strong>
+                    <strong class="summary-chip-value" title={item.read(state)}>{item.read(state)}</strong>
                 </article>
             {/each}
         </section>
@@ -40,7 +40,12 @@
             <div class="field-grid">
                 {#each section.fields as field}
                     {@const overridden = isFieldOverridden(field, state)}
-                    <div class:field-row-textarea={field.kind === 'textarea'} class:field-row-overridden={overridden} class="field-row">
+                    {@const sliderCapable = field.kind === 'number'
+                        && field.target !== 'command'
+                        && Number.isFinite(Number(field.min))
+                        && Number.isFinite(Number(field.max))
+                        && Number(field.min) < Number(field.max)}
+                    <div class:field-row-textarea={field.kind === 'textarea'} class:field-row-slider={sliderCapable} class:field-row-overridden={overridden} class="field-row">
                         <label for={field.id}>
                             {field.label}
                             {#if overridden && canResetField(field)}
@@ -48,6 +53,7 @@
                                     class="field-override-reset"
                                     type="button"
                                     title="Override active. Reset to scene-defined value."
+                                    aria-label={`Reset ${field.label} override to scene-defined value`}
                                     on:click={() => resetFieldOverride(field, handlers)}
                                 >&#8634;</button>
                             {/if}
@@ -82,6 +88,20 @@
                                 on:change={(event) => commitFieldValue(field, (event.currentTarget as HTMLTextAreaElement).value, handlers)}
                             ></textarea>
                         {:else}
+                            {#if sliderCapable}
+                                <input
+                                    id={`${field.id}-slider`}
+                                    class="field-slider"
+                                    type="range"
+                                    step={field.step}
+                                    min={field.min}
+                                    max={field.max}
+                                    value={formatNumberFieldValue(field, readFieldValue(field, state))}
+                                    disabled={isFieldDisabled(field, state)}
+                                    aria-label={`${field.label} slider`}
+                                    on:input={(event) => commitFieldValue(field, (event.currentTarget as HTMLInputElement).value, handlers)}
+                                >
+                            {/if}
                             <input
                                 id={field.id}
                                 class:action-input={field.target === 'command'}

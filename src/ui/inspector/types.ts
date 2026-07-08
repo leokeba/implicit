@@ -197,6 +197,7 @@ export type InspectorFieldSchema =
 export interface InspectorSummaryItemSchema {
     label: string;
     read: (state: InspectorSchemaState) => string;
+    warn?: (state: InspectorSchemaState) => boolean;
 }
 
 export interface InspectorSectionSchema {

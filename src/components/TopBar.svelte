@@ -34,7 +34,7 @@
     <div class="topbar-selectors" aria-label="Workspace selectors">
         <label class="topbar-field">
             <span>Scene</span>
-            <select value={sceneId} on:change={(event) => onCommitScene((event.currentTarget as HTMLSelectElement).value)}>
+            <select id="topbar-scene" name="scene" value={sceneId} on:change={(event) => onCommitScene((event.currentTarget as HTMLSelectElement).value)}>
                 {#each sceneOptions as scene}
                     <option value={scene.id}>{scene.name}</option>
                 {/each}
@@ -43,7 +43,7 @@
 
         <label class="topbar-field">
             <span>View</span>
-            <select value={String(viewMode)} on:change={(event) => onCommitViewMode(Number((event.currentTarget as HTMLSelectElement).value))}>
+            <select id="topbar-view" name="view" value={String(viewMode)} on:change={(event) => onCommitViewMode(Number((event.currentTarget as HTMLSelectElement).value))}>
                 {#each VIEW_MODE_OPTIONS as option}
                     <option value={option.value}>{option.label}</option>
                 {/each}
@@ -52,7 +52,7 @@
 
         <label class="topbar-field">
             <span>Machine</span>
-            <select value={printerModelId} on:change={(event) => onCommitPrinterModel((event.currentTarget as HTMLSelectElement).value)}>
+            <select id="topbar-machine" name="machine" value={printerModelId} on:change={(event) => onCommitPrinterModel((event.currentTarget as HTMLSelectElement).value)}>
                 {#each printerModels as model}
                     <option value={model.id}>{model.name}</option>
                 {/each}
@@ -61,7 +61,7 @@
 
         <label class="topbar-field">
             <span>Material</span>
-            <select value={filamentProfileId} on:change={(event) => onCommitFilamentProfile((event.currentTarget as HTMLSelectElement).value)}>
+            <select id="topbar-material" name="material" value={filamentProfileId} on:change={(event) => onCommitFilamentProfile((event.currentTarget as HTMLSelectElement).value)}>
                 {#each filamentProfiles as profile}
                     <option value={profile.id}>{profile.name}</option>
                 {/each}
