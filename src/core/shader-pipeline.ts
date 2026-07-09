@@ -52,10 +52,6 @@ interface SceneEntry {
     manifestError: string | null;
 }
 
-interface ShaderPipelineRuntimeState {
-    activeSceneId?: string;
-}
-
 const ACTIVE_SCENE_STORAGE_KEY = 'implicit.activeScene.v1';
 
 const bundledSceneModules = import.meta.glob('../scenes/*/*', {
@@ -90,11 +86,7 @@ interface ShaderSources {
 
 const sceneEntries: SceneEntry[] = buildSceneEntriesFromModules(bundledSceneModules);
 
-const runtimeState: ShaderPipelineRuntimeState = ((globalThis as any).__implicitShaderPipelineState as ShaderPipelineRuntimeState | undefined) ?? {};
-(globalThis as any).__implicitShaderPipelineState = runtimeState;
-
 let activeSceneId: string = resolveInitialActiveSceneId();
-runtimeState.activeSceneId = activeSceneId;
 
 let activeSources: ShaderSources = {
     rendererVertex: rendererVertexSource,
@@ -196,7 +188,6 @@ export function replaceSceneBundles(bundles: SceneBundle[]): SceneBundle[] {
 
     const resolvedActive = resolveSceneEntryById(activeSceneId) ?? sceneEntries[0];
     activeSceneId = resolvedActive?.id ?? activeSceneId;
-    runtimeState.activeSceneId = activeSceneId;
 
     return getSceneBundles();
 }
@@ -224,7 +215,6 @@ export function setActiveSceneById(sceneId: string): boolean {
     }
 
     activeSceneId = nextEntry.id;
-    runtimeState.activeSceneId = nextEntry.id;
     storeActiveSceneId(nextEntry.id);
     return true;
 }
@@ -249,6 +239,9 @@ export function getRendererVertexSource(): string {
 
 export function composeRendererFragmentSource(): string {
     const entry = requireActiveEntry();
+    // The Modifier Values view visualizes exactly one field; by convention it
+    // is the manifest's first. All declared fields are still sampled for
+    // postprocess scripts — this choice only affects the debug view.
     const activeField = entry.manifest.fields[0] ?? null;
     return substituteTokens(activeSources.rendererFragmentTemplate, {
         __ENGINE_UNIFORMS_GLSL__: buildEngineUniformBlock(RENDERER_ENGINE_UNIFORMS),
@@ -487,10 +480,11 @@ function toSceneLabel(sceneId: string): string {
 }
 
 function resolveInitialActiveSceneId(): string {
-    const fromRuntime = runtimeState.activeSceneId;
+    // sessionStorage keeps the selection across reloads and across HMR
+    // re-evaluations of this module.
     const fromSession = readStoredActiveSceneId();
     const fromDefault = sceneEntries[0]?.id;
-    const candidate = fromRuntime ?? fromSession ?? fromDefault ?? 'defaultScene';
+    const candidate = fromSession ?? fromDefault ?? 'defaultScene';
     const entry = resolveSceneEntryById(candidate);
     return entry?.id ?? (sceneEntries[0]?.id ?? 'defaultScene');
 }
