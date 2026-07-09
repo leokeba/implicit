@@ -853,6 +853,16 @@ export class StudioController {
         this.renderFrameHandle = requestAnimationFrame(render);
     }
 
+    /** Stops the render loop and releases engines and lifecycle listeners. */
+    public dispose(): void {
+        this.stopRenderingLoop();
+        this.renderLifecycleCleanup?.();
+        this.renderLifecycleCleanup = null;
+        this.preview.dispose();
+        this.renderer.dispose();
+        this.initialized = false;
+    }
+
     private stopRenderingLoop(): void {
         if (this.renderFrameHandle === null) {
             return;
