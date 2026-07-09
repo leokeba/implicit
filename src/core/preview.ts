@@ -1,4 +1,4 @@
-import type { CameraState } from '../core/renderer';
+import type { CameraState } from './renderer';
 
 interface WorldPoint {
     x: number;

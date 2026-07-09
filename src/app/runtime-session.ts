@@ -1,5 +1,5 @@
 import type { AnimationParams, RaymarchParams, ViewportParams } from '../core/renderer';
-import type { SceneOverrides } from '../studio-controller';
+import type { SceneOverrides } from '../studio/types';
 
 const APP_RUNTIME_STORAGE_KEY = 'implicit.runtimeState.v2';
 

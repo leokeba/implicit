@@ -1,12 +1,35 @@
 import { writable } from 'svelte/store';
 
-import {
-    compactShaderStatusMessage,
-    normalizeShaderStatusMessage,
-    type PresetChangeResult,
-    type SceneChangeResult,
-    type ShaderStatusMode,
-} from '../studio-controller';
+import type {
+    PresetChangeResult,
+    SceneChangeResult,
+    ShaderStatusMode,
+} from '../studio/types';
+
+const MAX_SHADER_ERROR_CHARS = 6000;
+
+function normalizeShaderStatusMessage(message: string): string {
+    const trimmed = message.trim();
+    if (!trimmed) {
+        return 'Unknown shader error';
+    }
+
+    if (trimmed.length <= MAX_SHADER_ERROR_CHARS) {
+        return trimmed;
+    }
+
+    return `${trimmed.slice(0, MAX_SHADER_ERROR_CHARS)}\n\n...truncated`;
+}
+
+function compactShaderStatusMessage(message: string): string {
+    const firstLine = message.split(/\r?\n/, 1)[0]?.trim() || 'Shader status changed';
+    const maxInlineLen = 88;
+    if (firstLine.length <= maxInlineLen) {
+        return firstLine;
+    }
+
+    return `${firstLine.slice(0, maxInlineLen - 1)}...`;
+}
 
 export interface StatusState {
     workspaceStatus: string;

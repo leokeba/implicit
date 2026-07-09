@@ -5,7 +5,7 @@ import type { SliceDebugSnapshot, VaseSlicerSettings } from '../../core/slicer';
 import type { FilamentProfile } from '../../core/filament-profiles';
 import type { PostprocessScriptDocument } from '../../core/postprocess-registry';
 import type { PrinterModel } from '../../core/printer-models';
-import type { PipelineStepView } from '../../studio-controller';
+import type { PipelineStepView } from '../../studio/types';
 import type { ScalarControlSpec } from '../../scene-runtime';
 
 export type ControlTabId = 'scene' | 'camera' | 'render' | 'print' | 'machine' | 'material' | 'postprocess' | 'output';

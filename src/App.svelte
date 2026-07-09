@@ -19,13 +19,13 @@
     import StatusStrip from './components/StatusStrip.svelte';
     import TopBar from './components/TopBar.svelte';
     import ViewportPanel from './components/ViewportPanel.svelte';
+    import { type StudioController } from './studio-controller';
     import {
         type SceneConfigView,
         type SceneOverrides,
         type SceneRegistrySyncResult,
         type SlicerSettingsUpdateResult,
-        type StudioController,
-    } from './studio-controller';
+    } from './studio/types';
     import {
         type BooleanSlicerKey,
         type ControlTabId,
@@ -57,7 +57,7 @@
     } from './app/helpers';
     import { createStatusModel } from './ui/status-model';
     import { createWorkspaceStore } from './ui/workspace-store';
-    import { downloadTextFile, uploadGcodeToMoonraker } from './studio/file-export';
+    import { downloadTextFile, uploadGcodeToMoonraker } from './ui/file-export';
     import {
         applyPrinterModelConnectionDefaults as resolvePrinterConnectionDefaults,
         checkPrinterAvailability,

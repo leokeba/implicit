@@ -2,7 +2,7 @@
     import type { FilamentProfile } from '../core/filament-profiles';
     import type { PrinterModel } from '../core/printer-models';
     import type { SceneOption } from '../core/shader-pipeline';
-    import type { ShaderStatusMode } from '../studio-controller';
+    import type { ShaderStatusMode } from '../studio/types';
     import { VIEW_MODE_OPTIONS } from '../ui/inspector-schema';
 
     export let sceneOptions: SceneOption[];

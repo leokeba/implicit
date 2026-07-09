@@ -39,7 +39,7 @@ float sdScrewThreadedCylinder(
     // Start the top tolerance taper before the thread runout, so the fit neck
     // is already established before the top thread reaches full height.
     // Increase `clearanceLineWidths` if printed parts still don't slip together.
-    float clearanceLineWidths = 1.2;
+    float clearanceLineWidths = 1.5;
     float clearancePlateauLineWidths = 10.0;
     float clearanceTransitionEnd = min(
         max(lineWidthScene * clearancePlateauLineWidths, threadTaperHeight),

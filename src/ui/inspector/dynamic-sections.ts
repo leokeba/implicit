@@ -1,5 +1,5 @@
 import type { InspectorFieldSchema, InspectorSectionSchema } from './types';
-import type { PipelineStepView } from '../../studio-controller';
+import type { PipelineStepView } from '../../studio/types';
 import type { SceneControlDefinition } from '../../core/shader-pipeline';
 import type { ScalarControlSpec } from '../../scene-runtime';
 

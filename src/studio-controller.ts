@@ -33,132 +33,22 @@ import {
     type VaseSlicerSettings,
 } from './core/slicer';
 import type { ScalarControlSpec, SceneManifest } from './scene-runtime';
-import { Preview } from './ui';
+import type {
+    PresetChangeResult,
+    SceneChangeResult,
+    SceneConfigView,
+    SceneOverrides,
+    SceneRegistrySyncResult,
+    SlicerBenchmarkSummary,
+    SlicerSettingsUpdateResult,
+    StudioSnapshot,
+    PipelineStepView,
+} from './studio/types';
+import { Preview } from './core/preview';
 import { summarizeBenchmarkRuns } from './studio/benchmark-summary';
-import { buildSlicerFilename, downloadTextFile } from './studio/file-export';
+import { buildSlicerFilename } from './studio/filename';
 import { attachRenderLifecycleHandlers, shouldRenderPreview } from './studio/render-lifecycle';
 import { convertToolpathToScenePoints } from './studio/toolpath-overlay';
-
-export interface SlicerBenchmarkSummary {
-    totalRuns: number;
-    measuredRuns: number;
-    warmupRuns: number;
-    averageMs: number;
-    medianMs: number;
-    minMs: number;
-    maxMs: number;
-    spreadMs: number;
-    averageContourSamplingMs: number;
-    averageToolpathBuildMs: number;
-    averageGcodeBuildMs: number;
-    points: number;
-    layers: number;
-    bytes: number;
-}
-
-export type ShaderStatusMode = 'ready' | 'compiling' | 'ok' | 'error';
-
-/** Sparse session-only overrides applied on top of the file-derived configuration. */
-export interface SceneOverrides {
-    slicer: Partial<VaseSlicerSettings>;
-    uniforms: Record<string, number>;
-    params: Record<string, number>;
-    stepParams: Record<number, Record<string, number>>;
-    disabledSteps: number[];
-    printerId: string | null;
-    filamentId: string | null;
-}
-
-export interface PipelineStepView {
-    index: number;
-    name: string;
-    scriptId: string | null;
-    enabled: boolean;
-    controls: ScalarControlSpec[];
-    params: Record<string, number>;
-    overriddenParamKeys: string[];
-    error: string | null;
-}
-
-export interface SceneConfigView {
-    settings: VaseSlicerSettings;
-    uniformControls: SceneControlDefinition[];
-    uniformValues: Record<string, number>;
-    paramControls: ScalarControlSpec[];
-    paramValues: Record<string, number>;
-    pipeline: PipelineStepView[];
-    overriddenSlicerKeys: string[];
-    overriddenUniformKeys: string[];
-    overriddenParamKeys: string[];
-    overrideCount: number;
-    printerOverridden: boolean;
-    filamentOverridden: boolean;
-    manifestError: string | null;
-    preprocessError: string | null;
-}
-
-export interface StudioSnapshot {
-    viewMode: number;
-    sceneId: string;
-    sceneOptions: SceneOption[];
-    raymarchParams: RaymarchParams;
-    viewportParams: ViewportParams;
-    animationParams: AnimationParams;
-    printerModels: PrinterModel[];
-    filamentProfiles: FilamentProfile[];
-    config: SceneConfigView;
-}
-
-export interface SceneChangeResult {
-    ok: boolean;
-    sceneId: string;
-    config: SceneConfigView;
-    shaderMessage: string;
-    workspaceStatus: string;
-}
-
-export interface SlicerSettingsUpdateResult {
-    settings: VaseSlicerSettings;
-    validationMessage: string | null;
-}
-
-export interface SceneRegistrySyncResult {
-    ok: boolean;
-    sceneId: string;
-    sceneOptions: SceneOption[];
-    config: SceneConfigView;
-    shaderMessage: string;
-}
-
-export interface PresetChangeResult {
-    config: SceneConfigView;
-    workspaceStatus: string;
-}
-
-const MAX_SHADER_ERROR_CHARS = 6000;
-
-export function normalizeShaderStatusMessage(message: string): string {
-    const trimmed = message.trim();
-    if (!trimmed) {
-        return 'Unknown shader error';
-    }
-
-    if (trimmed.length <= MAX_SHADER_ERROR_CHARS) {
-        return trimmed;
-    }
-
-    return `${trimmed.slice(0, MAX_SHADER_ERROR_CHARS)}\n\n...truncated`;
-}
-
-export function compactShaderStatusMessage(message: string): string {
-    const firstLine = message.split(/\r?\n/, 1)[0]?.trim() || 'Shader status changed';
-    const maxInlineLen = 88;
-    if (firstLine.length <= maxInlineLen) {
-        return firstLine;
-    }
-
-    return `${firstLine.slice(0, maxInlineLen - 1)}...`;
-}
 
 function emptyOverrides(): SceneOverrides {
     return {
@@ -582,18 +472,6 @@ export class StudioController {
 
     public getLastSliceDebugSnapshot(): SliceDebugSnapshot | null {
         return this.slicer.getLastSliceDebugSnapshot();
-    }
-
-    public async generateVaseGcode(
-        onProgress?: (update: SliceProgressUpdate) => void
-    ): Promise<{ filename: string; bytes: number; points: number }> {
-        const artifact = await this.buildVaseGcodeArtifact('__adhoc__', onProgress);
-        downloadTextFile(artifact.filename, artifact.gcode);
-        return {
-            filename: artifact.filename,
-            bytes: artifact.bytes,
-            points: artifact.points,
-        };
     }
 
     public async buildVaseGcodeArtifact(

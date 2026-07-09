@@ -1,5 +1,5 @@
 import type { VaseSliceBenchmarkRun } from '../core/slicer';
-import type { SlicerBenchmarkSummary } from '../studio-controller';
+import type { SlicerBenchmarkSummary } from './types';
 
 export function summarizeBenchmarkRuns(runs: VaseSliceBenchmarkRun[], warmupRuns: number, measuredRuns: number): SlicerBenchmarkSummary {
     if (runs.length === 0) {

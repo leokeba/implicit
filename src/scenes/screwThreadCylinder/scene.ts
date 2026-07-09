@@ -2,16 +2,16 @@ import { defineScene } from 'implicit/scene';
 
 // Thread geometry is a printing concern, not a proportion: it stays constant
 // in millimeters no matter how large the cylinder gets.
-const PITCH_MM = 7.;
-const THREAD_DEPTH_MM = 3.;
+const PITCH_MM = 11.;
+const THREAD_DEPTH_MM = 4.;
 const SLICE_MARGIN_MM = 2;
 
 export default defineScene({
     title: 'Screw Thread Cylinder',
 
     params: {
-        heightMm: { default: 35, min: 10, max: 500, step: 1, label: 'Height (mm)', section: 'Size' },
-        diameterMm: { default: 200, min: 15, max: 400, step: 1, label: 'Outer diameter (mm)', section: 'Size', description: 'Outside diameter measured over the thread crests.' },
+        heightMm: { default: 45, min: 10, max: 500, step: 1, label: 'Height (mm)', section: 'Size' },
+        diameterMm: { default: 350, min: 15, max: 400, step: 1, label: 'Outer diameter (mm)', section: 'Size', description: 'Outside diameter measured over the thread crests.' },
         detentWidthDeg: { default: 5, min: 0, max: 60, step: 1, label: 'Detent width (°)', section: 'Thread', description: 'Full angular extent of the detent slot carved into the thread crest.' },
         detentDepth: { default: 0, min: 0, max: 1, step: 0.05, label: 'Detent depth', section: 'Thread', description: 'Fraction of the thread depth removed at the center of the slot.' },
     },
@@ -28,7 +28,7 @@ export default defineScene({
 
     slicer: {
         nozzleDiameter: 0.8,
-        layerHeight: 0.6,
+        layerHeight: 0.5,
         lineWidth: 1.,
         firstLayerLineWidth: 1.,
         brimWidthMm: 0.

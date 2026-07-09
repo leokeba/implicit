@@ -1,5 +1,5 @@
 import type { PrinterModel } from '../core/printer-models';
-import { checkMoonrakerAvailability } from '../studio/file-export';
+import { checkMoonrakerAvailability } from '../ui/file-export';
 
 const PRINTER_TARGET_STORAGE_KEY = 'implicit.printerTarget.v1';
 
