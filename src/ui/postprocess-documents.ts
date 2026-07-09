@@ -64,23 +64,6 @@ export function createPostprocessDocument(
     return document;
 }
 
-export function arePostprocessCollectionsEqual(left: PostprocessScriptDocument[], right: PostprocessScriptDocument[]): boolean {
-    if (left.length !== right.length) {
-        return false;
-    }
-
-    return left.every((document, index) => {
-        const candidate = right[index];
-        return Boolean(
-            candidate &&
-                candidate.id === document.id &&
-                candidate.fileName === document.fileName &&
-                candidate.language === document.language &&
-                candidate.source === document.source
-        );
-    });
-}
-
 async function fetchFilesystemPostprocessDocuments(): Promise<PostprocessScriptDocument[] | null> {
     if (typeof fetch === 'undefined') {
         return null;

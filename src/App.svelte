@@ -33,11 +33,8 @@
         type InspectorSchemaState,
         type NumericSlicerKey,
     } from './ui/inspector-schema';
-    import { areSceneBundlesEqual } from './ui/scene-documents';
-    import {
-        arePostprocessCollectionsEqual,
-        createPostprocessDocument,
-    } from './ui/postprocess-documents';
+    import { createPostprocessDocument } from './ui/postprocess-documents';
+    import { createPostprocessDocumentSet, createSceneDocumentSet } from './ui/documents';
     import {
         bundledWorkspaceBackend,
         probeDevServerBackend,
@@ -97,21 +94,19 @@
         config,
     } = $studioState);
 
-    // Scene folder documents.
-    let sceneBundles: SceneBundle[] = studio.getSceneBundles();
-    let persistedSceneBundles: SceneBundle[] = sceneBundles;
+    // Editable documents: working + persisted copies with dirty tracking live
+    // in the document sets; the locals below are derivations of them.
+    const sceneDocs = createSceneDocumentSet(studio.getSceneBundles());
+    const postprocessDocs = createPostprocessDocumentSet(listPostprocessScripts());
+    $: ({ documents: sceneBundles, persisted: persistedSceneBundles, savePending: sceneEditorSavePending } = $sceneDocs);
+    $: ({ documents: postprocessDocuments, persisted: persistedPostprocessDocuments, savePending: postprocessSavePending } = $postprocessDocs);
+
     let workspaceBackend: WorkspaceBackend = bundledWorkspaceBackend;
     let pendingLocalFolder: StoredLocalFolder | null = null;
     let sceneEditorStatus = 'Scene editor ready.';
-    let sceneEditorSavePending = false;
     let activeSceneFileName: string = SCENE_GLSL_FILE;
-
-    // Generic postprocess script documents (editing targets).
-    let postprocessDocuments: PostprocessScriptDocument[] = listPostprocessScripts();
-    let persistedPostprocessDocuments = postprocessDocuments;
     let postprocessStatus = 'Postprocess scripts ready.';
-    let postprocessSavePending = false;
-    let activePostprocessScriptId = postprocessDocuments[0]?.id ?? '';
+    let activePostprocessScriptId = postprocessDocs.current().documents[0]?.id ?? '';
     let editorDocumentMode: 'scene' | 'postprocess' = 'scene';
     let postprocessAutoUpdate = false;
 
@@ -505,11 +500,10 @@
 
         const targetSceneId = activeSceneBundle.id;
         const targetFileName = activeSceneFileName;
-        sceneBundles = sceneBundles.map((bundle) =>
-            bundle.id === targetSceneId
-                ? { ...bundle, files: { ...bundle.files, [targetFileName]: value } }
-                : bundle
-        );
+        sceneDocs.upsertWorking({
+            ...activeSceneBundle,
+            files: { ...activeSceneBundle.files, [targetFileName]: value },
+        });
 
         const result = studio.updateSceneFile(targetSceneId, targetFileName, value);
         applySceneRegistryResult(result);
@@ -649,9 +643,7 @@
         }
 
         const nextDocument = { ...activePostprocessDocument, source: value };
-        postprocessDocuments = postprocessDocuments.map((document) =>
-            document.id === nextDocument.id ? nextDocument : document
-        );
+        postprocessDocs.upsertWorking(nextDocument);
         upsertPostprocessScript(nextDocument);
         studio.refreshConfiguration();
         postprocessStatus = 'Postprocess script updated locally. Save to persist changes.';
@@ -854,13 +846,6 @@
         });
     }
 
-    function mergeSceneBundle(target: SceneBundle[], nextBundle: SceneBundle): SceneBundle[] {
-        const merged = target.some((bundle) => bundle.id === nextBundle.id)
-            ? target.map((bundle) => (bundle.id === nextBundle.id ? nextBundle : bundle))
-            : [...target, nextBundle];
-        return merged.sort((left, right) => left.id.localeCompare(right.id));
-    }
-
     async function saveActiveSceneFile(): Promise<void> {
         if (!activeSceneBundle || !sceneEditorDirty || sceneEditorSavePending) {
             return;
@@ -872,7 +857,7 @@
             return;
         }
 
-        sceneEditorSavePending = true;
+        sceneDocs.setSavePending(true);
         sceneEditorStatus = `Saving ${activeSceneFileName} to ${workspaceBackend.scenesLabel}/${activeSceneBundle.id}...`;
 
         try {
@@ -882,9 +867,8 @@
                 activeSceneBundle.files[activeSceneFileName] ?? ''
             );
 
-            sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
-            persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
-            applySceneRegistryResult(studio.syncSceneBundles(sceneBundles));
+            sceneDocs.applySaved(savedBundle);
+            applySceneRegistryResult(studio.syncSceneBundles(sceneDocs.current().documents));
             sceneEditorStatus = `Saved ${activeSceneFileName} to ${workspaceBackend.scenesLabel}/${savedBundle.id}.`;
             status.setWorkspaceStatus(sceneEditorStatus);
         } catch (error) {
@@ -892,7 +876,7 @@
             sceneEditorStatus = message;
             status.setWorkspaceStatus(message);
         } finally {
-            sceneEditorSavePending = false;
+            sceneDocs.setSavePending(false);
         }
     }
 
@@ -922,17 +906,12 @@
             return;
         }
 
-        postprocessSavePending = true;
+        postprocessDocs.setSavePending(true);
         postprocessStatus = 'Saving postprocess script to folder...';
 
         try {
             const savedDocument = await workspaceBackend.savePostprocessDocument(activePostprocessDocument);
-            postprocessDocuments = postprocessDocuments
-                .map((document) => (document.id === savedDocument.id ? savedDocument : document))
-                .sort((left, right) => left.name.localeCompare(right.name));
-            persistedPostprocessDocuments = persistedPostprocessDocuments.some((document) => document.id === savedDocument.id)
-                ? persistedPostprocessDocuments.map((document) => (document.id === savedDocument.id ? savedDocument : document))
-                : [...persistedPostprocessDocuments, savedDocument].sort((left, right) => left.name.localeCompare(right.name));
+            postprocessDocs.applySaved(savedDocument);
             upsertPostprocessScript(savedDocument);
             studio.refreshConfiguration();
             postprocessStatus = `Saved ${savedDocument.fileName} to ${workspaceBackend.postprocessLabel}.`;
@@ -942,7 +921,7 @@
             postprocessStatus = message;
             status.setWorkspaceStatus(message);
         } finally {
-            postprocessSavePending = false;
+            postprocessDocs.setSavePending(false);
         }
     }
 
@@ -970,8 +949,8 @@
             return;
         }
 
-        const nextDocument = createPostprocessDocument(postprocessDocuments, 'typescript', requestedName);
-        postprocessDocuments = [...postprocessDocuments, nextDocument].sort((left, right) => left.name.localeCompare(right.name));
+        const nextDocument = createPostprocessDocument(postprocessDocs.current().documents, 'typescript', requestedName);
+        postprocessDocs.upsertWorking(nextDocument);
         upsertPostprocessScript(nextDocument);
         activePostprocessScriptId = nextDocument.id;
         editorDocumentMode = 'postprocess';
@@ -999,7 +978,7 @@
             return;
         }
 
-        const existingIds = new Set(sceneBundles.map((bundle) => bundle.id));
+        const existingIds = new Set(sceneDocs.current().documents.map((bundle) => bundle.id));
         let nextSceneId = toSceneId(requestedName);
         let suffix = 2;
         while (existingIds.has(nextSceneId)) {
@@ -1014,8 +993,7 @@
             try {
                 await workspaceBackend.saveSceneFile(nextSceneId, SCENE_GLSL_FILE, glslSource);
                 const savedBundle = await workspaceBackend.saveSceneFile(nextSceneId, 'scene.ts', manifestSource);
-                sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
-                persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
+                sceneDocs.applySaved(savedBundle);
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Scene creation failed.';
                 sceneEditorStatus = message;
@@ -1023,15 +1001,14 @@
                 return;
             }
         } else {
-            const newBundle: SceneBundle = {
+            sceneDocs.upsertWorking({
                 id: nextSceneId,
                 name: requestedName.trim() || nextSceneId,
                 files: { [SCENE_GLSL_FILE]: glslSource, 'scene.ts': manifestSource },
-            };
-            sceneBundles = mergeSceneBundle(sceneBundles, newBundle);
+            });
         }
 
-        applySceneRegistryResult(studio.syncSceneBundles(sceneBundles));
+        applySceneRegistryResult(studio.syncSceneBundles(sceneDocs.current().documents));
         editorDocumentMode = 'scene';
         workspace.selectTab('scene');
         workspace.setEditorVisible(true);
@@ -1077,19 +1054,17 @@
             : `// ${fileName}\n`;
 
         const targetSceneId = activeSceneBundle.id;
-        sceneBundles = sceneBundles.map((bundle) =>
-            bundle.id === targetSceneId
-                ? { ...bundle, files: { ...bundle.files, [fileName]: initialSource } }
-                : bundle
-        );
+        sceneDocs.upsertWorking({
+            ...activeSceneBundle,
+            files: { ...activeSceneBundle.files, [fileName]: initialSource },
+        });
         applySceneRegistryResult(studio.updateSceneFile(targetSceneId, fileName, initialSource));
         activeSceneFileName = fileName;
 
         if (workspaceBackend.writable) {
             try {
                 const savedBundle = await workspaceBackend.saveSceneFile(targetSceneId, fileName, initialSource);
-                sceneBundles = mergeSceneBundle(sceneBundles, savedBundle);
-                persistedSceneBundles = mergeSceneBundle(persistedSceneBundles, savedBundle);
+                sceneDocs.applySaved(savedBundle);
                 sceneEditorStatus = `Created ${workspaceBackend.scenesLabel}/${targetSceneId}/${fileName}.`;
             } catch (error) {
                 sceneEditorStatus = error instanceof Error ? error.message : 'Scene file creation failed.';
@@ -1197,15 +1172,13 @@
 
         const scenes = await backend.listScenes();
         if (scenes) {
-            persistedSceneBundles = scenes;
-            sceneBundles = scenes;
+            sceneDocs.replaceAll(scenes);
             applySceneRegistryResult(studio.syncSceneBundles(scenes));
         }
 
         const documents = await backend.listPostprocessDocuments();
         if (documents) {
-            persistedPostprocessDocuments = documents;
-            postprocessDocuments = documents;
+            postprocessDocs.replaceAll(documents);
             setPostprocessScripts(documents);
             studio.refreshConfiguration();
         }
@@ -1274,12 +1247,10 @@
             }
 
             const nextBundles = await workspaceBackend.listScenes();
-            if (!nextBundles || areSceneBundlesEqual(nextBundles, persistedSceneBundles)) {
+            if (!nextBundles || !sceneDocs.replaceAll(nextBundles)) {
                 return;
             }
 
-            persistedSceneBundles = nextBundles;
-            sceneBundles = nextBundles;
             applySceneRegistryResult(studio.syncSceneBundles(nextBundles));
         };
 
@@ -1289,12 +1260,10 @@
             }
 
             const nextDocuments = await workspaceBackend.listPostprocessDocuments();
-            if (!nextDocuments || arePostprocessCollectionsEqual(nextDocuments, persistedPostprocessDocuments)) {
+            if (!nextDocuments || !postprocessDocs.replaceAll(nextDocuments)) {
                 return;
             }
 
-            persistedPostprocessDocuments = nextDocuments;
-            postprocessDocuments = nextDocuments;
             setPostprocessScripts(nextDocuments);
             studio.refreshConfiguration();
         };

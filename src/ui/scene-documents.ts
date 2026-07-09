@@ -38,29 +38,6 @@ export async function saveSceneFile(sceneId: string, fileName: string, source: s
     return bundle;
 }
 
-export function areSceneBundlesEqual(left: SceneBundle[], right: SceneBundle[]): boolean {
-    if (left.length !== right.length) {
-        return false;
-    }
-
-    return left.every((bundle, index) => {
-        const candidate = right[index];
-        if (!candidate || candidate.id !== bundle.id) {
-            return false;
-        }
-
-        const leftNames = Object.keys(bundle.files).sort();
-        const rightNames = Object.keys(candidate.files).sort();
-        if (leftNames.length !== rightNames.length) {
-            return false;
-        }
-
-        return leftNames.every((name, nameIndex) => (
-            name === rightNames[nameIndex] && bundle.files[name] === candidate.files[name]
-        ));
-    });
-}
-
 async function fetchFilesystemScenes(): Promise<SceneBundle[] | null> {
     if (typeof fetch === 'undefined') {
         return null;
