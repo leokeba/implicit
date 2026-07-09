@@ -110,12 +110,12 @@ Improvements, in value order:
 - [ ] **Only `float` scene uniforms supported**; `params` never reach GLSL. Typed specs →
   `vec2/vec3/int` via the same generation mechanism. *Deliberately deferred until a scene
   actually needs one (AGENTS.md: no just-in-case code).*
-- [ ] **Multi-field scenes silently use only `fields[0]`** for the modifier view
-  (shader-pipeline.ts:222) — support the rest or reject such manifests.
+- [x] **Multi-field scenes use `fields[0]`** for the modifier view — now a documented
+  choice (all fields are still sampled for postprocess; the debug view shows the first).
 - [x] Template substitution is first-occurrence `String.replace` with no missing-token check.
-- [ ] Module-global singleton state in shader-pipeline
-  (`globalThis.__implicitShaderPipelineState`) makes init order brittle;
-  `composeRendererFragmentSource` can throw during `Renderer.init`.
+- [x] Module-global singleton state in shader-pipeline
+  (`globalThis.__implicitShaderPipelineState`) removed — sessionStorage already persists the
+  active scene across reloads and HMR. (The no-scenes throw remains: it is a real error.)
 
 ## 4. Correctness findings
 
@@ -146,11 +146,11 @@ Improvements, in value order:
 
 ## 5. Coherency / separation of concerns
 
-- [ ] **`ui/` vs `studio/` split doesn't match roles.** `Preview` is an engine class but
+- [x] **`ui/` vs `studio/` split doesn't match roles.** `Preview` is an engine class but
   lives in `ui/`; `file-export.ts` does DOM downloads + Moonraker HTTP but lives in `studio/`
   and is imported by App.svelte directly, bypassing the controller. Cleaner: engines in
   `core/`, controller + pure helpers in `studio/`, Svelte-facing stores/backends in `ui/`.
-- [ ] **Two backward type-edges into the controller**: `studio/benchmark-summary.ts:2`
+- [x] **Two backward type-edges into the controller**: `studio/benchmark-summary.ts:2`
   imports a type from its own consumer (compile-time-only cycle); `ui/status-model.ts`
   imports functions and types from the controller — the shader-message formatters
   (studio-controller.ts:138-159) are presentation code in the wrong layer. Move DTO
@@ -163,7 +163,7 @@ Improvements, in value order:
   brim/2D-offset are path planning living in the G-code emission layer.
 - [ ] **`gcode-metadata.ts`** — ~200 lines of hardcoded OrcaSlicer/Bambu config mostly
   disconnected from actual settings; `shouldEmitOrcaMetadata` always returns true.
-- [ ] **studio-controller.ts extraction seams** (946 lines, switchboard feel): render-loop/
+- [~] **studio-controller.ts extraction seams** (946 lines, switchboard feel): render-loop/
   preview lifecycle (837-897); reproducibility header building (768-835, belongs next to
   file-export); the resolution ladder (620-719) as a pure testable function; DTO interfaces
   (40-135) to a types file.
@@ -264,3 +264,21 @@ overrides survive scene switches, session restore after reload brings back both 
 and the view mode, slicing works, zero console errors. §4.5 closed. App.svelte is 1,566
 lines. The remaining Svelte-idiom item is the runes migration itself, which this store
 structure now makes mechanical ($derived over the store instead of `$:`).
+
+**2026-07-09 (fourth pass) — remaining structural items.** Layering: controller DTO
+contracts move to `studio/types.ts` (kills the benchmark-summary cycle and every ui→controller
+type edge); shader-status formatters become private to `ui/status-model.ts`; `Preview` moves
+to `core/preview.ts`; `file-export` splits into pure `studio/filename.ts` and DOM/Moonraker
+`ui/file-export.ts`; the unused `StudioController.generateVaseGcode` (which did DOM downloads
+from the controller) is deleted. The shader-pipeline `globalThis` singleton is gone
+(sessionStorage covers HMR); the `fields[0]` modifier view is a documented choice. Phase 2:
+`ui/documents/` provides a generic working/persisted `DocumentSet` store with dirty tracking;
+scene bundles and postprocess scripts are two instances, and App's per-kind merge/sort/equality
+bookkeeping is deleted. Finally App.svelte is migrated to Svelte 5 runes — `$props`/`$state`
+everywhere, every former `$:` split into explicit `$derived` or `$effect` — with zero
+svelte-check errors or warnings. Verified in the browser after the migration: boot, uniform
+override commit, editor dirty/revert badges, per-scene override survival across scene
+switches, slicing, download button state, session restore after reload; no console output.
+App.svelte is 1,548 lines. Non-float scene uniforms remain deliberately deferred; the
+runtime-snapshot persist effect now genuinely tracks its dependencies (it re-persists on
+state changes rather than only on unload — intended).
