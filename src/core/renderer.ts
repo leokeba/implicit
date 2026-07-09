@@ -8,6 +8,7 @@ import {
 } from './shader-pipeline';
 import { buildSceneControlValueMap } from './control-options';
 import { createProgram } from './gl/program';
+import { UniformBinder } from './gl/uniforms';
 import type {
     AnimationParams,
     CameraState,
@@ -33,31 +34,7 @@ class Renderer {
     private canvas: HTMLCanvasElement | null;
     private program: WebGLProgram | null;
     private positionBuffer: WebGLBuffer | null;
-    private timeLocation: WebGLUniformLocation | null;
-    private frameModuloLocation: WebGLUniformLocation | null;
-    private framePeriodLocation: WebGLUniformLocation | null;
-    private resolutionLocation: WebGLUniformLocation | null;
-    private cameraPosLocation: WebGLUniformLocation | null;
-    private cameraTargetLocation: WebGLUniformLocation | null;
-    private viewModeLocation: WebGLUniformLocation | null;
-    private maxStepsLocation: WebGLUniformLocation | null;
-    private hitEpsilonLocation: WebGLUniformLocation | null;
-    private maxDistanceLocation: WebGLUniformLocation | null;
-    private focalLengthLocation: WebGLUniformLocation | null;
-    private stepScaleLocation: WebGLUniformLocation | null;
-    private minStepLocation: WebGLUniformLocation | null;
-    private normalEpsilonLocation: WebGLUniformLocation | null;
-    private refineStepsLocation: WebGLUniformLocation | null;
-    private layerHeightLocation: WebGLUniformLocation | null;
-    private minYLocation: WebGLUniformLocation | null;
-    private maxYLocation: WebGLUniformLocation | null;
-    private scaleLocation: WebGLUniformLocation | null;
-    private maxRadiusLocation: WebGLUniformLocation | null;
-    private nozzleDiameterLocation: WebGLUniformLocation | null;
-    private flowRateLocation: WebGLUniformLocation | null;
-    private uiLightThemeLocation: WebGLUniformLocation | null;
-    private lineWidthLocation: WebGLUniformLocation | null;
-    private firstLayerLineWidthLocation: WebGLUniformLocation | null;
+    private uniforms: UniformBinder | null;
     private startTimeMs: number;
     private lastRenderTimeMs: number;
     private renderedFrameCount: number;
@@ -85,7 +62,6 @@ class Renderer {
     private animationParams: AnimationParams;
     private sceneControlDefinitions: SceneControlDefinition[];
     private sceneControlValues: SceneControlValueMap;
-    private sceneUniformLocations: Map<string, WebGLUniformLocation | null>;
     private themeMediaQuery: MediaQueryList | null;
     private handleThemeChange: (() => void) | null;
     private uiLightTheme: number;
@@ -95,31 +71,7 @@ class Renderer {
         this.canvas = null;
         this.program = null;
         this.positionBuffer = null;
-        this.timeLocation = null;
-        this.frameModuloLocation = null;
-        this.framePeriodLocation = null;
-        this.resolutionLocation = null;
-        this.cameraPosLocation = null;
-        this.cameraTargetLocation = null;
-        this.viewModeLocation = null;
-        this.maxStepsLocation = null;
-        this.hitEpsilonLocation = null;
-        this.maxDistanceLocation = null;
-        this.focalLengthLocation = null;
-        this.stepScaleLocation = null;
-        this.minStepLocation = null;
-        this.normalEpsilonLocation = null;
-        this.refineStepsLocation = null;
-        this.layerHeightLocation = null;
-        this.minYLocation = null;
-        this.maxYLocation = null;
-        this.scaleLocation = null;
-        this.maxRadiusLocation = null;
-        this.nozzleDiameterLocation = null;
-        this.flowRateLocation = null;
-        this.uiLightThemeLocation = null;
-        this.lineWidthLocation = null;
-        this.firstLayerLineWidthLocation = null;
+        this.uniforms = null;
         this.startTimeMs = 0;
         this.lastRenderTimeMs = 0;
         this.renderedFrameCount = 0;
@@ -180,7 +132,6 @@ class Renderer {
         };
         this.sceneControlDefinitions = [];
         this.sceneControlValues = {};
-        this.sceneUniformLocations = new Map();
         this.themeMediaQuery = null;
         this.handleThemeChange = null;
         this.uiLightTheme = 0;
@@ -200,7 +151,7 @@ class Renderer {
 
         this.program = createProgram(this.gl, getRendererVertexSource(), composeRendererFragmentSource());
         this.positionBuffer = this.gl.createBuffer();
-        this.cacheUniformLocations();
+        this.uniforms = new UniformBinder(this.gl, this.program);
 
         if (!this.positionBuffer) {
             throw new Error('Failed to create fullscreen quad buffer.');
@@ -264,11 +215,10 @@ class Renderer {
             const nextProgram = createProgram(this.gl, getRendererVertexSource(), composeRendererFragmentSource());
             const previousProgram = this.program;
             this.program = nextProgram;
-            this.cacheUniformLocations();
+            this.uniforms = new UniformBinder(this.gl, nextProgram);
             if (previousProgram) {
                 this.gl.deleteProgram(previousProgram);
             }
-            this.sceneUniformLocations.clear();
             console.info('[HMR] Shader program reloaded successfully.');
             return {
                 ok: true,
@@ -284,7 +234,7 @@ class Renderer {
     }
 
     public render(nowMs: number = performance.now()): boolean {
-        if (!this.gl || !this.canvas || !this.program || !this.positionBuffer) {
+        if (!this.gl || !this.canvas || !this.program || !this.positionBuffer || !this.uniforms) {
             return false;
         }
 
@@ -303,7 +253,7 @@ class Renderer {
         // actually reads uTime/uFrameModulo (unused uniforms are stripped, so
         // a null location means the scene ignores them). Reduced-motion users
         // get the static path: animation freezes unless they interact.
-        const sceneIsAnimated = this.timeLocation !== null || this.frameModuloLocation !== null;
+        const sceneIsAnimated = this.uniforms.has('uTime') || this.uniforms.has('uFrameModulo');
         const reduceMotion = this.reducedMotionQuery?.matches ?? false;
         if ((!sceneIsAnimated || reduceMotion) && !this.needsRender) {
             return false;
@@ -322,115 +272,37 @@ class Renderer {
 
         const framePeriod = this.animationParams.framePeriod;
         const frameModulo = this.renderedFrameCount % framePeriod;
+        const cameraPos = this.getCameraPosition();
+        const uniforms = this.uniforms;
 
-        if (this.timeLocation) {
-            gl.uniform1f(this.timeLocation, (nowMs - this.startTimeMs - this.pausedDurationMs) * 0.001);
-        }
-
-        if (this.frameModuloLocation) {
-            gl.uniform1f(this.frameModuloLocation, frameModulo);
-        }
-
-        if (this.framePeriodLocation) {
-            gl.uniform1f(this.framePeriodLocation, framePeriod);
-        }
-
-        if (this.resolutionLocation) {
-            gl.uniform2f(this.resolutionLocation, this.canvas.width, this.canvas.height);
-        }
-
-        if (this.cameraPosLocation) {
-            const cameraPos = this.getCameraPosition();
-            gl.uniform3f(this.cameraPosLocation, cameraPos.x, cameraPos.y, cameraPos.z);
-        }
-
-        if (this.cameraTargetLocation) {
-            gl.uniform3f(this.cameraTargetLocation, this.targetX, this.targetY, this.targetZ);
-        }
-
-        if (this.viewModeLocation) {
-            gl.uniform1i(this.viewModeLocation, this.viewMode);
-        }
-
-        if (this.maxStepsLocation) {
-            gl.uniform1i(this.maxStepsLocation, this.raymarchParams.maxSteps);
-        }
-
-        if (this.hitEpsilonLocation) {
-            gl.uniform1f(this.hitEpsilonLocation, this.raymarchParams.hitEpsilon);
-        }
-
-        if (this.maxDistanceLocation) {
-            gl.uniform1f(this.maxDistanceLocation, this.raymarchParams.maxDistance);
-        }
-
-        if (this.focalLengthLocation) {
-            gl.uniform1f(this.focalLengthLocation, this.raymarchParams.focalLength);
-        }
-
-        if (this.stepScaleLocation) {
-            gl.uniform1f(this.stepScaleLocation, this.raymarchParams.stepScale);
-        }
-
-        if (this.minStepLocation) {
-            gl.uniform1f(this.minStepLocation, this.raymarchParams.minStep);
-        }
-
-        if (this.normalEpsilonLocation) {
-            gl.uniform1f(this.normalEpsilonLocation, this.raymarchParams.normalEpsilon);
-        }
-
-        if (this.refineStepsLocation) {
-            gl.uniform1i(this.refineStepsLocation, this.raymarchParams.refineSteps);
-        }
-
-        if (this.layerHeightLocation) {
-            gl.uniform1f(this.layerHeightLocation, this.slicerUniformState.layerHeight);
-        }
-
-        if (this.minYLocation) {
-            gl.uniform1f(this.minYLocation, this.slicerUniformState.minY);
-        }
-
-        if (this.maxYLocation) {
-            gl.uniform1f(this.maxYLocation, this.slicerUniformState.maxY);
-        }
-
-        if (this.scaleLocation) {
-            gl.uniform1f(this.scaleLocation, this.slicerUniformState.modelScale);
-        }
-
-        if (this.maxRadiusLocation) {
-            gl.uniform1f(this.maxRadiusLocation, this.slicerUniformState.maxRadius);
-        }
-
-        if (this.nozzleDiameterLocation) {
-            gl.uniform1f(this.nozzleDiameterLocation, this.slicerUniformState.nozzleDiameter);
-        }
-
-        if (this.flowRateLocation) {
-            gl.uniform1f(this.flowRateLocation, this.slicerUniformState.flowRate);
-        }
-
-        if (this.lineWidthLocation) {
-            gl.uniform1f(this.lineWidthLocation, this.slicerUniformState.lineWidth);
-        }
-
-        if (this.firstLayerLineWidthLocation) {
-            gl.uniform1f(this.firstLayerLineWidthLocation, this.slicerUniformState.firstLayerLineWidth);
-        }
-
-        if (this.uiLightThemeLocation) {
-            gl.uniform1f(this.uiLightThemeLocation, this.uiLightTheme);
-        }
+        uniforms.set1f('uTime', (nowMs - this.startTimeMs - this.pausedDurationMs) * 0.001);
+        uniforms.set1f('uFrameModulo', frameModulo);
+        uniforms.set1f('uFramePeriod', framePeriod);
+        uniforms.set2f('uResolution', this.canvas.width, this.canvas.height);
+        uniforms.set3f('uCameraPos', cameraPos.x, cameraPos.y, cameraPos.z);
+        uniforms.set3f('uCameraTarget', this.targetX, this.targetY, this.targetZ);
+        uniforms.set1i('uViewMode', this.viewMode);
+        uniforms.set1i('uMaxSteps', this.raymarchParams.maxSteps);
+        uniforms.set1f('uHitEpsilon', this.raymarchParams.hitEpsilon);
+        uniforms.set1f('uMaxDistance', this.raymarchParams.maxDistance);
+        uniforms.set1f('uFocalLength', this.raymarchParams.focalLength);
+        uniforms.set1f('uStepScale', this.raymarchParams.stepScale);
+        uniforms.set1f('uMinStep', this.raymarchParams.minStep);
+        uniforms.set1f('uNormalEpsilon', this.raymarchParams.normalEpsilon);
+        uniforms.set1i('uRefineSteps', this.raymarchParams.refineSteps);
+        uniforms.set1f('uLayerHeight', this.slicerUniformState.layerHeight);
+        uniforms.set1f('uMinY', this.slicerUniformState.minY);
+        uniforms.set1f('uMaxY', this.slicerUniformState.maxY);
+        uniforms.set1f('uScale', this.slicerUniformState.modelScale);
+        uniforms.set1f('uMaxRadius', this.slicerUniformState.maxRadius);
+        uniforms.set1f('uNozzleDiameter', this.slicerUniformState.nozzleDiameter);
+        uniforms.set1f('uFlowRate', this.slicerUniformState.flowRate);
+        uniforms.set1f('uLineWidth', this.slicerUniformState.lineWidth);
+        uniforms.set1f('uFirstLayerLineWidth', this.slicerUniformState.firstLayerLineWidth);
+        uniforms.set1f('uUiLightTheme', this.uiLightTheme);
 
         for (const control of this.sceneControlDefinitions) {
-            const location = this.getSceneUniformLocation(control.uniform);
-            if (!location) {
-                continue;
-            }
-
-            gl.uniform1f(location, this.sceneControlValues[control.key] ?? control.defaultValue);
+            uniforms.set1f(control.uniform, this.sceneControlValues[control.key] ?? control.defaultValue);
         }
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -474,16 +346,10 @@ class Renderer {
     }
 
     public setSceneControlState(definitions: SceneControlDefinition[], values: SceneControlValueMap): void {
-        const shouldResetLocations = definitions.length !== this.sceneControlDefinitions.length
-            || definitions.some((definition, index) => definition.uniform !== this.sceneControlDefinitions[index]?.uniform);
-
+        // Uniform locations only change with the program; a scene change that
+        // alters the control set also recompiles, which rebuilds the binder.
         this.sceneControlDefinitions = definitions.map((definition) => ({ ...definition }));
         this.sceneControlValues = buildSceneControlValueMap(this.sceneControlDefinitions, values);
-
-        if (shouldResetLocations) {
-            this.sceneUniformLocations.clear();
-        }
-
         this.needsRender = true;
     }
 
@@ -823,53 +689,6 @@ class Renderer {
             right,
             up,
         };
-    }
-
-    private cacheUniformLocations(): void {
-        if (!this.gl || !this.program) {
-            return;
-        }
-
-        this.timeLocation = this.gl.getUniformLocation(this.program, 'uTime');
-        this.frameModuloLocation = this.gl.getUniformLocation(this.program, 'uFrameModulo');
-        this.framePeriodLocation = this.gl.getUniformLocation(this.program, 'uFramePeriod');
-        this.resolutionLocation = this.gl.getUniformLocation(this.program, 'uResolution');
-        this.cameraPosLocation = this.gl.getUniformLocation(this.program, 'uCameraPos');
-        this.cameraTargetLocation = this.gl.getUniformLocation(this.program, 'uCameraTarget');
-        this.viewModeLocation = this.gl.getUniformLocation(this.program, 'uViewMode');
-        this.maxStepsLocation = this.gl.getUniformLocation(this.program, 'uMaxSteps');
-        this.hitEpsilonLocation = this.gl.getUniformLocation(this.program, 'uHitEpsilon');
-        this.maxDistanceLocation = this.gl.getUniformLocation(this.program, 'uMaxDistance');
-        this.focalLengthLocation = this.gl.getUniformLocation(this.program, 'uFocalLength');
-        this.stepScaleLocation = this.gl.getUniformLocation(this.program, 'uStepScale');
-        this.minStepLocation = this.gl.getUniformLocation(this.program, 'uMinStep');
-        this.normalEpsilonLocation = this.gl.getUniformLocation(this.program, 'uNormalEpsilon');
-        this.refineStepsLocation = this.gl.getUniformLocation(this.program, 'uRefineSteps');
-        this.layerHeightLocation = this.gl.getUniformLocation(this.program, 'uLayerHeight');
-        this.minYLocation = this.gl.getUniformLocation(this.program, 'uMinY');
-        this.maxYLocation = this.gl.getUniformLocation(this.program, 'uMaxY');
-        this.scaleLocation = this.gl.getUniformLocation(this.program, 'uScale');
-        this.maxRadiusLocation = this.gl.getUniformLocation(this.program, 'uMaxRadius');
-        this.nozzleDiameterLocation = this.gl.getUniformLocation(this.program, 'uNozzleDiameter');
-        this.flowRateLocation = this.gl.getUniformLocation(this.program, 'uFlowRate');
-        this.lineWidthLocation = this.gl.getUniformLocation(this.program, 'uLineWidth');
-        this.firstLayerLineWidthLocation = this.gl.getUniformLocation(this.program, 'uFirstLayerLineWidth');
-        this.uiLightThemeLocation = this.gl.getUniformLocation(this.program, 'uUiLightTheme');
-        this.sceneUniformLocations.clear();
-    }
-
-    private getSceneUniformLocation(name: string): WebGLUniformLocation | null {
-        if (!this.gl || !this.program) {
-            return null;
-        }
-
-        if (this.sceneUniformLocations.has(name)) {
-            return this.sceneUniformLocations.get(name) ?? null;
-        }
-
-        const location = this.gl.getUniformLocation(this.program, name);
-        this.sceneUniformLocations.set(name, location);
-        return location;
     }
 
     private shouldRenderAt(nowMs: number): boolean {

@@ -1,4 +1,5 @@
 import { createProgram } from '../gl/program';
+import { UniformBinder } from '../gl/uniforms';
 import { buildSceneControlValueMap } from '../control-options';
 import {
     composeSceneFieldSamplerFragmentSource,
@@ -58,7 +59,7 @@ export class GpuFieldSampler implements FieldSampler {
     private offscreenCanvas: HTMLCanvasElement | OffscreenCanvas;
     private programSignature = '';
     private programSourcesOverride: SlicerProgramSources | null = null;
-    private uniformLocations = new Map<string, WebGLUniformLocation | null>();
+    private uniforms: UniformBinder | null = null;
     private positionLocation = -1;
     private maxTextureSize = 0;
     private renderTargetWidth = 0;
@@ -121,9 +122,10 @@ export class GpuFieldSampler implements FieldSampler {
         this.ensureSlicerProgram();
         this.ensureQuadBuffer();
 
-        if (!this.gl || !this.program || !this.positionBuffer || !this.framebuffer || !this.renderTargetTexture) {
+        if (!this.gl || !this.program || !this.uniforms || !this.positionBuffer || !this.framebuffer || !this.renderTargetTexture) {
             throw new Error('Failed to initialize GPU contour slicing resources.');
         }
+        const uniforms = this.uniforms;
 
         const gl = this.gl;
         gl.viewport(0, 0, width, height);
@@ -144,28 +146,28 @@ export class GpuFieldSampler implements FieldSampler {
         gl.enableVertexAttribArray(this.positionLocation);
         gl.vertexAttribPointer(this.positionLocation, 2, gl.FLOAT, false, 0, 0);
 
-        this.setUniform2f('uTextureSize', width, height);
-        this.setUniform1f('uFrameModulo', 0.0);
-        this.setUniform1f('uFramePeriod', 120.0);
-        this.setUniform1f('uMinY', settings.minY);
-        this.setUniform1f('uMaxY', settings.maxY);
-        this.setUniform1f('uScale', settings.modelScale);
-        this.setUniform1f('uMaxRadius', settings.maxRadius);
-        this.setUniform1f('uNozzleDiameter', settings.nozzleDiameter);
-        this.setUniform1f('uFlowRate', settings.flowRate);
-        this.setUniform1f('uLayerHeight', settings.layerHeight);
-        this.setUniform1f('uLineWidth', settings.lineWidth);
-        this.setUniform1f('uFirstLayerLineWidth', settings.firstLayerLineWidth);
-        this.setUniform2f('uSliceMin', bounds.minX, bounds.minZ);
-        this.setUniform2f('uSliceMax', bounds.maxX, bounds.maxZ);
-        this.setUniform1f('uSliceY', firstSampleY);
-        this.setUniform1f('uSliceYStep', sliceYStep);
-        this.setUniform1f('uSliceGridSize', gridSize);
-        this.setUniform1f('uDistanceRange', distanceRange);
-        this.setUniform1f('uIsoSnapEpsilon', settings.hitEpsilon * settings.sliceIsoSnapFactor);
+        uniforms.set2f('uTextureSize', width, height);
+        uniforms.set1f('uFrameModulo', 0.0);
+        uniforms.set1f('uFramePeriod', 120.0);
+        uniforms.set1f('uMinY', settings.minY);
+        uniforms.set1f('uMaxY', settings.maxY);
+        uniforms.set1f('uScale', settings.modelScale);
+        uniforms.set1f('uMaxRadius', settings.maxRadius);
+        uniforms.set1f('uNozzleDiameter', settings.nozzleDiameter);
+        uniforms.set1f('uFlowRate', settings.flowRate);
+        uniforms.set1f('uLayerHeight', settings.layerHeight);
+        uniforms.set1f('uLineWidth', settings.lineWidth);
+        uniforms.set1f('uFirstLayerLineWidth', settings.firstLayerLineWidth);
+        uniforms.set2f('uSliceMin', bounds.minX, bounds.minZ);
+        uniforms.set2f('uSliceMax', bounds.maxX, bounds.maxZ);
+        uniforms.set1f('uSliceY', firstSampleY);
+        uniforms.set1f('uSliceYStep', sliceYStep);
+        uniforms.set1f('uSliceGridSize', gridSize);
+        uniforms.set1f('uDistanceRange', distanceRange);
+        uniforms.set1f('uIsoSnapEpsilon', settings.hitEpsilon * settings.sliceIsoSnapFactor);
 
         for (const control of this.sceneControlDefinitions) {
-            this.setUniform1f(control.uniform, this.sceneControlValues[control.key] ?? control.defaultValue);
+            uniforms.set1f(control.uniform, this.sceneControlValues[control.key] ?? control.defaultValue);
         }
 
         gl.clearColor(0, 0, 0, 0);
@@ -485,7 +487,7 @@ export class GpuFieldSampler implements FieldSampler {
             }
             this.program = nextProgram;
             this.programSignature = sources.signature;
-            this.uniformLocations.clear();
+            this.uniforms = new UniformBinder(gl, nextProgram);
             this.positionLocation = gl.getAttribLocation(this.program, 'aPosition');
         }
     }
@@ -551,37 +553,6 @@ export class GpuFieldSampler implements FieldSampler {
         return this.maxTextureSize;
     }
 
-    private setUniform1f(name: string, value: number): void {
-        if (!this.gl || !this.program) {
-            return;
-        }
-        const loc = this.getUniformLocation(name);
-        if (loc !== null) {
-            this.gl.uniform1f(loc, value);
-        }
-    }
-
-    private setUniform2f(name: string, x: number, y: number): void {
-        if (!this.gl || !this.program) {
-            return;
-        }
-        const loc = this.getUniformLocation(name);
-        if (loc !== null) {
-            this.gl.uniform2f(loc, x, y);
-        }
-    }
-
-    private getUniformLocation(name: string): WebGLUniformLocation | null {
-        if (!this.gl || !this.program) {
-            return null;
-        }
-        if (this.uniformLocations.has(name)) {
-            return this.uniformLocations.get(name) ?? null;
-        }
-        const location = this.gl.getUniformLocation(this.program, name);
-        this.uniformLocations.set(name, location);
-        return location;
-    }
 }
 
 function decodeSliceBatchFields(

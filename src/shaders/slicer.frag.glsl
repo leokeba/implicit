@@ -1,24 +1,6 @@
 precision highp float;
 
-uniform vec2 uTextureSize;
-uniform float uFrameModulo;
-uniform float uFramePeriod;
-uniform float uMinY;
-uniform float uMaxY;
-uniform float uScale;
-uniform float uMaxRadius;
-uniform float uNozzleDiameter;
-uniform float uFlowRate;
-uniform float uLayerHeight;
-uniform float uLineWidth;
-uniform float uFirstLayerLineWidth;
-uniform vec2 uSliceMin;
-uniform vec2 uSliceMax;
-uniform float uSliceY;
-uniform float uSliceYStep;
-uniform float uSliceGridSize;
-uniform float uDistanceRange;
-uniform float uIsoSnapEpsilon;
+__ENGINE_UNIFORMS_GLSL__
 
 __SDF_PRIMITIVES_GLSL__
 

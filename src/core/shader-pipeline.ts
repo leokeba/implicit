@@ -1,5 +1,11 @@
 import type { SceneManifest } from '../scene-runtime';
 import { evaluateSceneManifest } from './scene-manifest';
+import {
+    buildEngineUniformBlock,
+    RENDERER_ENGINE_UNIFORMS,
+    SCENE_FIELD_SAMPLER_ENGINE_UNIFORMS,
+    SLICER_ENGINE_UNIFORMS,
+} from './shaders/engine-uniforms';
 import type {
     SceneControlDefinition,
     SceneFieldDefinition,
@@ -220,14 +226,16 @@ export function getRendererVertexSource(): string {
 export function composeRendererFragmentSource(): string {
     const entry = requireActiveEntry();
     const activeField = entry.manifest.fields[0] ?? null;
-    return activeSources.rendererFragmentTemplate
-        .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
-        .replace('__UTILS_GLSL__', activeSources.utils)
-        .replace('__SCENE_GLSL__', composeSceneGlsl(entry))
-        .replace('__RAYMARCH_GLSL__', activeSources.raymarch)
-        .replace('__ENVIRONMENT_GLSL__', activeSources.environment)
-        .replace('__MATERIALS_GLSL__', activeSources.materials)
-        .replace('__MODIFIER_VIEW_GLSL__', buildModifierViewSource(activeField));
+    return substituteTokens(activeSources.rendererFragmentTemplate, {
+        __ENGINE_UNIFORMS_GLSL__: buildEngineUniformBlock(RENDERER_ENGINE_UNIFORMS),
+        __SDF_PRIMITIVES_GLSL__: activeSources.sdfPrimitives,
+        __UTILS_GLSL__: activeSources.utils,
+        __SCENE_GLSL__: composeSceneGlsl(entry),
+        __RAYMARCH_GLSL__: activeSources.raymarch,
+        __ENVIRONMENT_GLSL__: activeSources.environment,
+        __MATERIALS_GLSL__: activeSources.materials,
+        __MODIFIER_VIEW_GLSL__: buildModifierViewSource(activeField),
+    });
 }
 
 export function getSlicerVertexSource(): string {
@@ -235,10 +243,12 @@ export function getSlicerVertexSource(): string {
 }
 
 export function composeSlicerFragmentSource(): string {
-    return activeSources.slicerFragmentTemplate
-        .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
-        .replace('__UTILS_GLSL__', activeSources.utils)
-        .replace('__SCENE_GLSL__', composeSceneGlsl(requireActiveEntry()));
+    return substituteTokens(activeSources.slicerFragmentTemplate, {
+        __ENGINE_UNIFORMS_GLSL__: buildEngineUniformBlock(SLICER_ENGINE_UNIFORMS),
+        __SDF_PRIMITIVES_GLSL__: activeSources.sdfPrimitives,
+        __UTILS_GLSL__: activeSources.utils,
+        __SCENE_GLSL__: composeSceneGlsl(requireActiveEntry()),
+    });
 }
 
 export function getSceneFieldSamplerVertexSource(): string {
@@ -246,15 +256,34 @@ export function getSceneFieldSamplerVertexSource(): string {
 }
 
 export function composeSceneFieldSamplerFragmentSource(field: SceneFieldDefinition, componentIndex: number): string {
-    return sceneFieldSampleFragmentTemplateSource
-        .replace('__SDF_PRIMITIVES_GLSL__', activeSources.sdfPrimitives)
-        .replace('__UTILS_GLSL__', activeSources.utils)
-        .replace('__SCENE_GLSL__', composeSceneGlsl(requireActiveEntry()))
-        .replace('__FIELD_COMPONENT_GLSL__', buildSceneFieldComponentSource(field, componentIndex));
+    return substituteTokens(sceneFieldSampleFragmentTemplateSource, {
+        __ENGINE_UNIFORMS_GLSL__: buildEngineUniformBlock(SCENE_FIELD_SAMPLER_ENGINE_UNIFORMS),
+        __SDF_PRIMITIVES_GLSL__: activeSources.sdfPrimitives,
+        __UTILS_GLSL__: activeSources.utils,
+        __SCENE_GLSL__: composeSceneGlsl(requireActiveEntry()),
+        __FIELD_COMPONENT_GLSL__: buildSceneFieldComponentSource(field, componentIndex),
+    });
 }
 
 export function getSlicerProgramSignature(): string {
     return `${activeSources.slicerVertex}::${composeSlicerFragmentSource()}`;
+}
+
+/**
+ * Fills every placeholder token exactly once and fails loudly when a template
+ * is missing one — a mangled template surfaces as a readable status message
+ * instead of an opaque GLSL compile error about an unsubstituted token.
+ */
+function substituteTokens(template: string, replacements: Record<string, string>): string {
+    let source = template;
+    for (const [token, replacement] of Object.entries(replacements)) {
+        const index = source.indexOf(token);
+        if (index === -1) {
+            throw new Error(`Shader template is missing the ${token} placeholder.`);
+        }
+        source = source.slice(0, index) + replacement + source.slice(index + token.length);
+    }
+    return source;
 }
 
 function composeSceneGlsl(entry: SceneEntry): string {

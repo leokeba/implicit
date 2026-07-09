@@ -2,31 +2,7 @@ precision highp float;
 
 varying vec2 vUv;
 
-uniform vec2 uResolution;
-uniform float uTime;
-uniform float uFrameModulo;
-uniform float uFramePeriod;
-uniform vec3 uCameraPos;
-uniform vec3 uCameraTarget;
-uniform int uViewMode;
-uniform int uMaxSteps;
-uniform float uHitEpsilon;
-uniform float uMaxDistance;
-uniform float uFocalLength;
-uniform float uStepScale;
-uniform float uMinStep;
-uniform float uNormalEpsilon;
-uniform int uRefineSteps;
-uniform float uMinY;
-uniform float uMaxY;
-uniform float uScale;
-uniform float uMaxRadius;
-uniform float uNozzleDiameter;
-uniform float uFlowRate;
-uniform float uLayerHeight;
-uniform float uLineWidth;
-uniform float uFirstLayerLineWidth;
-uniform float uUiLightTheme;
+__ENGINE_UNIFORMS_GLSL__
 
 __SDF_PRIMITIVES_GLSL__
 

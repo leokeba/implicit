@@ -1,19 +1,6 @@
 precision highp float;
 
-uniform vec2 uTextureSize;
-uniform float uFrameModulo;
-uniform float uFramePeriod;
-uniform float uMinY;
-uniform float uMaxY;
-uniform float uScale;
-uniform float uMaxRadius;
-uniform float uNozzleDiameter;
-uniform float uFlowRate;
-uniform float uLayerHeight;
-uniform float uLineWidth;
-uniform float uFirstLayerLineWidth;
-uniform float uFieldMinValue;
-uniform float uFieldMaxValue;
+__ENGINE_UNIFORMS_GLSL__
 
 varying vec3 vPointPosition;
 
