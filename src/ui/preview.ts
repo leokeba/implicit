@@ -14,6 +14,9 @@ export class Preview {
     private overlayWorldPoints: WorldPoint[];
     private renderingActive: boolean;
     private overlayVisible: boolean;
+    private readonly handleWindowResize = (): void => {
+        this.syncOverlaySize();
+    };
 
     constructor() {
         this.canvas = null;
@@ -58,9 +61,12 @@ export class Preview {
 
         this.syncOverlaySize();
         this.syncOverlayVisibility();
-        window.addEventListener('resize', () => {
-            this.syncOverlaySize();
-        });
+        window.addEventListener('resize', this.handleWindowResize);
+    }
+
+    /** Removes the window listener registered by init(). */
+    public dispose(): void {
+        window.removeEventListener('resize', this.handleWindowResize);
     }
 
     public getCanvas(): HTMLCanvasElement {

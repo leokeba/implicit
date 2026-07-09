@@ -9,6 +9,8 @@ import {
 import { buildSceneControlValueMap } from './control-options';
 import { createProgram } from './gl/program';
 import { UniformBinder } from './gl/uniforms';
+import { CameraController } from './renderer/camera-controller';
+import { ThemeClearColorSync } from './renderer/theme-clear-color';
 import type {
     AnimationParams,
     CameraState,
@@ -41,20 +43,9 @@ class Renderer {
     private pausedDurationMs: number;
     private pauseStartedAtMs: number;
     private isPaused: boolean;
-    private orbitYaw: number;
-    private orbitPitch: number;
-    private orbitDistance: number;
-    private isPointerDown: boolean;
-    private pointerMode: 'orbit' | 'pan' | 'dolly' | null;
-    private lastPointerX: number;
-    private lastPointerY: number;
-    private activePointers: Map<number, { x: number; y: number }>;
-    private pinchDistance: number | null;
     private needsRender: boolean;
     private reducedMotionQuery: MediaQueryList | null;
-    private targetX: number;
-    private targetY: number;
-    private targetZ: number;
+    private handleReducedMotionChange: (() => void) | null;
     private viewMode: number;
     private slicerUniformState: SceneSlicerUniformState;
     private raymarchParams: RaymarchParams;
@@ -62,9 +53,8 @@ class Renderer {
     private animationParams: AnimationParams;
     private sceneControlDefinitions: SceneControlDefinition[];
     private sceneControlValues: SceneControlValueMap;
-    private themeMediaQuery: MediaQueryList | null;
-    private handleThemeChange: (() => void) | null;
-    private uiLightTheme: number;
+    private camera: CameraController;
+    private theme: ThemeClearColorSync;
 
     constructor() {
         this.gl = null;
@@ -78,26 +68,14 @@ class Renderer {
         this.pausedDurationMs = 0;
         this.pauseStartedAtMs = 0;
         this.isPaused = false;
-        const savedState = this.readStoredCameraState();
-        this.orbitYaw = savedState.yaw;
-        this.orbitPitch = savedState.pitch;
-        this.orbitDistance = savedState.distance;
-        this.targetX = savedState.targetX;
-        this.targetY = savedState.targetY;
-        this.targetZ = savedState.targetZ;
-        this.isPointerDown = false;
-        this.pointerMode = null;
-        this.lastPointerX = 0;
-        this.lastPointerY = 0;
-        this.activePointers = new Map();
-        this.pinchDistance = null;
         this.needsRender = true;
         this.reducedMotionQuery = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
             ? window.matchMedia('(prefers-reduced-motion: reduce)')
             : null;
-        this.reducedMotionQuery?.addEventListener?.('change', () => {
+        this.handleReducedMotionChange = () => {
             this.needsRender = true;
-        });
+        };
+        this.reducedMotionQuery?.addEventListener?.('change', this.handleReducedMotionChange);
         this.viewMode = 0;
         this.slicerUniformState = {
             minY: -1.0,
@@ -132,9 +110,15 @@ class Renderer {
         };
         this.sceneControlDefinitions = [];
         this.sceneControlValues = {};
-        this.themeMediaQuery = null;
-        this.handleThemeChange = null;
-        this.uiLightTheme = 0;
+        this.camera = new CameraController(
+            () => this.viewportParams,
+            () => {
+                this.needsRender = true;
+            },
+        );
+        this.theme = new ThemeClearColorSync(() => {
+            this.needsRender = true;
+        });
     }
 
     public init(canvas: HTMLCanvasElement): void {
@@ -170,15 +154,36 @@ class Renderer {
         );
 
         this.resize();
-        this.attachInteractionHandlers(canvas);
-        this.applyThemeClearColor();
-        this.registerThemeClearColorSync();
+        this.camera.attach(canvas);
+        this.theme.attach(this.gl);
         this.startTimeMs = performance.now();
         this.lastRenderTimeMs = 0;
         this.renderedFrameCount = 0;
         this.pausedDurationMs = 0;
         this.pauseStartedAtMs = 0;
         this.isPaused = false;
+    }
+
+    /** Releases GL resources and every listener registered by init(). */
+    public dispose(): void {
+        this.camera.detach();
+        this.theme.detach();
+        if (this.reducedMotionQuery && this.handleReducedMotionChange) {
+            this.reducedMotionQuery.removeEventListener?.('change', this.handleReducedMotionChange);
+        }
+        if (this.gl) {
+            if (this.program) {
+                this.gl.deleteProgram(this.program);
+            }
+            if (this.positionBuffer) {
+                this.gl.deleteBuffer(this.positionBuffer);
+            }
+        }
+        this.program = null;
+        this.positionBuffer = null;
+        this.uniforms = null;
+        this.gl = null;
+        this.canvas = null;
     }
 
     public setPaused(paused: boolean, nowMs: number = performance.now()): void {
@@ -272,7 +277,8 @@ class Renderer {
 
         const framePeriod = this.animationParams.framePeriod;
         const frameModulo = this.renderedFrameCount % framePeriod;
-        const cameraPos = this.getCameraPosition();
+        const cameraPos = this.camera.getPosition();
+        const cameraTarget = this.camera.getTarget();
         const uniforms = this.uniforms;
 
         uniforms.set1f('uTime', (nowMs - this.startTimeMs - this.pausedDurationMs) * 0.001);
@@ -280,7 +286,7 @@ class Renderer {
         uniforms.set1f('uFramePeriod', framePeriod);
         uniforms.set2f('uResolution', this.canvas.width, this.canvas.height);
         uniforms.set3f('uCameraPos', cameraPos.x, cameraPos.y, cameraPos.z);
-        uniforms.set3f('uCameraTarget', this.targetX, this.targetY, this.targetZ);
+        uniforms.set3f('uCameraTarget', cameraTarget.x, cameraTarget.y, cameraTarget.z);
         uniforms.set1i('uViewMode', this.viewMode);
         uniforms.set1i('uMaxSteps', this.raymarchParams.maxSteps);
         uniforms.set1f('uHitEpsilon', this.raymarchParams.hitEpsilon);
@@ -299,7 +305,7 @@ class Renderer {
         uniforms.set1f('uFlowRate', this.slicerUniformState.flowRate);
         uniforms.set1f('uLineWidth', this.slicerUniformState.lineWidth);
         uniforms.set1f('uFirstLayerLineWidth', this.slicerUniformState.firstLayerLineWidth);
-        uniforms.set1f('uUiLightTheme', this.uiLightTheme);
+        uniforms.set1f('uUiLightTheme', this.theme.uiLightTheme());
 
         for (const control of this.sceneControlDefinitions) {
             uniforms.set1f(control.uniform, this.sceneControlValues[control.key] ?? control.defaultValue);
@@ -401,11 +407,10 @@ class Renderer {
             return null;
         }
 
-        const basis = this.getCameraBasis();
-        const position = this.getCameraPosition();
+        const basis = this.camera.getBasis();
 
         return {
-            position,
+            position: this.camera.getPosition(),
             forward: basis.forward,
             right: basis.right,
             up: basis.up,
@@ -416,237 +421,7 @@ class Renderer {
     }
 
     public resetCameraView(): void {
-        this.resetCamera();
-    }
-
-    private attachInteractionHandlers(canvas: HTMLCanvasElement): void {
-        canvas.style.cursor = 'grab';
-
-        canvas.addEventListener('contextmenu', (event: MouseEvent) => {
-            event.preventDefault();
-        });
-
-        canvas.addEventListener('dblclick', () => {
-            this.resetCamera();
-        });
-
-        // Pointer Events cover mouse, touch, and pen with one code path.
-        // Two simultaneous touch pointers drive pinch-dolly plus pan.
-        canvas.style.touchAction = 'none';
-
-        canvas.addEventListener('pointerdown', (event: PointerEvent) => {
-            if (event.pointerType === 'mouse' && event.button !== 0 && event.button !== 1 && event.button !== 2) {
-                return;
-            }
-
-            try {
-                canvas.setPointerCapture(event.pointerId);
-            } catch {
-                // The pointer may already be gone (e.g. touch lifted mid-gesture).
-            }
-            this.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-
-            if (this.activePointers.size === 2) {
-                this.pinchDistance = this.currentPinchDistance();
-                this.pointerMode = null;
-                return;
-            }
-
-            this.isPointerDown = true;
-            this.lastPointerX = event.clientX;
-            this.lastPointerY = event.clientY;
-            if (event.pointerType === 'mouse' && event.button === 1) {
-                this.pointerMode = 'dolly';
-            } else {
-                this.pointerMode = (event.pointerType === 'mouse' && event.button === 2) || event.shiftKey ? 'pan' : 'orbit';
-            }
-            canvas.style.cursor = 'grabbing';
-        });
-
-        const releasePointer = (event: PointerEvent): void => {
-            this.activePointers.delete(event.pointerId);
-            this.pinchDistance = null;
-
-            if (this.activePointers.size === 1) {
-                // Pinch ended with one finger still down: continue as orbit from there.
-                const remaining = [...this.activePointers.values()][0];
-                this.lastPointerX = remaining.x;
-                this.lastPointerY = remaining.y;
-                this.isPointerDown = true;
-                this.pointerMode = 'orbit';
-                return;
-            }
-
-            this.isPointerDown = false;
-            this.pointerMode = null;
-            canvas.style.cursor = 'grab';
-        };
-        canvas.addEventListener('pointerup', releasePointer);
-        canvas.addEventListener('pointercancel', releasePointer);
-
-        canvas.addEventListener('pointermove', (event: PointerEvent) => {
-            if (!this.canvas || !this.activePointers.has(event.pointerId)) {
-                return;
-            }
-
-            this.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
-
-            if (this.activePointers.size === 2) {
-                const distance = this.currentPinchDistance();
-                if (this.pinchDistance !== null && distance > 0 && this.pinchDistance > 0) {
-                    this.orbitDistance *= this.pinchDistance / distance;
-                    this.orbitDistance = Math.max(1.0, Math.min(16.0, this.orbitDistance));
-                    this.storeCameraState();
-                }
-                this.pinchDistance = distance;
-                return;
-            }
-
-            if (!this.isPointerDown) {
-                return;
-            }
-
-            const dx = event.clientX - this.lastPointerX;
-            const dy = event.clientY - this.lastPointerY;
-            this.lastPointerX = event.clientX;
-            this.lastPointerY = event.clientY;
-
-            if (this.pointerMode === 'pan') {
-                const basis = this.getCameraBasis();
-                const panScale = (this.orbitDistance / Math.max(this.canvas.clientHeight, 1)) * this.viewportParams.panSensitivity;
-                this.targetX += (-basis.right.x * dx + basis.up.x * dy) * panScale;
-                this.targetY += (-basis.right.y * dx + basis.up.y * dy) * panScale;
-                this.targetZ += (-basis.right.z * dx + basis.up.z * dy) * panScale;
-                this.storeCameraState();
-                return;
-            }
-
-            if (this.pointerMode === 'dolly') {
-                this.orbitDistance *= Math.exp(dy * this.viewportParams.dollySensitivity);
-                this.orbitDistance = Math.max(1.0, Math.min(16.0, this.orbitDistance));
-                this.storeCameraState();
-                return;
-            }
-
-            this.orbitYaw += dx * this.viewportParams.orbitSensitivity;
-            this.orbitPitch -= dy * this.viewportParams.orbitSensitivity;
-
-            const pitchLimit = 1.35;
-            this.orbitPitch = Math.max(-pitchLimit, Math.min(pitchLimit, this.orbitPitch));
-            this.storeCameraState();
-        });
-
-        canvas.addEventListener('wheel', (event: WheelEvent) => {
-            event.preventDefault();
-            this.orbitDistance *= Math.exp(event.deltaY * this.viewportParams.zoomSensitivity);
-            this.orbitDistance = Math.max(1.0, Math.min(16.0, this.orbitDistance));
-            this.storeCameraState();
-        }, { passive: false });
-
-        window.addEventListener('keydown', (event: KeyboardEvent) => {
-            if (event.key.toLowerCase() !== 'f' || event.metaKey || event.ctrlKey || event.altKey) {
-                return;
-            }
-            const target = event.target;
-            if (target instanceof HTMLElement && (
-                target instanceof HTMLInputElement
-                || target instanceof HTMLTextAreaElement
-                || target instanceof HTMLSelectElement
-                || target.isContentEditable
-            )) {
-                return;
-            }
-            this.resetCamera();
-        });
-    }
-
-    private currentPinchDistance(): number {
-        const points = [...this.activePointers.values()];
-        if (points.length < 2) {
-            return 0;
-        }
-        return Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
-    }
-
-    private readStoredCameraState(): {
-        yaw: number;
-        pitch: number;
-        distance: number;
-        targetX: number;
-        targetY: number;
-        targetZ: number;
-    } {
-        const fallback = {
-            yaw: 0.45,
-            pitch: 0.25,
-            distance: 3.0,
-            targetX: 0.0,
-            targetY: 0.0,
-            targetZ: 0.0,
-        };
-
-        try {
-            const raw = sessionStorage.getItem(CAMERA_STATE_STORAGE_KEY);
-            if (!raw) {
-                return fallback;
-            }
-
-            const parsed = JSON.parse(raw) as {
-                yaw?: number;
-                pitch?: number;
-                distance?: number;
-                targetX?: number;
-                targetY?: number;
-                targetZ?: number;
-            };
-            if (
-                typeof parsed.yaw !== 'number' ||
-                typeof parsed.pitch !== 'number' ||
-                typeof parsed.distance !== 'number'
-            ) {
-                return fallback;
-            }
-
-            return {
-                yaw: parsed.yaw,
-                pitch: Math.max(-1.35, Math.min(1.35, parsed.pitch)),
-                distance: Math.max(1.5, Math.min(8.0, parsed.distance)),
-                targetX: typeof parsed.targetX === 'number' ? parsed.targetX : 0.0,
-                targetY: typeof parsed.targetY === 'number' ? parsed.targetY : 0.0,
-                targetZ: typeof parsed.targetZ === 'number' ? parsed.targetZ : 0.0,
-            };
-        } catch {
-            return fallback;
-        }
-    }
-
-    private storeCameraState(): void {
-        this.needsRender = true;
-        try {
-            sessionStorage.setItem(
-                CAMERA_STATE_STORAGE_KEY,
-                JSON.stringify({
-                    yaw: this.orbitYaw,
-                    pitch: this.orbitPitch,
-                    distance: this.orbitDistance,
-                    targetX: this.targetX,
-                    targetY: this.targetY,
-                    targetZ: this.targetZ,
-                })
-            );
-        } catch {
-            // Ignore storage errors (private mode/storage restrictions).
-        }
-    }
-
-    private resetCamera(): void {
-        this.orbitYaw = 0.45;
-        this.orbitPitch = 0.25;
-        this.orbitDistance = 3.0;
-        this.targetX = 0.0;
-        this.targetY = 0.0;
-        this.targetZ = 0.0;
-        this.storeCameraState();
+        this.camera.reset();
     }
 
     private clampInt(value: number, min: number, max: number): number {
@@ -657,38 +432,6 @@ class Renderer {
     private clampFloat(value: number, min: number, max: number): number {
         const safe = Number.isFinite(value) ? value : min;
         return Math.max(min, Math.min(max, safe));
-    }
-
-    private getCameraPosition(): { x: number; y: number; z: number } {
-        const basis = this.getCameraBasis();
-        return {
-            x: this.targetX + basis.forward.x * -this.orbitDistance,
-            y: this.targetY + basis.forward.y * -this.orbitDistance,
-            z: this.targetZ + basis.forward.z * -this.orbitDistance,
-        };
-    }
-
-    private getCameraBasis(): {
-        forward: { x: number; y: number; z: number };
-        right: { x: number; y: number; z: number };
-        up: { x: number; y: number; z: number };
-    } {
-        const cp = Math.cos(this.orbitPitch);
-        const forward = {
-            x: cp * Math.sin(this.orbitYaw),
-            y: Math.sin(this.orbitPitch),
-            z: cp * Math.cos(this.orbitYaw),
-        };
-
-        const upWorld = { x: 0.0, y: 1.0, z: 0.0 };
-        const right = normalize3(cross3(upWorld, forward));
-        const up = normalize3(cross3(forward, right));
-
-        return {
-            forward,
-            right,
-            up,
-        };
     }
 
     private shouldRenderAt(nowMs: number): boolean {
@@ -734,116 +477,6 @@ class Renderer {
     public requestRender(): void {
         this.needsRender = true;
     }
-
-    private registerThemeClearColorSync(): void {
-        if (typeof window === 'undefined' || this.handleThemeChange) {
-            return;
-        }
-
-        this.themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        this.handleThemeChange = () => {
-            this.applyThemeClearColor();
-        };
-
-        if (typeof this.themeMediaQuery.addEventListener === 'function') {
-            this.themeMediaQuery.addEventListener('change', this.handleThemeChange);
-            return;
-        }
-
-        this.themeMediaQuery.addListener(this.handleThemeChange);
-    }
-
-    private applyThemeClearColor(): void {
-        this.needsRender = true;
-        const isDarkTheme = typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        this.uiLightTheme = isDarkTheme ? 0 : 1;
-
-        if (!this.gl) {
-            return;
-        }
-
-        const [r, g, b] = this.resolveThemeClearColor();
-        this.gl.clearColor(r, g, b, 1.0);
-    }
-
-    private resolveThemeClearColor(): [number, number, number] {
-        if (typeof window === 'undefined') {
-            return [0.06, 0.08, 0.14];
-        }
-
-        const rootStyle = window.getComputedStyle(document.documentElement);
-        const colorToken = rootStyle.getPropertyValue('--surface-canvas').trim();
-        const parsed = this.parseCssColorToRgb(colorToken);
-        if (parsed) {
-            return parsed;
-        }
-
-        const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        return isDark ? [0.06, 0.08, 0.14] : [0.86, 0.9, 0.94];
-    }
-
-    private parseCssColorToRgb(colorValue: string): [number, number, number] | null {
-        if (!colorValue) {
-            return null;
-        }
-
-        const hexMatch = /^#([\da-f]{3}|[\da-f]{6})$/i.exec(colorValue);
-        if (hexMatch) {
-            const rawHex = hexMatch[1];
-            const hex = rawHex.length === 3
-                ? rawHex.split('').map((ch) => `${ch}${ch}`).join('')
-                : rawHex;
-
-            const intValue = Number.parseInt(hex, 16);
-            const red = ((intValue >> 16) & 255) / 255;
-            const green = ((intValue >> 8) & 255) / 255;
-            const blue = (intValue & 255) / 255;
-            return [red, green, blue];
-        }
-
-        const rgbMatch = /^rgba?\(([^)]+)\)$/i.exec(colorValue);
-        if (!rgbMatch) {
-            return null;
-        }
-
-        const channels = rgbMatch[1]
-            .split(',')
-            .map((part) => Number.parseFloat(part.trim()))
-            .filter((value) => Number.isFinite(value));
-
-        if (channels.length < 3) {
-            return null;
-        }
-
-        return [
-            Math.max(0, Math.min(255, channels[0])) / 255,
-            Math.max(0, Math.min(255, channels[1])) / 255,
-            Math.max(0, Math.min(255, channels[2])) / 255,
-        ];
-    }
 }
 
 export default Renderer;
-const CAMERA_STATE_STORAGE_KEY = 'implicit.camera.orbit.v1';
-
-function cross3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
-    return {
-        x: a.y * b.z - a.z * b.y,
-        y: a.z * b.x - a.x * b.z,
-        z: a.x * b.y - a.y * b.x,
-    };
-}
-
-function normalize3(v: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
-    const len = Math.hypot(v.x, v.y, v.z);
-    if (len < 1e-8) {
-        return { x: 1.0, y: 0.0, z: 0.0 };
-    }
-
-    return {
-        x: v.x / len,
-        y: v.y / len,
-        z: v.z / len,
-    };
-}
-

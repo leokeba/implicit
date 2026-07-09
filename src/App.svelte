@@ -1705,6 +1705,7 @@
             window.clearTimeout(postprocessAutoUpdateTimer);
             postprocessAutoUpdateTimer = null;
         }
+        studio.dispose();
     });
 
 </script>
