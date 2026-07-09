@@ -66,6 +66,7 @@
         type PrinterTarget,
     } from './app/printer-connection';
     import { SliceEtaEstimator } from './app/slice-eta';
+    import { createLayoutResizeController } from './app/layout-resize';
     import {
         persistRuntimeSnapshot,
         readRuntimeSnapshot,
@@ -127,8 +128,6 @@
         postprocessSignature: string;
     }
 
-    let resizeCleanup: (() => void) | null = null;
-    let editorResizeCleanup: (() => void) | null = null;
     let sceneRepositoryPollHandle: number | null = null;
     let postprocessRepositoryPollHandle: number | null = null;
     let printerAvailabilityPollHandle: number | null = null;
@@ -1125,158 +1124,21 @@
         status.setWorkspaceStatus(sceneEditorStatus);
     }
 
-    function resetInspectorWidth(): void {
-        workspace.resetInspectorWidth();
-        void resizeViewportAfterLayout();
-    }
-
-    function cleanupInspectorResize(): void {
-        if (resizeCleanup) {
-            resizeCleanup();
-            resizeCleanup = null;
-        }
-        workspace.setInspectorResizing(false);
-    }
-
-    function cleanupEditorResize(): void {
-        if (editorResizeCleanup) {
-            editorResizeCleanup();
-            editorResizeCleanup = null;
-        }
-        workspace.setEditorResizing(false);
-    }
-
-    function startInspectorResize(event: PointerEvent): void {
-        if ($workspace.inspectorCollapsed || window.innerWidth <= 980) {
-            return;
-        }
-
-        event.preventDefault();
-        cleanupInspectorResize();
-
-        const startX = event.clientX;
-        const startWidth = $workspace.inspectorWidth;
-        workspace.setInspectorResizing(true);
-
-        const handlePointerMove = (moveEvent: PointerEvent) => {
-            const delta = startX - moveEvent.clientX;
-            workspace.setInspectorWidth(startWidth + delta);
-            studio.resizeViewport();
-        };
-
-        const handlePointerUp = () => {
-            cleanupInspectorResize();
+    const layoutResize = createLayoutResizeController({
+        workspace,
+        isEditorDockedSide: () => editorDockSide,
+        resizeViewport: () => studio.resizeViewport(),
+        resizeViewportAfterLayout: () => {
             void resizeViewportAfterLayout();
-        };
-
-        window.addEventListener('pointermove', handlePointerMove);
-        window.addEventListener('pointerup', handlePointerUp, { once: true });
-        window.addEventListener('pointercancel', handlePointerUp, { once: true });
-
-        resizeCleanup = () => {
-            window.removeEventListener('pointermove', handlePointerMove);
-            window.removeEventListener('pointerup', handlePointerUp);
-            window.removeEventListener('pointercancel', handlePointerUp);
-        };
-    }
-
-    function startEditorResize(event: PointerEvent): void {
-        event.preventDefault();
-        cleanupEditorResize();
-        workspace.setEditorResizing(true);
-
-        let handlePointerMove: ((moveEvent: PointerEvent) => void) | null = null;
-
-        if (editorDockSide) {
-            const startX = event.clientX;
-            const startWidth = $workspace.editorWidth;
-            handlePointerMove = (moveEvent: PointerEvent) => {
-                const delta = moveEvent.clientX - startX;
-                workspace.setEditorWidth(startWidth + delta);
-                studio.resizeViewport();
-            };
-        } else {
-            const startY = event.clientY;
-            const startHeight = $workspace.editorHeight;
-            handlePointerMove = (moveEvent: PointerEvent) => {
-                const delta = startY - moveEvent.clientY;
-                workspace.setEditorHeight(startHeight + delta);
-                studio.resizeViewport();
-            };
-        }
-
-        const handlePointerUp = () => {
-            cleanupEditorResize();
-            void resizeViewportAfterLayout();
-        };
-
-        window.addEventListener('pointermove', handlePointerMove);
-        window.addEventListener('pointerup', handlePointerUp, { once: true });
-        window.addEventListener('pointercancel', handlePointerUp, { once: true });
-
-        editorResizeCleanup = () => {
-            if (handlePointerMove) {
-                window.removeEventListener('pointermove', handlePointerMove);
-            }
-            window.removeEventListener('pointerup', handlePointerUp);
-            window.removeEventListener('pointercancel', handlePointerUp);
-        };
-    }
-
-    function nudgeInspectorWidth(delta: number): void {
-        if ($workspace.inspectorCollapsed) {
-            return;
-        }
-
-        workspace.setInspectorWidth($workspace.inspectorWidth + delta);
-        void resizeViewportAfterLayout();
-    }
-
-    function handleDockKeydown(event: KeyboardEvent): void {
-        if (event.key === 'ArrowLeft') {
-            event.preventDefault();
-            nudgeInspectorWidth(16);
-            return;
-        }
-
-        if (event.key === 'ArrowRight') {
-            event.preventDefault();
-            nudgeInspectorWidth(-16);
-            return;
-        }
-
-        if (event.key === 'Home') {
-            event.preventDefault();
-            resetInspectorWidth();
-        }
-    }
-
-    function handleEditorResizeKeydown(event: KeyboardEvent): void {
-        const growKey = editorDockSide ? 'ArrowRight' : 'ArrowUp';
-        const shrinkKey = editorDockSide ? 'ArrowLeft' : 'ArrowDown';
-
-        if (event.key === growKey || event.key === shrinkKey) {
-            event.preventDefault();
-            const delta = event.key === growKey ? 16 : -16;
-            if (editorDockSide) {
-                workspace.setEditorWidth($workspace.editorWidth + delta);
-            } else {
-                workspace.setEditorHeight($workspace.editorHeight + delta);
-            }
-            void resizeViewportAfterLayout();
-            return;
-        }
-
-        if (event.key === 'Home') {
-            event.preventDefault();
-            if (editorDockSide) {
-                workspace.resetEditorWidth();
-            } else {
-                workspace.resetEditorHeight();
-            }
-            void resizeViewportAfterLayout();
-        }
-    }
+        },
+    });
+    const {
+        startInspectorResize,
+        startEditorResize,
+        handleDockKeydown,
+        handleEditorResizeKeydown,
+        resetInspectorWidth,
+    } = layoutResize;
 
     function handleWindowKeydown(event: KeyboardEvent): void {
         if (event.key === 'Escape' && viewerFullscreen) {
@@ -1543,8 +1405,7 @@
     });
 
     onDestroy(() => {
-        cleanupInspectorResize();
-        cleanupEditorResize();
+        layoutResize.cleanup();
         if (postprocessAutoUpdateTimer !== null) {
             window.clearTimeout(postprocessAutoUpdateTimer);
             postprocessAutoUpdateTimer = null;
