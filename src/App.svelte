@@ -70,7 +70,11 @@
         type AppRuntimeSnapshot,
     } from './app/runtime-session';
 
-    export let studio: StudioController;
+    const props: { studio: StudioController } = $props();
+    // The controller is a singleton constructed once in main.ts and never
+    // swapped; capturing it at init is intentional.
+    // svelte-ignore state_referenced_locally
+    const studio = props.studio;
 
     const EDITOR_SIDE_LAYOUT_MIN_WIDTH = 1440;
     // Below this the inspector stacks under the viewport. The 981-1180 range
@@ -82,36 +86,38 @@
     // mutation; these locals are pure derivations of it. Nothing in this
     // component writes them or pulls fresh snapshots by hand.
     const studioState = studio.state;
-    $: ({
-        sceneOptions,
-        printerModels,
-        filamentProfiles,
-        sceneId,
-        viewMode,
-        raymarchParams,
-        viewportParams,
-        animationParams,
-        config,
-    } = $studioState);
+    const sceneOptions = $derived($studioState.sceneOptions);
+    const printerModels = $derived($studioState.printerModels);
+    const filamentProfiles = $derived($studioState.filamentProfiles);
+    const sceneId = $derived($studioState.sceneId);
+    const viewMode = $derived($studioState.viewMode);
+    const raymarchParams = $derived($studioState.raymarchParams);
+    const viewportParams = $derived($studioState.viewportParams);
+    const animationParams = $derived($studioState.animationParams);
+    const config = $derived($studioState.config);
 
     // Editable documents: working + persisted copies with dirty tracking live
     // in the document sets; the locals below are derivations of them.
     const sceneDocs = createSceneDocumentSet(studio.getSceneBundles());
     const postprocessDocs = createPostprocessDocumentSet(listPostprocessScripts());
-    $: ({ documents: sceneBundles, persisted: persistedSceneBundles, savePending: sceneEditorSavePending } = $sceneDocs);
-    $: ({ documents: postprocessDocuments, persisted: persistedPostprocessDocuments, savePending: postprocessSavePending } = $postprocessDocs);
+    const sceneBundles = $derived($sceneDocs.documents);
+    const persistedSceneBundles = $derived($sceneDocs.persisted);
+    const sceneEditorSavePending = $derived($sceneDocs.savePending);
+    const postprocessDocuments = $derived($postprocessDocs.documents);
+    const persistedPostprocessDocuments = $derived($postprocessDocs.persisted);
+    const postprocessSavePending = $derived($postprocessDocs.savePending);
 
-    let workspaceBackend: WorkspaceBackend = bundledWorkspaceBackend;
-    let pendingLocalFolder: StoredLocalFolder | null = null;
-    let sceneEditorStatus = 'Scene editor ready.';
-    let activeSceneFileName: string = SCENE_GLSL_FILE;
-    let postprocessStatus = 'Postprocess scripts ready.';
-    let activePostprocessScriptId = postprocessDocs.current().documents[0]?.id ?? '';
-    let editorDocumentMode: 'scene' | 'postprocess' = 'scene';
-    let postprocessAutoUpdate = false;
+    let workspaceBackend: WorkspaceBackend = $state(bundledWorkspaceBackend);
+    let pendingLocalFolder: StoredLocalFolder | null = $state(null);
+    let sceneEditorStatus = $state('Scene editor ready.');
+    let activeSceneFileName: string = $state(SCENE_GLSL_FILE);
+    let postprocessStatus = $state('Postprocess scripts ready.');
+    let activePostprocessScriptId = $state(postprocessDocs.current().documents[0]?.id ?? '');
+    let editorDocumentMode: 'scene' | 'postprocess' = $state('scene');
+    let postprocessAutoUpdate = $state(false);
 
     // Session overrides per scene, persisted in the runtime snapshot.
-    let sceneOverridesBySceneId: Record<string, Partial<SceneOverrides>> = {};
+    let sceneOverridesBySceneId: Record<string, Partial<SceneOverrides>> = $state({});
 
     const initialStudioState = studio.getState();
     const workspace = createWorkspaceStore({
@@ -131,36 +137,29 @@
     let sceneRepositoryPollHandle: number | null = null;
     let postprocessRepositoryPollHandle: number | null = null;
     let printerAvailabilityPollHandle: number | null = null;
-    let editorDockSide = false;
-    let sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
-    let compactWorkspaceLayout = false;
-    let runtimeSnapshotHydrated = false;
-    let printerTarget: PrinterTarget = {
+    let editorDockSide = $state(false);
+    let sliceDebugSnapshot = $state(studio.getLastSliceDebugSnapshot());
+    let compactWorkspaceLayout = $state(false);
+    let runtimeSnapshotHydrated = $state(false);
+    let printerTarget: PrinterTarget = $state({
         baseUrl: '',
         apiKey: '',
         uploadPath: '',
         autoStartPrint: true,
-    };
-    let generatedGcodeArtifact: GeneratedGcodeArtifact | null = null;
-    let printerAvailable = false;
-    let printerConfigured = false;
-    let currentSliceSignature = '';
-    let currentPostprocessSignature = '';
-    let hasGeneratedArtifactForCurrentSlice = false;
-    let hasGeneratedArtifactForCurrentState = false;
-    let generateActionLabel = 'Generate';
-    let showDownloadButton = false;
+    });
+    let generatedGcodeArtifact: GeneratedGcodeArtifact | null = $state(null);
+    let printerAvailable = $state(false);
     let postprocessAutoUpdateTimer: number | null = null;
-    let postprocessAutoUpdatePending = false;
-    let viewerFullscreen = false;
-    let hasToolpath = false;
+    let postprocessAutoUpdatePending = $state(false);
+    let viewerFullscreen = $state(false);
+    let hasToolpath = $state(false);
     let nameDialog: {
         title: string;
         label: string;
         initial: string;
         hint?: string;
         resolve: (value: string | null) => void;
-    } | null = null;
+    } | null = $state(null);
 
     function requestName(options: { title: string; label: string; initial: string; hint?: string }): Promise<string | null> {
         return new Promise((resolve) => {
@@ -287,60 +286,68 @@
         }
     }
 
-    $: workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
-    $: studio.setToolpathOverlayVisible($workspace.overlayVisible);
-    $: activeSceneBundle = sceneBundles.find((bundle) => bundle.id === sceneId) ?? null;
-    $: persistedActiveSceneBundle = persistedSceneBundles.find((bundle) => bundle.id === sceneId) ?? null;
-    $: sceneFileNames = activeSceneBundle ? sortSceneFileNames(Object.keys(activeSceneBundle.files)) : [];
-    $: if (activeSceneBundle && !(activeSceneFileName in activeSceneBundle.files)) {
-        activeSceneFileName = SCENE_GLSL_FILE in activeSceneBundle.files ? SCENE_GLSL_FILE : (sceneFileNames[0] ?? SCENE_GLSL_FILE);
-    }
-    $: activeSceneSource = activeSceneBundle?.files[activeSceneFileName] ?? null;
-    $: sceneEditorDirty = Boolean(
+    $effect(() => {
+        workspace.setActiveLabels(studio.getSceneLabel(sceneId), studio.getViewModeLabel(viewMode));
+    });
+    $effect(() => {
+        studio.setToolpathOverlayVisible($workspace.overlayVisible);
+    });
+    const activeSceneBundle = $derived(sceneBundles.find((bundle) => bundle.id === sceneId) ?? null);
+    const persistedActiveSceneBundle = $derived(persistedSceneBundles.find((bundle) => bundle.id === sceneId) ?? null);
+    const sceneFileNames = $derived(activeSceneBundle ? sortSceneFileNames(Object.keys(activeSceneBundle.files)) : []);
+    $effect(() => {
+        if (activeSceneBundle && !(activeSceneFileName in activeSceneBundle.files)) {
+            activeSceneFileName = SCENE_GLSL_FILE in activeSceneBundle.files ? SCENE_GLSL_FILE : (sceneFileNames[0] ?? SCENE_GLSL_FILE);
+        }
+    });
+    const activeSceneSource = $derived(activeSceneBundle?.files[activeSceneFileName] ?? null);
+    const sceneEditorDirty = $derived(Boolean(
         activeSceneBundle && activeSceneSource !== null &&
             activeSceneSource !== (persistedActiveSceneBundle?.files[activeSceneFileName] ?? null)
-    );
-    $: sceneEditorModeLabel = workspaceBackend.kind === 'dev-server'
+    ));
+    const sceneEditorModeLabel = $derived(workspaceBackend.kind === 'dev-server'
         ? 'Folder Sync'
         : workspaceBackend.kind === 'local-folder'
             ? 'Local Folder'
-            : 'Bundled (read-only save)';
-    $: workspaceFolderActionLabel = workspaceBackend.kind !== 'bundled' || !isLocalFolderSupported()
+            : 'Bundled (read-only save)');
+    const workspaceFolderActionLabel = $derived.by(() => (workspaceBackend.kind !== 'bundled' || !isLocalFolderSupported()
         ? null
         : pendingLocalFolder
             ? `Reconnect '${pendingLocalFolder.name}'`
-            : 'Connect Project Folder…';
-    $: sceneEditorLanguage = activeSceneFileName.endsWith('.glsl')
+            : 'Connect Project Folder…'));
+    const sceneEditorLanguage = $derived(activeSceneFileName.endsWith('.glsl')
         ? 'glsl' as const
         : activeSceneFileName.endsWith('.js')
             ? 'javascript' as const
-            : 'typescript' as const;
-    $: if (!postprocessDocuments.some((document) => document.id === activePostprocessScriptId)) {
-        activePostprocessScriptId = postprocessDocuments[0]?.id ?? '';
-    }
-    $: activePostprocessDocument = postprocessDocuments.find((document) => document.id === activePostprocessScriptId) ?? null;
-    $: persistedActivePostprocessDocument = persistedPostprocessDocuments.find((document) => document.id === activePostprocessScriptId) ?? null;
-    $: postprocessDirty = Boolean(
+            : 'typescript' as const);
+    $effect(() => {
+        if (!postprocessDocuments.some((document) => document.id === activePostprocessScriptId)) {
+            activePostprocessScriptId = postprocessDocuments[0]?.id ?? '';
+        }
+    });
+    const activePostprocessDocument = $derived(postprocessDocuments.find((document) => document.id === activePostprocessScriptId) ?? null);
+    const persistedActivePostprocessDocument = $derived(persistedPostprocessDocuments.find((document) => document.id === activePostprocessScriptId) ?? null);
+    const postprocessDirty = $derived(Boolean(
         activePostprocessDocument &&
             (!persistedActivePostprocessDocument || activePostprocessDocument.source !== persistedActivePostprocessDocument.source)
-    );
-    $: postprocessModeLabel = sceneEditorModeLabel;
-    $: printerConfigured = printerTarget.baseUrl.trim().length > 0;
-    $: currentSliceSignature = buildSliceSignature(sceneId, activeSceneBundle, config);
-    $: currentPostprocessSignature = buildPostprocessSignature(config);
-    $: hasGeneratedArtifactForCurrentSlice = Boolean(
+    ));
+    const postprocessModeLabel = $derived(sceneEditorModeLabel);
+    const printerConfigured = $derived(printerTarget.baseUrl.trim().length > 0);
+    const currentSliceSignature = $derived(buildSliceSignature(sceneId, activeSceneBundle, config));
+    const currentPostprocessSignature = $derived(buildPostprocessSignature(config));
+    const hasGeneratedArtifactForCurrentSlice = $derived.by(() => Boolean(
         generatedGcodeArtifact && generatedGcodeArtifact.sliceSignature === currentSliceSignature
-    );
-    $: hasGeneratedArtifactForCurrentState = Boolean(
+    ));
+    const hasGeneratedArtifactForCurrentState = $derived.by(() => Boolean(
         generatedGcodeArtifact &&
             generatedGcodeArtifact.sliceSignature === currentSliceSignature &&
             generatedGcodeArtifact.postprocessSignature === currentPostprocessSignature
-    );
-    $: generateActionLabel = hasGeneratedArtifactForCurrentSlice && !hasGeneratedArtifactForCurrentState
+    ));
+    const generateActionLabel = $derived(hasGeneratedArtifactForCurrentSlice && !hasGeneratedArtifactForCurrentState
         ? 'Update'
-        : 'Generate';
-    $: showDownloadButton = hasGeneratedArtifactForCurrentState;
-    $: inspectorState = {
+        : 'Generate');
+    const showDownloadButton = $derived(hasGeneratedArtifactForCurrentState);
+    const inspectorState = $derived({
         sceneOptions,
         uniformControls: config.uniformControls,
         uniformValues: config.uniformValues,
@@ -385,14 +392,18 @@
         printerAvailable,
         exportActionLabel: generateActionLabel,
         hasGeneratedGcode: hasGeneratedArtifactForCurrentState,
-    } satisfies InspectorSchemaState;
-    $: if (postprocessAutoUpdatePending && !$status.actionPending) {
-        postprocessAutoUpdatePending = false;
-        queuePostprocessAutoUpdate();
-    }
-    $: if (runtimeSnapshotHydrated) {
-        persistRuntimeSnapshot(captureRuntimeSnapshot());
-    }
+    } satisfies InspectorSchemaState);
+    $effect(() => {
+        if (postprocessAutoUpdatePending && !$status.actionPending) {
+            postprocessAutoUpdatePending = false;
+            queuePostprocessAutoUpdate();
+        }
+    });
+    $effect(() => {
+        if (runtimeSnapshotHydrated) {
+            persistRuntimeSnapshot(captureRuntimeSnapshot());
+        }
+    });
 
     if (import.meta.hot) {
         import.meta.hot.dispose(() => {
@@ -1359,7 +1370,7 @@
 
     // One reactive prop bag for the editor panel so the side-dock and
     // bottom-dock placements cannot drift apart.
-    $: documentEditorProps = {
+    const documentEditorProps = $derived.by(() => ({
         panelLabel: editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor',
         storageLabel: editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel,
         dirty: editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty,
@@ -1392,10 +1403,10 @@
         onClose: toggleEditor,
         onStartResize: startEditorResize,
         onResizeKeydown: handleEditorResizeKeydown,
-    };
+    }));
 </script>
 
-<svelte:window on:keydown={handleWindowKeydown} />
+<svelte:window onkeydown={handleWindowKeydown} />
 
 <div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible} class:viewer-fullscreen={viewerFullscreen} class:compact-workspace={compactWorkspaceLayout}>
     <TopBar
@@ -1430,9 +1441,9 @@
                     class="editor-dock-resizer"
                     type="button"
                     aria-label="Resize scene editor (arrow keys adjust, Home resets)"
-                    on:pointerdown={startEditorResize}
-                    on:keydown={handleEditorResizeKeydown}
-                    on:dblclick={() => { workspace.resetEditorWidth(); void resizeViewportAfterLayout(); }}
+                    onpointerdown={startEditorResize}
+                    onkeydown={handleEditorResizeKeydown}
+                    ondblclick={() => { workspace.resetEditorWidth(); void resizeViewportAfterLayout(); }}
                 ></button>
             {/if}
 
@@ -1457,9 +1468,9 @@
                     class="dock-resizer"
                     type="button"
                     aria-label="Resize inspector (arrow keys adjust, Home resets)"
-                    on:pointerdown={startInspectorResize}
-                    on:dblclick={resetInspectorWidth}
-                    on:keydown={handleDockKeydown}
+                    onpointerdown={startInspectorResize}
+                    ondblclick={resetInspectorWidth}
+                    onkeydown={handleDockKeydown}
                 ></button>
 
                 <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
