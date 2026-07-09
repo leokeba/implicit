@@ -57,7 +57,20 @@
     } from './app/helpers';
     import { createStatusModel } from './ui/status-model';
     import { createWorkspaceStore } from './ui/workspace-store';
-    import { checkMoonrakerAvailability, downloadTextFile, uploadGcodeToMoonraker } from './studio/file-export';
+    import { downloadTextFile, uploadGcodeToMoonraker } from './studio/file-export';
+    import {
+        applyPrinterModelConnectionDefaults as resolvePrinterConnectionDefaults,
+        checkPrinterAvailability,
+        persistPrinterTarget,
+        readPrinterTarget,
+        type PrinterTarget,
+    } from './app/printer-connection';
+    import { SliceEtaEstimator } from './app/slice-eta';
+    import {
+        persistRuntimeSnapshot,
+        readRuntimeSnapshot,
+        type AppRuntimeSnapshot,
+    } from './app/runtime-session';
 
     export let studio: StudioController;
 
@@ -105,16 +118,6 @@
         activeViewModeLabel: studio.getViewModeLabel(viewMode),
     });
     const status = createStatusModel();
-    const APP_RUNTIME_STORAGE_KEY = 'implicit.runtimeState.v2';
-    const PRINTER_TARGET_STORAGE_KEY = 'implicit.printerTarget.v1';
-
-    interface PrinterTarget {
-        baseUrl: string;
-        apiKey: string;
-        autoStartPrint: boolean;
-        uploadPath: string;
-    }
-
     interface GeneratedGcodeArtifact {
         filename: string;
         gcode: string;
@@ -122,20 +125,6 @@
         points: number;
         sliceSignature: string;
         postprocessSignature: string;
-    }
-
-    interface AppRuntimeSnapshot {
-        sceneId?: string;
-        viewMode?: number;
-        raymarchParams?: Partial<RaymarchParams>;
-        viewportParams?: Partial<ViewportParams>;
-        animationParams?: Partial<AnimationParams>;
-        activePostprocessScriptId?: string;
-        postprocessAutoUpdate?: boolean;
-        editorDocumentMode?: 'scene' | 'postprocess';
-        activeSceneFileName?: string;
-        viewerFullscreen?: boolean;
-        sceneOverrides?: Record<string, Partial<SceneOverrides>>;
     }
 
     let resizeCleanup: (() => void) | null = null;
@@ -210,116 +199,24 @@
         })));
     }
 
-    function readPrinterTarget(): PrinterTarget {
-        if (typeof window === 'undefined') {
-            return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
-        }
-
-        try {
-            const raw = window.localStorage.getItem(PRINTER_TARGET_STORAGE_KEY);
-            if (!raw) {
-                return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
-            }
-
-            const parsed = JSON.parse(raw) as Partial<PrinterTarget>;
-            if (!parsed || typeof parsed !== 'object') {
-                return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
-            }
-
-            return {
-                baseUrl: typeof parsed.baseUrl === 'string' ? parsed.baseUrl.trim() : '',
-                apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
-                autoStartPrint: typeof parsed.autoStartPrint === 'boolean' ? parsed.autoStartPrint : true,
-                uploadPath: typeof parsed.uploadPath === 'string' ? parsed.uploadPath.trim() : '',
-            };
-        } catch {
-            return { baseUrl: '', apiKey: '', uploadPath: '', autoStartPrint: true };
-        }
-    }
-
-    function persistPrinterTarget(target: PrinterTarget): void {
-        if (typeof window === 'undefined') {
-            return;
-        }
-
-        try {
-            window.localStorage.setItem(PRINTER_TARGET_STORAGE_KEY, JSON.stringify(target));
-        } catch {
-            // Ignore storage write failures.
-        }
-    }
-
     function persistCurrentPrinterTarget(): void {
         persistPrinterTarget(printerTarget);
     }
 
     async function refreshPrinterAvailability(): Promise<void> {
-        const configuredBaseUrl = printerTarget.baseUrl.trim();
-        if (!configuredBaseUrl) {
-            printerAvailable = false;
-            return;
-        }
-
-        printerAvailable = await checkMoonrakerAvailability(configuredBaseUrl, printerTarget.apiKey);
+        printerAvailable = await checkPrinterAvailability(printerTarget);
     }
 
     async function applyPrinterModelConnectionDefaults(printerModelId: string): Promise<void> {
         const model = printerModels.find((candidate) => candidate.id === printerModelId);
-        if (!model) {
+        const next = resolvePrinterConnectionDefaults(model, printerTarget);
+        if (!next) {
             return;
         }
 
-        const hasConnectionDefaults =
-            typeof model.defaultMoonrakerUrl === 'string' ||
-            typeof model.defaultMoonrakerApiKey === 'string' ||
-            typeof model.defaultMoonrakerUploadPath === 'string' ||
-            typeof model.defaultMoonrakerAutoStartPrint === 'boolean';
-
-        if (!hasConnectionDefaults) {
-            return;
-        }
-
-        printerTarget = {
-            baseUrl: model.defaultMoonrakerUrl ?? printerTarget.baseUrl,
-            apiKey: model.defaultMoonrakerApiKey ?? printerTarget.apiKey,
-            uploadPath: model.defaultMoonrakerUploadPath ?? printerTarget.uploadPath,
-            autoStartPrint: typeof model.defaultMoonrakerAutoStartPrint === 'boolean'
-                ? model.defaultMoonrakerAutoStartPrint
-                : printerTarget.autoStartPrint,
-        };
-
+        printerTarget = next;
         persistCurrentPrinterTarget();
         await refreshPrinterAvailability();
-    }
-
-    function readRuntimeSnapshot(): AppRuntimeSnapshot | null {
-        if (typeof window === 'undefined') {
-            return null;
-        }
-
-        try {
-            const raw = window.sessionStorage.getItem(APP_RUNTIME_STORAGE_KEY);
-            if (!raw) {
-                return null;
-            }
-
-            const parsed = JSON.parse(raw) as AppRuntimeSnapshot;
-            return parsed && typeof parsed === 'object' ? parsed : null;
-        } catch {
-            return null;
-        }
-    }
-
-    function persistRuntimeSnapshot(runtimeSnapshot: AppRuntimeSnapshot): void {
-        if (typeof window === 'undefined') {
-            return;
-        }
-
-        try {
-            window.sessionStorage.setItem(APP_RUNTIME_STORAGE_KEY, JSON.stringify(runtimeSnapshot));
-        } catch {
-            // Ignore storage write failures.
-        }
     }
 
     function captureRuntimeSnapshot(): AppRuntimeSnapshot {
@@ -828,72 +725,12 @@
     async function buildFullArtifactWithProgress(
         reportProgress: (update: { percent: number; phaseLabel: string; detail: string }) => void,
     ): Promise<{ filename: string; gcode: string; bytes: number; points: number; warnings: string[] }> {
-        const progressStartMs = performance.now();
-        let lastPhase = '';
-        let samplingPhaseStartMs: number | null = null;
-        let learnedTotalSliceSeconds: number | null = null;
-        let displayedEtaSeconds: number | null = null;
-        let lastEtaUpdateMs = progressStartMs;
+        const eta = new SliceEtaEstimator();
 
         return studio.buildVaseGcodeArtifact(currentSliceSignature, (update) => {
-            const nowMs = performance.now();
-            const progress = Math.max(0, Math.min(1, update.overall));
-
-            if (update.phase === 'sampling') {
-                if (samplingPhaseStartMs === null) {
-                    samplingPhaseStartMs = nowMs;
-                }
-
-                const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
-                const phaseProgress = update.total > 0 ? Math.max(0, Math.min(1, update.completed / update.total)) : 0;
-
-                // Learn expected total slice duration from measured sampling throughput once enough data exists.
-                if (update.completed >= 4 && phaseProgress >= 0.05) {
-                    const estimatedSamplingTotalSeconds = samplingElapsedSeconds / phaseProgress;
-                    const estimatedSliceTotalSeconds = estimatedSamplingTotalSeconds / 0.76;
-                    learnedTotalSliceSeconds = learnedTotalSliceSeconds === null
-                        ? estimatedSliceTotalSeconds
-                        : (learnedTotalSliceSeconds * 0.6) + (estimatedSliceTotalSeconds * 0.4);
-                }
-            } else if (lastPhase === 'sampling' && samplingPhaseStartMs !== null && learnedTotalSliceSeconds === null) {
-                const samplingElapsedSeconds = Math.max(0, (nowMs - samplingPhaseStartMs) / 1000);
-                learnedTotalSliceSeconds = samplingElapsedSeconds / 0.76;
-            }
-
-            const elapsedSeconds = Math.max(0, (nowMs - progressStartMs) / 1000);
-            const fallbackEtaSeconds = progress > 0.2
-                ? Math.max(0, elapsedSeconds * ((1 / progress) - 1))
-                : null;
-            const rawEtaSeconds = learnedTotalSliceSeconds !== null
-                ? Math.max(0, learnedTotalSliceSeconds - elapsedSeconds)
-                : fallbackEtaSeconds;
-
-            let etaSeconds: number | null = null;
-            if (rawEtaSeconds !== null) {
-                if (displayedEtaSeconds === null) {
-                    displayedEtaSeconds = rawEtaSeconds;
-                } else {
-                    const deltaSeconds = Math.max(1e-3, (nowMs - lastEtaUpdateMs) / 1000);
-                    const allowedRise = (deltaSeconds * 0.45) + 0.08;
-                    if (rawEtaSeconds > displayedEtaSeconds + allowedRise) {
-                        displayedEtaSeconds += allowedRise;
-                    } else {
-                        displayedEtaSeconds = rawEtaSeconds;
-                    }
-                }
-
-                if (update.phase === 'finalizing') {
-                    displayedEtaSeconds = Math.min(displayedEtaSeconds, 1);
-                }
-
-                etaSeconds = displayedEtaSeconds;
-                lastEtaUpdateMs = nowMs;
-            }
-
-            lastPhase = update.phase;
-
+            const etaSeconds = eta.observe(update);
             reportProgress({
-                percent: progress * 100,
+                percent: Math.max(0, Math.min(1, update.overall)) * 100,
                 phaseLabel: update.phaseLabel,
                 detail: etaSeconds !== null
                     ? `${update.detail} ETA ${formatEta(etaSeconds)}`
@@ -1642,6 +1479,9 @@
                 }
 
                 await activateWorkspaceBackend(initialBackend ?? bundledWorkspaceBackend);
+                if (disposed) {
+                    return;
+                }
 
                 studio.init();
                 printerTarget = readPrinterTarget();
@@ -1649,6 +1489,9 @@
                     await applyPrinterModelConnectionDefaults(config.settings.printerModelId);
                 }
                 await refreshPrinterAvailability();
+                if (disposed) {
+                    return;
+                }
                 status.setShaderStatus('ready', 'Ready');
 
                 const runtimeSnapshot = readRuntimeSnapshot();
@@ -1660,7 +1503,8 @@
 
                 // Polling is cheap and self-guarding (the refreshers no-op on
                 // read-only backends), so it always runs: a folder connected
-                // later starts syncing without extra wiring.
+                // later starts syncing without extra wiring. The disposed
+                // guards above keep a mid-init unmount from leaking them.
                 sceneRepositoryPollHandle = window.setInterval(() => {
                     void refreshWorkspaceScenes();
                 }, 1200);
@@ -1708,6 +1552,43 @@
         studio.dispose();
     });
 
+
+    // One reactive prop bag for the editor panel so the side-dock and
+    // bottom-dock placements cannot drift apart.
+    $: documentEditorProps = {
+        panelLabel: editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor',
+        storageLabel: editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel,
+        dirty: editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty,
+        dirtyLabel: editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene',
+        savePending: editorDocumentMode === 'postprocess' ? postprocessSavePending : sceneEditorSavePending,
+        statusText: editorDocumentMode === 'postprocess' ? postprocessStatus : sceneEditorStatus,
+        documentName: editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneBundle?.name ?? null,
+        documentFileName: editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneFileName,
+        source: editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneSource,
+        helperText: editorDocumentMode === 'postprocess'
+            ? 'Generic toolpath scripts referenced from scene manifests with usePostprocess(id).'
+            : 'scene.glsl defines the surface; scene.ts orchestrates uniforms, slicing, and the postprocess pipeline.',
+        createLabel: editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene',
+        saveLabel: editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save File',
+        hideLabel: 'Hide Editor',
+        switchLabel: editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script',
+        language: editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : sceneEditorLanguage,
+        fileOptions: editorDocumentMode === 'scene'
+            ? sceneFileNames.map((fileName) => ({ value: fileName, label: fileName }))
+            : postprocessDocuments.map((document) => ({ value: document.id, label: document.fileName })),
+        activeFileOption: editorDocumentMode === 'scene' ? activeSceneFileName : activePostprocessScriptId,
+        onSelectFileOption: editorDocumentMode === 'scene' ? selectSceneFile : selectPostprocessScript,
+        addFileLabel: editorDocumentMode === 'scene' ? 'Add File' : null,
+        onAddFile: createSceneFile,
+        onChangeSource: editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneFileSource,
+        onCreate: editorDocumentMode === 'postprocess' ? createAndActivatePostprocessScript : createAndActivateScene,
+        onSave: editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneFile,
+        onRevert: editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneFile,
+        onSwitchDocument: switchEditorDocument,
+        onClose: toggleEditor,
+        onStartResize: startEditorResize,
+        onResizeKeydown: handleEditorResizeKeydown,
+    };
 </script>
 
 <svelte:window on:keydown={handleWindowKeydown} />
@@ -1738,40 +1619,7 @@
         <div class="workspace-shell" class:editor-docked-left={$workspace.editorVisible && editorDockSide}>
             {#if $workspace.editorVisible && editorDockSide}
                 <div class="workspace-editor-slot workspace-editor-slot-side">
-                    <DocumentEditorPanel
-                        panelLabel={editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor'}
-                        storageLabel={editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel}
-                        dirty={editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty}
-                        dirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
-                        savePending={editorDocumentMode === 'postprocess' ? postprocessSavePending : sceneEditorSavePending}
-                        statusText={editorDocumentMode === 'postprocess' ? postprocessStatus : sceneEditorStatus}
-                        documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneBundle?.name ?? null}
-                        documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneFileName}
-                        source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneSource}
-                        helperText={editorDocumentMode === 'postprocess'
-                            ? 'Generic toolpath scripts referenced from scene manifests with usePostprocess(id).'
-                            : 'scene.glsl defines the surface; scene.ts orchestrates uniforms, slicing, and the postprocess pipeline.'}
-                        createLabel={editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene'}
-                        saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save File'}
-                        hideLabel="Hide Editor"
-                        switchLabel={editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script'}
-                        language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : sceneEditorLanguage}
-                        fileOptions={editorDocumentMode === 'scene'
-                            ? sceneFileNames.map((fileName) => ({ value: fileName, label: fileName }))
-                            : postprocessDocuments.map((document) => ({ value: document.id, label: document.fileName }))}
-                        activeFileOption={editorDocumentMode === 'scene' ? activeSceneFileName : activePostprocessScriptId}
-                        onSelectFileOption={editorDocumentMode === 'scene' ? selectSceneFile : selectPostprocessScript}
-                        addFileLabel={editorDocumentMode === 'scene' ? 'Add File' : null}
-                        onAddFile={createSceneFile}
-                        onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneFileSource}
-                        onCreate={editorDocumentMode === 'postprocess' ? createAndActivatePostprocessScript : createAndActivateScene}
-                        onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneFile}
-                        onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneFile}
-                        onSwitchDocument={switchEditorDocument}
-                        onClose={toggleEditor}
-                        onStartResize={startEditorResize}
-                        onResizeKeydown={handleEditorResizeKeydown}
-                    />
+                    <DocumentEditorPanel {...documentEditorProps} />
                 </div>
 
                 <button
