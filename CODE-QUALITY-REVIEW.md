@@ -103,12 +103,13 @@ Improvements, in value order:
   declarations in both `renderer.frag.glsl` and `scene-field-sample.frag.glsl`, name-based
   binding in the slicer. A `{name, glslType, bind}` table generating both the GLSL
   declarations and the TS binding loop, shared by renderer and slicer.
-- [ ] **`#line` directives before `__SCENE_GLSL__`** — compile errors currently report
-  positions in the composed source; scene authors get offset line numbers.
-- [ ] **Cross-validate the uniform contract** — a uniform declared in `scene.ts` but unused
+- [x] **Scene-relative compile error lines** (marker-comment mapping instead of `#line`) —
+  errors now report "In scene.glsl at line N" alongside the composed-source excerpt.
+- [x] **Cross-validate the uniform contract** — a uniform declared in `scene.ts` but unused
   in GLSL is silently dropped (`getUniformLocation` returns null); warn instead.
 - [ ] **Only `float` scene uniforms supported**; `params` never reach GLSL. Typed specs →
-  `vec2/vec3/int` via the same generation mechanism.
+  `vec2/vec3/int` via the same generation mechanism. *Deliberately deferred until a scene
+  actually needs one (AGENTS.md: no just-in-case code).*
 - [ ] **Multi-field scenes silently use only `fields[0]`** for the modifier view
   (shader-pipeline.ts:222) — support the rest or reject such manifests.
 - [x] Template substitution is first-occurrence `String.replace` with no missing-token check.
@@ -236,3 +237,16 @@ reactive prop bag, and `src/app/` gained `printer-connection.ts`, `runtime-sessi
 (slice, scene switch, camera orbit through the extracted controller, zero console errors).
 Still open in App.svelte: repository-sync/document-CRUD/layout-resize extractions, runes
 migration, and the App↔controller state mirroring (§4.5).
+
+**2026-07-09 (second pass) — authoring feedback + layout-resize extraction.** Compile errors
+now map back to the author's file: the pipeline wraps the scene chunk in
+`__SCENE_GLSL_BEGIN__/__SCENE_GLSL_END__` marker comments and `core/gl/program.ts` reports
+"In scene.glsl at line N" (verified live: a deliberate bad call at scene line 10 reported
+line 10, where the raw GL error said composed line 1202). Declared-but-unused manifest
+uniforms now warn in the shader status instead of silently doing nothing
+(`getSceneUniformContractWarnings`). `src/app/layout-resize.ts` extracts all inspector/editor
+resize handling from App.svelte (now 1,592 lines). Non-float scene uniforms are deferred until
+a scene needs one. The repository-sync/document-CRUD extraction is intentionally left for the
+Phase-2 unified document repository redesign — extracting it as a callback bag would relocate
+the coupling without reducing it. Remaining top items: App ↔ controller state mirroring +
+runes migration, Phase-2 document repository, `fields[0]`-only modifier view.
