@@ -130,7 +130,7 @@ Improvements, in value order:
 4. - [x] **No teardown in the engine layer** — renderer window/media-query listeners,
    `Preview`'s resize listener (preview.ts:61), controller's `renderLifecycleCleanup`
    (assigned studio-controller.ts:226, never invoked). Bites during Vite HMR.
-5. - [ ] **App.svelte ↔ controller state mirroring** — `viewMode`, raymarch/viewport/
+5. - [x] **App.svelte ↔ controller state mirroring** — `viewMode`, raymarch/viewport/
    animation params, and overrides exist as local `let`s and inside the controller, synced by
    hand. Any missed `refreshConfig()` desyncs UI from engine — the most likely source of
    "UI shows X but print does Y" bugs.
@@ -250,3 +250,17 @@ a scene needs one. The repository-sync/document-CRUD extraction is intentionally
 Phase-2 unified document repository redesign — extracting it as a callback bag would relocate
 the coupling without reducing it. Remaining top items: App ↔ controller state mirroring +
 runes migration, Phase-2 document repository, `fields[0]`-only modifier view.
+
+**2026-07-09 (third pass) — single source of truth for studio state.** `StudioController`
+now publishes a Svelte store of its snapshot after every mutation (all override mutators
+funnel through `resolveConfiguration`, which is the publish chokepoint; the renderer param
+setters and `setViewMode` publish too). App.svelte's nine mirrored locals (`sceneId`,
+`viewMode`, `config`, raymarch/viewport/animation params, presets) are now one reactive
+derivation of `$studioState`; `refreshConfig()` and every manual write-back are gone.
+Synchronous post-mutation reads (runtime snapshot capture/restore, init-time printer
+defaults) use the store value, which updates synchronously, instead of the async-derived
+locals. Verified in the browser: uniform override commits and round-trips, per-scene
+overrides survive scene switches, session restore after reload brings back both the override
+and the view mode, slicing works, zero console errors. §4.5 closed. App.svelte is 1,566
+lines. The remaining Svelte-idiom item is the runes migration itself, which this store
+structure now makes mechanical ($derived over the store instead of `$:`).
