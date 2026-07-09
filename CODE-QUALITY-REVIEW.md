@@ -69,13 +69,13 @@ dual-host entry point.
 
 ### renderer.ts → four units
 
-- [ ] `CameraController` — orbit/pan/dolly input + camera math + sessionStorage persistence
+- [x] `CameraController` — orbit/pan/dolly input + camera math + sessionStorage persistence
   (renderer.ts:555-825), ~40% of the file, fully self-contained.
-- [ ] `ThemeClearColor` — theme media-query sync + CSS color parsing (renderer.ts:980-1065).
+- [x] `ThemeClearColor` — theme media-query sync + CSS color parsing (renderer.ts:980-1065).
 - [x] Shared `ShaderCompiler`/`GlProgram` module — `createShader`/`createProgram`/cached
   uniform locations are duplicated between renderer and slicer, and the slicer's copy lacks
   the renderer's error excerpts.
-- [ ] Engine-uniform registry (see §3), deleting the 27 `*Location` fields and the ~100-line
+- [x] Engine-uniform registry (see §3), deleting the 27 `*Location` fields and the ~100-line
   binding block.
 
 Leaves a ~300-line renderer.
@@ -98,7 +98,7 @@ Good: scene uniforms are single-sourced — `defineScene` specs generate the GLS
 
 Improvements, in value order:
 
-- [ ] **Engine-uniform registry.** Each built-in (`uTime`, `uMinY`, `uScale`, …) is repeated
+- [x] **Engine-uniform registry.** Each built-in (`uTime`, `uMinY`, `uScale`, …) is repeated
   in ~5 places: private field, `getUniformLocation`, per-frame `gl.uniformXf`, hand-written
   declarations in both `renderer.frag.glsl` and `scene-field-sample.frag.glsl`, name-based
   binding in the slicer. A `{name, glslType, bind}` table generating both the GLSL
@@ -111,7 +111,7 @@ Improvements, in value order:
   `vec2/vec3/int` via the same generation mechanism.
 - [ ] **Multi-field scenes silently use only `fields[0]`** for the modifier view
   (shader-pipeline.ts:222) — support the rest or reject such manifests.
-- [ ] Template substitution is first-occurrence `String.replace` with no missing-token check.
+- [x] Template substitution is first-occurrence `String.replace` with no missing-token check.
 - [ ] Module-global singleton state in shader-pipeline
   (`globalThis.__implicitShaderPipelineState`) makes init order brittle;
   `composeRendererFragmentSource` can throw during `Renderer.init`.
@@ -123,10 +123,10 @@ Improvements, in value order:
    (renderer.ts:865-866, slicer.ts:2567). Leaks on every failed live-edit hot-reload.
 2. - [x] **`WAIT_FAILED` treated as success** — `waitForPendingBatch` returns normally on
    `WAIT_FAILED` (slicer.ts:1444), then reads possibly-garbage pixels.
-3. - [ ] **Interval leak on unmount during bootstrap** — `onMount`'s `disposed` flag is
+3. - [x] **Interval leak on unmount during bootstrap** — `onMount`'s `disposed` flag is
    checked once early; three `setInterval`s are registered after later awaits
    (App.svelte:1629-1698).
-4. - [ ] **No teardown in the engine layer** — renderer window/media-query listeners,
+4. - [x] **No teardown in the engine layer** — renderer window/media-query listeners,
    `Preview`'s resize listener (preview.ts:61), controller's `renderLifecycleCleanup`
    (assigned studio-controller.ts:226, never invoked). Bites during Vite HMR.
 5. - [ ] **App.svelte ↔ controller state mirroring** — `viewMode`, raymarch/viewport/
@@ -179,7 +179,7 @@ Duplicated verbatim:
 - [ ] `toFiniteNumber` + `extractModuleData` — printer-models.ts / filament-profiles.ts
 - [ ] Shoelace area and closed-path dedupe implemented twice with different point shapes
   (`{x,z}` vs `{x,y}`)
-- [ ] ~55 lines of `DocumentEditorPanel` markup repeated in App.svelte (1740-1774 / 1821-1854)
+- [x] ~55 lines of `DocumentEditorPanel` markup repeated in App.svelte (1740-1774 / 1821-1854)
 
 Dead code:
 
@@ -220,3 +220,19 @@ clean, plus a browser smoke pass (default scene slice 55k points, Lamp Shade sli
 postprocess pipeline 95k points, async benchmark, scene switching; Threaded Coupler's
 layer-1 "no closed outline" failure reproduces identically on pre-refactor HEAD — pre-existing,
 not a regression).
+
+**2026-07-09 — engine-uniform registry, renderer split, App.svelte first pass.**
+`core/shaders/engine-uniforms.ts` now generates every engine uniform declaration into the three
+fragment templates via `__ENGINE_UNIFORMS_GLSL__`; `core/gl/uniforms.ts` (`UniformBinder`)
+replaced the renderer's 25 location fields and the sampler's local uniform helpers — adding an
+engine uniform is one table entry plus a bind call. Template placeholder substitution now
+errors on missing tokens. Renderer split into `core/renderer/camera-controller.ts` (all
+viewport interaction + persistence, detachable) and `theme-clear-color.ts`; renderer.ts is
+482 lines (from 1,151). A dispose chain (Renderer/Preview/StudioController, called from App
+onDestroy) fixes the engine-layer listener leaks. App.svelte (1,882 → 1,731): mid-init
+interval leak fixed with disposed re-checks, the two DocumentEditorPanel placements share one
+reactive prop bag, and `src/app/` gained `printer-connection.ts`, `runtime-session.ts`, and
+`slice-eta.ts`. Verified per pass: `npm run check` + `npm run build` clean, browser smoke
+(slice, scene switch, camera orbit through the extracted controller, zero console errors).
+Still open in App.svelte: repository-sync/document-CRUD/layout-resize extractions, runes
+migration, and the App↔controller state mirroring (§4.5).
