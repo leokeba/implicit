@@ -1,3 +1,4 @@
+import { get, writable, type Readable, type Writable } from 'svelte/store';
 import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
 import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
 import { snapToNearestOptionValue } from './core/control-options';
@@ -184,6 +185,14 @@ export class StudioController {
     private renderLifecycleCleanup: (() => void) | null;
     private cachedBaseToolpath: { cacheKey: string; baseToolpath: VaseBaseToolpath } | null;
 
+    /**
+     * Single published source of truth for everything the UI mirrors:
+     * resolved config, scene/view selection, and renderer params. Set after
+     * every mutation, so components derive from it instead of pulling
+     * snapshots and keeping local copies in sync by hand.
+     */
+    private stateStore: Writable<StudioSnapshot> | null;
+
     /** Session overrides for the active scene, keyed per scene by the App snapshot. */
     private overrides: SceneOverrides;
 
@@ -206,6 +215,7 @@ export class StudioController {
         this.initialized = false;
         this.renderLifecycleCleanup = null;
         this.cachedBaseToolpath = null;
+        this.stateStore = null;
         this.overrides = emptyOverrides();
         this.resolvedSettings = this.slicer.getDefaultVaseSettings();
         this.resolvedUniformValues = {};
@@ -214,6 +224,26 @@ export class StudioController {
         this.preprocessError = null;
 
         this.resolveConfiguration();
+        this.stateStore = writable(this.getSnapshot());
+    }
+
+    /** Reactive studio state; see stateStore. */
+    public get state(): Readable<StudioSnapshot> {
+        if (!this.stateStore) {
+            throw new Error('Studio state store is not initialized.');
+        }
+        return this.stateStore;
+    }
+
+    /** Current studio state without subscribing. */
+    public getState(): StudioSnapshot {
+        return get(this.state);
+    }
+
+    private publishState(): void {
+        // Null during construction: resolveConfiguration runs once before the
+        // store exists; the store is then seeded with that resolved snapshot.
+        this.stateStore?.set(this.getSnapshot());
     }
 
     public init(): void {
@@ -297,6 +327,7 @@ export class StudioController {
 
     public setViewMode(viewMode: number): string {
         this.renderer.setViewMode(viewMode);
+        this.publishState();
         return `Viewport mode: ${this.getViewModeLabel(viewMode)}.`;
     }
 
@@ -401,6 +432,8 @@ export class StudioController {
         if (bundle.id === getActiveSceneId()) {
             this.resolveConfiguration();
             result = this.reloadRendererShaders();
+        } else {
+            this.publishState();
         }
 
         return {
@@ -415,14 +448,17 @@ export class StudioController {
 
     public updateRaymarchParams(next: Partial<RaymarchParams>): void {
         this.renderer.updateRaymarchParams(next);
+        this.publishState();
     }
 
     public updateViewportParams(next: Partial<ViewportParams>): void {
         this.renderer.updateViewportParams(next);
+        this.publishState();
     }
 
     public updateAnimationParams(next: Partial<AnimationParams>): void {
         this.renderer.updateAnimationParams(next);
+        this.publishState();
     }
 
     public updateSlicerParams(next: Partial<VaseSlicerSettings>): SlicerSettingsUpdateResult {
@@ -681,6 +717,7 @@ export class StudioController {
         });
 
         this.pushSceneStateToEngines();
+        this.publishState();
     }
 
     private resolveScalarValues(specs: ScalarControlSpec[], overrides: Record<string, number>): Record<string, number> {

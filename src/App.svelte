@@ -81,17 +81,21 @@
     // parameters stay visible next to the model on small laptops.
     const COMPACT_WORKSPACE_MAX_WIDTH = 980;
 
-    const snapshot = studio.getSnapshot();
-
-    let sceneOptions = snapshot.sceneOptions;
-    let printerModels = snapshot.printerModels;
-    let filamentProfiles = snapshot.filamentProfiles;
-    let sceneId = snapshot.sceneId;
-    let viewMode = snapshot.viewMode;
-    let raymarchParams = snapshot.raymarchParams;
-    let viewportParams = snapshot.viewportParams;
-    let animationParams = snapshot.animationParams;
-    let config: SceneConfigView = snapshot.config;
+    // Single source of truth: the controller publishes its state after every
+    // mutation; these locals are pure derivations of it. Nothing in this
+    // component writes them or pulls fresh snapshots by hand.
+    const studioState = studio.state;
+    $: ({
+        sceneOptions,
+        printerModels,
+        filamentProfiles,
+        sceneId,
+        viewMode,
+        raymarchParams,
+        viewportParams,
+        animationParams,
+        config,
+    } = $studioState);
 
     // Scene folder documents.
     let sceneBundles: SceneBundle[] = studio.getSceneBundles();
@@ -114,9 +118,10 @@
     // Session overrides per scene, persisted in the runtime snapshot.
     let sceneOverridesBySceneId: Record<string, Partial<SceneOverrides>> = {};
 
+    const initialStudioState = studio.getState();
     const workspace = createWorkspaceStore({
-        activeSceneLabel: studio.getSceneLabel(sceneId),
-        activeViewModeLabel: studio.getViewModeLabel(viewMode),
+        activeSceneLabel: studio.getSceneLabel(initialStudioState.sceneId),
+        activeViewModeLabel: studio.getViewModeLabel(initialStudioState.viewMode),
     });
     const status = createStatusModel();
     interface GeneratedGcodeArtifact {
@@ -173,10 +178,6 @@
         nameDialog = null;
     }
 
-    function refreshConfig(): void {
-        config = studio.getConfigView();
-    }
-
     // Dependencies are passed as arguments so the reactive statement below
     // re-runs when they change; a zero-argument call would never invalidate.
     function buildSliceSignature(id: string, bundle: SceneBundle | null, view: SceneConfigView): string {
@@ -219,12 +220,13 @@
     }
 
     function captureRuntimeSnapshot(): AppRuntimeSnapshot {
+        const state = $studioState;
         return {
-            sceneId,
-            viewMode,
-            raymarchParams,
-            viewportParams,
-            animationParams,
+            sceneId: state.sceneId,
+            viewMode: state.viewMode,
+            raymarchParams: state.raymarchParams,
+            viewportParams: state.viewportParams,
+            animationParams: state.animationParams,
             activePostprocessScriptId,
             postprocessAutoUpdate,
             editorDocumentMode,
@@ -232,7 +234,7 @@
             viewerFullscreen,
             sceneOverrides: {
                 ...sceneOverridesBySceneId,
-                [sceneId]: studio.exportOverrides(),
+                [state.sceneId]: studio.exportOverrides(),
             },
         };
     }
@@ -246,29 +248,24 @@
             commitScene(runtimeSnapshot.sceneId);
         }
 
-        const restoredOverrides = sceneOverridesBySceneId[sceneId];
+        const restoredOverrides = sceneOverridesBySceneId[$studioState.sceneId];
         if (restoredOverrides) {
             studio.restoreOverrides(restoredOverrides);
-            refreshConfig();
         }
 
         if (typeof runtimeSnapshot.viewMode === 'number') {
-            viewMode = runtimeSnapshot.viewMode;
             studio.setViewMode(runtimeSnapshot.viewMode);
         }
 
         if (runtimeSnapshot.raymarchParams && typeof runtimeSnapshot.raymarchParams === 'object') {
-            raymarchParams = { ...raymarchParams, ...runtimeSnapshot.raymarchParams };
             studio.updateRaymarchParams(runtimeSnapshot.raymarchParams);
         }
 
         if (runtimeSnapshot.viewportParams && typeof runtimeSnapshot.viewportParams === 'object') {
-            viewportParams = { ...viewportParams, ...runtimeSnapshot.viewportParams };
             studio.updateViewportParams(runtimeSnapshot.viewportParams);
         }
 
         if (runtimeSnapshot.animationParams && typeof runtimeSnapshot.animationParams === 'object') {
-            animationParams = { ...animationParams, ...runtimeSnapshot.animationParams };
             studio.updateAnimationParams(runtimeSnapshot.animationParams);
         }
 
@@ -480,7 +477,6 @@
     }
 
     function commitViewMode(nextViewMode: number): void {
-        viewMode = nextViewMode;
         status.setWorkspaceStatus(studio.setViewMode(nextViewMode));
     }
 
@@ -494,16 +490,11 @@
 
         status.setShaderStatus('compiling', 'Compiling...');
         const result = studio.changeScene(nextSceneId, sceneOverridesBySceneId[nextSceneId] ?? null);
-        sceneId = result.sceneId;
-        config = result.config;
         status.applySceneChange(result);
         hasToolpath = studio.hasToolpathOverlay();
     }
 
     function applySceneRegistryResult(result: SceneRegistrySyncResult): void {
-        sceneOptions = result.sceneOptions;
-        sceneId = result.sceneId;
-        config = result.config;
         status.setShaderStatus(result.ok ? 'ok' : 'error', result.shaderMessage);
     }
 
@@ -531,54 +522,44 @@
 
     function updateUniformValue(key: string, value: number): void {
         studio.updateUniformValue(key, value);
-        refreshConfig();
     }
 
     function updateParamValue(key: string, value: number): void {
         studio.updateParamValue(key, value);
-        refreshConfig();
     }
 
     function updateStepParam(stepIndex: number, key: string, value: number): void {
         studio.updateStepParam(stepIndex, key, value);
-        refreshConfig();
         schedulePostprocessAutoUpdate();
     }
 
     function setStepEnabled(stepIndex: number, enabled: boolean): void {
         studio.setStepEnabled(stepIndex, enabled);
-        refreshConfig();
         schedulePostprocessAutoUpdate();
     }
 
     function resetFieldOverride(scope: 'slicer' | 'uniform' | 'param', key: string): void {
         studio.resetOverride(scope, key);
-        refreshConfig();
     }
 
     function resetStepParamOverride(stepIndex: number, key: string): void {
         studio.resetStepParamOverride(stepIndex, key);
-        refreshConfig();
         schedulePostprocessAutoUpdate();
     }
 
     function resetAllOverrides(): void {
         status.setWorkspaceStatus(studio.resetAllOverrides());
-        refreshConfig();
     }
 
     function updateRaymarchField(key: keyof RaymarchParams, value: number): void {
-        raymarchParams = { ...raymarchParams, [key]: value };
         studio.updateRaymarchParams({ [key]: value });
     }
 
     function updateViewportField(key: keyof ViewportParams, value: number): void {
-        viewportParams = { ...viewportParams, [key]: value };
         studio.updateViewportParams({ [key]: value });
     }
 
     function updateAnimationField(key: keyof AnimationParams, value: number): void {
-        animationParams = { ...animationParams, [key]: value };
         studio.updateAnimationParams({ [key]: value });
     }
 
@@ -588,7 +569,6 @@
 
     function commitPrinterModel(printerModelId: string): void {
         const result = studio.changePrinterModel(printerModelId);
-        config = result.config;
         status.applyPresetChange(result);
         void applyPrinterModelConnectionDefaults(printerModelId);
     }
@@ -614,7 +594,6 @@
 
     function commitFilamentProfile(filamentProfileId: string): void {
         const result = studio.changeFilamentProfile(filamentProfileId);
-        config = result.config;
         status.applyPresetChange(result);
     }
 
@@ -636,7 +615,6 @@
     }
 
     function applySlicerSettingsUpdate(result: SlicerSettingsUpdateResult): void {
-        refreshConfig();
         if (result.validationMessage) {
             status.setWorkspaceStatus(result.validationMessage);
         }
@@ -676,7 +654,6 @@
         );
         upsertPostprocessScript(nextDocument);
         studio.refreshConfiguration();
-        refreshConfig();
         postprocessStatus = 'Postprocess script updated locally. Save to persist changes.';
         schedulePostprocessAutoUpdate();
     }
@@ -958,7 +935,6 @@
                 : [...persistedPostprocessDocuments, savedDocument].sort((left, right) => left.name.localeCompare(right.name));
             upsertPostprocessScript(savedDocument);
             studio.refreshConfiguration();
-            refreshConfig();
             postprocessStatus = `Saved ${savedDocument.fileName} to ${workspaceBackend.postprocessLabel}.`;
             status.setWorkspaceStatus(postprocessStatus);
         } catch (error) {
@@ -1232,7 +1208,6 @@
             postprocessDocuments = documents;
             setPostprocessScripts(documents);
             studio.refreshConfiguration();
-            refreshConfig();
         }
 
         const statuses = describeWorkspaceStatuses(backend);
@@ -1322,7 +1297,6 @@
             postprocessDocuments = nextDocuments;
             setPostprocessScripts(nextDocuments);
             studio.refreshConfiguration();
-            refreshConfig();
         };
 
         void (async () => {
@@ -1348,7 +1322,7 @@
                 studio.init();
                 printerTarget = readPrinterTarget();
                 if (!printerTarget.baseUrl.trim()) {
-                    await applyPrinterModelConnectionDefaults(config.settings.printerModelId);
+                    await applyPrinterModelConnectionDefaults($studioState.config.settings.printerModelId);
                 }
                 await refreshPrinterAvailability();
                 if (disposed) {
