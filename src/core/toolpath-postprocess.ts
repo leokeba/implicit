@@ -2,17 +2,9 @@ import type { ScalarControlSpec } from '../scene-runtime';
 import type { ResolvedPipelineStep } from './postprocess-registry';
 import { getSceneFieldDefinitions } from './shader-pipeline';
 import type { SceneFieldDefinition, SceneFieldValue } from './shaders/types';
-import type { ToolpathPoint, VaseSlicerSettings } from './slicer';
-
-export interface ToolpathPipelineStepSummary {
-    stepIndex: number;
-    name: string;
-    scriptId: string | null;
-    notes: string[];
-    durationMs: number;
-    inputPointCount: number;
-    outputPointCount: number;
-}
+import { distance3 } from './slicer/math';
+import type { ToolpathPipelineStepSummary, ToolpathPoint } from './slicer/types';
+import type { VaseSlicerSettings } from './slicer/config';
 
 export interface ToolpathPostprocessLayerSummary {
     layer: number;
@@ -356,8 +348,4 @@ function ratioOrZero(value: number, total: number): number {
     }
 
     return Math.min(1, Math.max(0, value / total));
-}
-
-function distance3(a: Pick<ToolpathPoint, 'x' | 'y' | 'z'>, b: Pick<ToolpathPoint, 'x' | 'y' | 'z'>): number {
-    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }

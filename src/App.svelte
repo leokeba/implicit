@@ -1033,8 +1033,8 @@
         const warmups = Math.max(0, $status.benchmarkWarmups || 0);
         const measuredLabel = `${iterations} measured run${iterations === 1 ? '' : 's'}`;
         const warmupLabel = `${warmups} warmup run${warmups === 1 ? '' : 's'}`;
-        await status.runCommand(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, () => {
-            const summary = studio.benchmarkVaseGcode(iterations, warmups);
+        await status.runCommand(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, async () => {
+            const summary = await studio.benchmarkVaseGcode(iterations, warmups);
             sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
             hasToolpath = studio.hasToolpathOverlay();
             return `Benchmark settled on ${summary.measuredRuns} measured run${summary.measuredRuns === 1 ? '' : 's'} after ${summary.warmupRuns} warmup run${summary.warmupRuns === 1 ? '' : 's'}: avg ${summary.averageMs.toFixed(1)} ms, median ${summary.medianMs.toFixed(1)} ms, min ${summary.minMs.toFixed(1)} ms, max ${summary.maxMs.toFixed(1)} ms, spread ${summary.spreadMs.toFixed(1)} ms. Phase avg: sample ${summary.averageContourSamplingMs.toFixed(1)} ms, toolpath ${summary.averageToolpathBuildMs.toFixed(1)} ms, gcode ${summary.averageGcodeBuildMs.toFixed(1)} ms. Last output: ${(summary.bytes / 1024).toFixed(1)} KB, ${summary.points} points, ${summary.layers} layers.`;

@@ -1,8 +1,6 @@
-import type { VaseSlicerSettings, VaseToolpath } from '../slicer';
-
-export function shouldEmitOrcaMetadata(_settings: VaseSlicerSettings): boolean {
-    return true;
-}
+import { clamp } from './math';
+import type { VaseSlicerSettings } from './config';
+import type { VaseToolpath } from './types';
 
 export function buildOrcaMetadataHeader(
     toolpath: VaseToolpath,
@@ -334,6 +332,3 @@ function formatLocalTimestamp(date: Date): string {
     return `${year}-${month}-${day} at ${hours}:${minutes}:${seconds}`;
 }
 
-function clamp(value: number, min: number, max: number): number {
-    return Math.max(min, Math.min(max, value));
-}

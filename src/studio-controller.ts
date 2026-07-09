@@ -592,9 +592,9 @@ export class StudioController {
         });
     }
 
-    public benchmarkVaseGcode(iterations: number, warmupRuns: number): SlicerBenchmarkSummary {
-        return this.runWhilePreviewPaused(() => {
-            const benchmark = this.slicer.benchmarkVaseGcode(
+    public benchmarkVaseGcode(iterations: number, warmupRuns: number): Promise<SlicerBenchmarkSummary> {
+        return this.runWhilePreviewPausedAsync(async () => {
+            const benchmark = await this.slicer.benchmarkVaseGcode(
                 this.resolvedSettings,
                 iterations,
                 warmupRuns,
@@ -872,17 +872,6 @@ export class StudioController {
         }
 
         this.stopRenderingLoop();
-    }
-
-    private runWhilePreviewPaused<T>(action: () => T): T {
-        this.isSlicing = true;
-        this.updatePreviewRenderState();
-        try {
-            return action();
-        } finally {
-            this.isSlicing = false;
-            this.updatePreviewRenderState();
-        }
     }
 
     private async runWhilePreviewPausedAsync<T>(action: () => Promise<T>): Promise<T> {

@@ -6,7 +6,8 @@ import {
     type SceneControlValueMap,
     type ShaderSourceUpdates,
 } from './shader-pipeline';
-import { snapToNearestOptionValue } from './control-options';
+import { buildSceneControlValueMap } from './control-options';
+import { createProgram } from './gl/program';
 import type {
     AnimationParams,
     CameraState,
@@ -197,7 +198,7 @@ class Renderer {
             throw new Error('WebGL is not available in this browser.');
         }
 
-        this.program = this.createProgram(getRendererVertexSource(), composeRendererFragmentSource());
+        this.program = createProgram(this.gl, getRendererVertexSource(), composeRendererFragmentSource());
         this.positionBuffer = this.gl.createBuffer();
         this.cacheUniformLocations();
 
@@ -260,7 +261,7 @@ class Renderer {
         }
 
         try {
-            const nextProgram = this.createProgram(getRendererVertexSource(), composeRendererFragmentSource());
+            const nextProgram = createProgram(this.gl, getRendererVertexSource(), composeRendererFragmentSource());
             const previousProgram = this.program;
             this.program = nextProgram;
             this.cacheUniformLocations();
@@ -824,68 +825,6 @@ class Renderer {
         };
     }
 
-    private createShader(type: number, source: string): WebGLShader {
-        if (!this.gl) {
-            throw new Error('WebGL context is not initialized.');
-        }
-
-        const shader = this.gl.createShader(type);
-        if (!shader) {
-            throw new Error('Failed to create shader object.');
-        }
-
-        this.gl.shaderSource(shader, source);
-        this.gl.compileShader(shader);
-
-        if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
-            const infoLog = this.gl.getShaderInfoLog(shader) || 'Unknown shader compile error';
-            this.gl.deleteShader(shader);
-
-            const stage = type === this.gl.VERTEX_SHADER ? 'Vertex' : 'Fragment';
-            const lineNumber = parseShaderErrorLine(infoLog);
-            const excerpt = buildShaderSourceExcerpt(source, lineNumber);
-
-            throw new Error(
-                [
-                    `${stage} shader compile error`,
-                    infoLog,
-                    excerpt,
-                ].filter((part) => part.length > 0).join('\n\n')
-            );
-        }
-
-        return shader;
-    }
-
-    private createProgram(vertexSource: string, fragmentSource: string): WebGLProgram {
-        if (!this.gl) {
-            throw new Error('WebGL context is not initialized.');
-        }
-
-        const vertexShader = this.createShader(this.gl.VERTEX_SHADER, vertexSource);
-        const fragmentShader = this.createShader(this.gl.FRAGMENT_SHADER, fragmentSource);
-        const program = this.gl.createProgram();
-
-        if (!program) {
-            throw new Error('Failed to create shader program.');
-        }
-
-        this.gl.attachShader(program, vertexShader);
-        this.gl.attachShader(program, fragmentShader);
-        this.gl.linkProgram(program);
-
-        this.gl.deleteShader(vertexShader);
-        this.gl.deleteShader(fragmentShader);
-
-        if (!this.gl.getProgramParameter(program, this.gl.LINK_STATUS)) {
-            const error = this.gl.getProgramInfoLog(program) || 'Unknown program link error';
-            this.gl.deleteProgram(program);
-            throw new Error(`Program link error\n\n${error}`);
-        }
-
-        return program;
-    }
-
     private cacheUniformLocations(): void {
         if (!this.gl || !this.program) {
             return;
@@ -1066,27 +1005,6 @@ class Renderer {
 }
 
 export default Renderer;
-function buildSceneControlValueMap(definitions: SceneControlDefinition[], values: SceneControlValueMap): SceneControlValueMap {
-    const next: SceneControlValueMap = {};
-
-    for (const definition of definitions) {
-        const rawValue = values[definition.key] ?? definition.defaultValue;
-        if (definition.hasControl === false) {
-            next[definition.key] = rawValue;
-            continue;
-        }
-
-        if (definition.options && definition.options.length > 0) {
-            next[definition.key] = snapToNearestOptionValue(rawValue, definition.options);
-            continue;
-        }
-
-        next[definition.key] = Math.min(definition.max, Math.max(definition.min, rawValue));
-    }
-
-    return next;
-}
-
 const CAMERA_STATE_STORAGE_KEY = 'implicit.camera.orbit.v1';
 
 function cross3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): { x: number; y: number; z: number } {
@@ -1110,43 +1028,3 @@ function normalize3(v: { x: number; y: number; z: number }): { x: number; y: num
     };
 }
 
-function parseShaderErrorLine(infoLog: string): number | null {
-    const match = infoLog.match(/\b\d+:(\d+)\b/);
-    if (!match?.[1]) {
-        return null;
-    }
-
-    const parsed = Number.parseInt(match[1], 10);
-    if (!Number.isFinite(parsed) || parsed < 1) {
-        return null;
-    }
-
-    return parsed;
-}
-
-function buildShaderSourceExcerpt(source: string, lineNumber: number | null): string {
-    if (lineNumber === null) {
-        return '';
-    }
-
-    const lines = source.split(/\r?\n/);
-    if (lineNumber > lines.length) {
-        return '';
-    }
-
-    const contextRadius = 2;
-    const start = Math.max(1, lineNumber - contextRadius);
-    const end = Math.min(lines.length, lineNumber + contextRadius);
-    const width = String(end).length;
-
-    const excerptLines: string[] = [];
-    excerptLines.push(`Source excerpt around line ${lineNumber}:`);
-
-    for (let line = start; line <= end; line += 1) {
-        const marker = line === lineNumber ? '>' : ' ';
-        const label = String(line).padStart(width, ' ');
-        excerptLines.push(`${marker} ${label} | ${lines[line - 1]}`);
-    }
-
-    return excerptLines.join('\n');
-}

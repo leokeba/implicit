@@ -1,4 +1,4 @@
-import type { VaseSlicerSettings } from '../slicer';
+import type { VaseSlicerSettings } from './config';
 
 export function getDefaultStartGcode(): string[] {
     return [
@@ -53,6 +53,6 @@ export function expandGcodeTemplate(line: string, settings: VaseSlicerSettings):
     });
 }
 
-function mmPerSecToFeedrate(mmPerSec: number): number {
+export function mmPerSecToFeedrate(mmPerSec: number): number {
     return mmPerSec * 60.0;
 }

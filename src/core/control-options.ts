@@ -1,6 +1,35 @@
+import type { SceneControlDefinition, SceneControlValueMap } from './shaders/types';
+
 export interface NumericControlOption {
     value: number;
     label: string;
+}
+
+/**
+ * Resolves the effective value for every scene control: defaults for missing
+ * entries, option snapping for enumerated controls, min/max clamping for
+ * sliders. Shared by the renderer and the slicer's field sampler so both
+ * engines bind identical uniform values.
+ */
+export function buildSceneControlValueMap(definitions: SceneControlDefinition[], values: SceneControlValueMap): SceneControlValueMap {
+    const next: SceneControlValueMap = {};
+
+    for (const definition of definitions) {
+        const rawValue = values[definition.key] ?? definition.defaultValue;
+        if (definition.hasControl === false) {
+            next[definition.key] = rawValue;
+            continue;
+        }
+
+        if (definition.options && definition.options.length > 0) {
+            next[definition.key] = snapToNearestOptionValue(rawValue, definition.options);
+            continue;
+        }
+
+        next[definition.key] = Math.max(definition.min, Math.min(definition.max, rawValue));
+    }
+
+    return next;
 }
 
 export function parseNumericControlOptions(rawOptions: unknown): NumericControlOption[] {
