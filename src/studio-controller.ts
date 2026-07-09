@@ -16,6 +16,7 @@ import {
     getAvailableScenes,
     getSceneBundles,
     getSceneControlDefinitions,
+    getSceneUniformContractWarnings,
     replaceSceneBundles,
     setActiveSceneById,
     upsertSceneFile,
@@ -901,9 +902,13 @@ export class StudioController {
             return result;
         }
 
+        const contractWarnings = getSceneUniformContractWarnings();
+        const baseMessage = result.ok ? result.message : 'Ready';
         return {
             ok: true,
-            message: result.ok ? result.message : 'Ready',
+            message: contractWarnings.length > 0
+                ? `${baseMessage} - ${contractWarnings.join(' ')}`
+                : baseMessage,
         };
     }
 }

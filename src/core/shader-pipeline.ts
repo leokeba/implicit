@@ -158,6 +158,30 @@ export function getSceneFieldDefinitions(sceneId: string = activeSceneId): Scene
     return entry?.manifest.fields.map((field) => ({ ...field })) ?? [];
 }
 
+/**
+ * Cross-checks the manifest's uniform declarations against scene.glsl.
+ * A declared-but-unreferenced uniform is otherwise silently dropped by the
+ * GLSL compiler (its location resolves to null), so the author gets no
+ * signal that a control does nothing.
+ */
+export function getSceneUniformContractWarnings(sceneId: string = activeSceneId): string[] {
+    const entry = resolveSceneEntryById(sceneId);
+    if (!entry) {
+        return [];
+    }
+
+    const glsl = entry.files[SCENE_GLSL_FILE] ?? '';
+    const warnings: string[] = [];
+    for (const spec of entry.manifest.uniforms) {
+        const usage = new RegExp(`\\b${spec.key}\\b`);
+        if (!usage.test(glsl)) {
+            warnings.push(`Uniform '${spec.key}' is declared in scene.ts but never referenced in scene.glsl; its control has no effect.`);
+        }
+    }
+
+    return warnings;
+}
+
 export function replaceSceneBundles(bundles: SceneBundle[]): SceneBundle[] {
     const nextEntries = bundles
         .filter((bundle) => bundle.id.trim().length > 0)
@@ -289,7 +313,12 @@ function substituteTokens(template: string, replacements: Record<string, string>
 function composeSceneGlsl(entry: SceneEntry): string {
     const glsl = entry.files[SCENE_GLSL_FILE] ?? '';
     const uniformBlock = buildSceneUniformBlock(entry.manifest);
-    return uniformBlock.length > 0 ? `${uniformBlock}\n\n${glsl}` : glsl;
+    // Marker comments delimit the author's scene.glsl inside the composed
+    // source so compile errors can be reported with scene-relative line
+    // numbers (see core/gl/program.ts). They travel with the source through
+    // worker postMessage and hot reload, so no side-channel is needed.
+    const markedGlsl = `// __SCENE_GLSL_BEGIN__\n${glsl}\n// __SCENE_GLSL_END__`;
+    return uniformBlock.length > 0 ? `${uniformBlock}\n\n${markedGlsl}` : markedGlsl;
 }
 
 function buildSceneUniformBlock(manifest: SceneManifest): string {

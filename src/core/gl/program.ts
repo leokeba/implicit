@@ -19,11 +19,13 @@ export function createShader(gl: WebGLRenderingContext, type: number, source: st
 
         const stage = type === gl.VERTEX_SHADER ? 'Vertex' : 'Fragment';
         const lineNumber = parseShaderErrorLine(infoLog);
+        const sceneLocation = describeSceneSourceLine(source, lineNumber);
         const excerpt = buildShaderSourceExcerpt(source, lineNumber);
 
         throw new Error(
             [
                 `${stage} shader compile error`,
+                sceneLocation,
                 infoLog,
                 excerpt,
             ].filter((part) => part.length > 0).join('\n\n')
@@ -31,6 +33,37 @@ export function createShader(gl: WebGLRenderingContext, type: number, source: st
     }
 
     return shader;
+}
+
+/**
+ * Maps a composed-source line back to the author's scene.glsl using the
+ * `__SCENE_GLSL_BEGIN__`/`__SCENE_GLSL_END__` markers the shader pipeline
+ * injects around the scene chunk. Empty string when the line falls outside
+ * the scene chunk (or no markers are present).
+ */
+function describeSceneSourceLine(source: string, lineNumber: number | null): string {
+    if (lineNumber === null) {
+        return '';
+    }
+
+    const lines = source.split(/\r?\n/);
+    const beginIndex = lines.findIndex((line) => line.includes('__SCENE_GLSL_BEGIN__'));
+    if (beginIndex === -1) {
+        return '';
+    }
+    let endIndex = lines.findIndex((line) => line.includes('__SCENE_GLSL_END__'));
+    if (endIndex === -1) {
+        endIndex = lines.length;
+    }
+
+    // Marker lines are 1-based beginIndex+1 and endIndex+1; scene.glsl line 1
+    // is the composed line right after the begin marker.
+    const sceneLine = lineNumber - (beginIndex + 1);
+    if (sceneLine < 1 || lineNumber > endIndex) {
+        return '';
+    }
+
+    return `In scene.glsl at line ${sceneLine}`;
 }
 
 export function createProgram(gl: WebGLRenderingContext, vertexSource: string, fragmentSource: string): WebGLProgram {
