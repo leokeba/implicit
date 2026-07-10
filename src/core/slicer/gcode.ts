@@ -251,20 +251,38 @@ export function buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings,
             modalFeedrate = travelFeedrate;
             modalZ = zText;
             travelAfterFill = false;
-            continue;
+        } else if (point.travel) {
+            // Script-authored travel: same modal F/Z handling, no extrusion.
+            let line = 'G0';
+            if (feedrate !== modalFeedrate) {
+                line += ` F${feedrate}`;
+                modalFeedrate = feedrate;
+            }
+            line += ` X${point.x.toFixed(3)} Y${point.z.toFixed(3)}`;
+            if (zText !== modalZ) {
+                line += ` Z${zText}`;
+                modalZ = zText;
+            }
+            lines.push(line);
+        } else {
+            let line = 'G1';
+            if (feedrate !== modalFeedrate) {
+                line += ` F${feedrate}`;
+                modalFeedrate = feedrate;
+            }
+            line += ` X${point.x.toFixed(3)} Y${point.z.toFixed(3)}`;
+            if (zText !== modalZ) {
+                line += ` Z${zText}`;
+                modalZ = zText;
+            }
+            line += ` E${Math.max(0, point.e - prevPoint.e).toFixed(5)}`;
+            lines.push(line);
         }
-        let line = 'G1';
-        if (feedrate !== modalFeedrate) {
-            line += ` F${feedrate}`;
-            modalFeedrate = feedrate;
+
+        const dwellMs = Math.round(point.dwellAfterMs ?? 0);
+        if (dwellMs > 0) {
+            lines.push(`G4 P${dwellMs}`);
         }
-        line += ` X${point.x.toFixed(3)} Y${point.z.toFixed(3)}`;
-        if (zText !== modalZ) {
-            line += ` Z${zText}`;
-            modalZ = zText;
-        }
-        line += ` E${Math.max(0, point.e - prevPoint.e).toFixed(5)}`;
-        lines.push(line);
     }
 
     const lastPoint = toolpath.points[toolpath.points.length - 1];

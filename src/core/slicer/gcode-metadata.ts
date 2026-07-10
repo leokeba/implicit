@@ -295,6 +295,7 @@ function estimatePrintTimeSeconds(toolpath: VaseToolpath): number {
         const distance = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
         const speed = Math.max(1e-6, b.speedMmPerSec);
         seconds += distance / speed;
+        seconds += (b.dwellAfterMs ?? 0) / 1000;
     }
 
     return Math.max(0, Math.round(seconds));

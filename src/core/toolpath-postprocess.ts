@@ -45,6 +45,17 @@ export interface ToolpathPostprocessMutablePoint {
     extrusionScale?: number;
     /** Local layer thickness in mm; preserved so adaptive-height extrusion survives pipeline steps. */
     layerThicknessMm?: number;
+    /** Pause after reaching this point, in milliseconds (G4 dwell). Max 600000. Ignored on the first point. */
+    dwellAfterMs?: number;
+    /** Marks the move ending at this point as a travel: no extrusion, emitted as G0. Set speedMmPerSec explicitly (e.g. settings.travelSpeedMmPerSec). */
+    travel?: boolean;
+    /**
+     * Direct filament mm per path mm for the move ending at this point,
+     * bypassing the line-width x layer-height bead model so pattern flow
+     * no longer changes with layer height. extrusionScale still multiplies
+     * on top. Range 0..10.
+     */
+    extrusionPerMmOverride?: number;
     /**
      * GPU-sampled scene field values. Preserved across pipeline steps when a
      * step passes points through or mutates them in place; a step that
@@ -232,6 +243,9 @@ export function buildToolpathPostprocessContext(
             speedMmPerSec: point.speedMmPerSec,
             extrusionScale: point.extrusionScale,
             layerThicknessMm: point.layerThicknessMm,
+            dwellAfterMs: point.dwellAfterMs,
+            travel: point.travel,
+            extrusionPerMmOverride: point.extrusionPerMmOverride,
             sceneFields: point.sceneFields ? { ...point.sceneFields } : undefined,
             metrics: {
                 pointIndex: index,
@@ -305,6 +319,9 @@ function normalizeReturnedPoint(point: ToolpathPostprocessMutablePoint): Toolpat
         speedMmPerSec: point.speedMmPerSec,
         extrusionScale: point.extrusionScale,
         layerThicknessMm: point.layerThicknessMm,
+        dwellAfterMs: point.dwellAfterMs,
+        travel: point.travel,
+        extrusionPerMmOverride: point.extrusionPerMmOverride,
         sceneFields: point.sceneFields,
     };
 }
@@ -336,6 +353,16 @@ function validatePostprocessPoints(points: ToolpathPoint[], stepName: string): v
         const extrusionScale = point.extrusionScale ?? 1;
         if (!Number.isFinite(extrusionScale) || extrusionScale < 0 || extrusionScale > 16) {
             throw new Error(`Postprocess step '${stepName}' returned an invalid extrusionScale at point ${index}.`);
+        }
+
+        const dwellAfterMs = point.dwellAfterMs ?? 0;
+        if (!Number.isFinite(dwellAfterMs) || dwellAfterMs < 0 || dwellAfterMs > 600000) {
+            throw new Error(`Postprocess step '${stepName}' returned an invalid dwellAfterMs at point ${index} (expected 0..600000).`);
+        }
+
+        if (point.extrusionPerMmOverride !== undefined
+            && (!Number.isFinite(point.extrusionPerMmOverride) || point.extrusionPerMmOverride < 0 || point.extrusionPerMmOverride > 10)) {
+            throw new Error(`Postprocess step '${stepName}' returned an invalid extrusionPerMmOverride at point ${index} (expected 0..10).`);
         }
 
         previousLayer = point.layer;

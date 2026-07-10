@@ -333,12 +333,22 @@ function simplifyLayerMoves(points: ToolpathPoint[], settings: VaseSlicerSetting
         const nextExtrusionScale = next.extrusionScale ?? 1;
         const extrusionStable =
             Math.abs(prevExtrusionScale - curExtrusionScale) <= 1e-4 &&
-            Math.abs(curExtrusionScale - nextExtrusionScale) <= 1e-4;
+            Math.abs(curExtrusionScale - nextExtrusionScale) <= 1e-4 &&
+            extrusionOverridesEqual(prev.extrusionPerMmOverride, cur.extrusionPerMmOverride) &&
+            extrusionOverridesEqual(cur.extrusionPerMmOverride, next.extrusionPerMmOverride);
+        // A dwell is an event at the point itself and a travel/print boundary
+        // changes the G-code verb; neither may be merged away.
+        const hasDwell = (cur.dwellAfterMs ?? 0) > 0;
+        const travelStable =
+            (prev.travel ?? false) === (cur.travel ?? false) &&
+            (cur.travel ?? false) === (next.travel ?? false);
 
         let canMerge =
             (isTinyMove || isSmoothEnough) &&
             speedStable &&
             extrusionStable &&
+            !hasDwell &&
+            travelStable &&
             dropped.length < keepStride;
 
         if (canMerge && dropped.length > 0) {
@@ -366,6 +376,13 @@ function simplifyLayerMoves(points: ToolpathPoint[], settings: VaseSlicerSetting
 
     out.push(points[points.length - 1]);
     return out;
+}
+
+function extrusionOverridesEqual(a: number | undefined, b: number | undefined): boolean {
+    if (a === undefined || b === undefined) {
+        return a === b;
+    }
+    return Math.abs(a - b) <= 1e-6;
 }
 
 export function recomputeExtrusion(points: ToolpathPoint[], settings: VaseSlicerSettings): void {
@@ -408,11 +425,14 @@ export function recomputeExtrusion(points: ToolpathPoint[], settings: VaseSlicer
             cachedThicknessMm = thicknessMm;
             cachedThickExtrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth, thicknessMm);
         }
-        const segmentExtrusionPerMm = point.layer === 0
+        const beadExtrusionPerMm = point.layer === 0
             ? firstLayerExtrusionPerMm
             : (point.layer === 1 && settings.bottomLayers <= 1
                 ? lerp(firstLayerExtrusionPerMm, cachedThickExtrusionPerMm, layerProgress)
                 : cachedThickExtrusionPerMm);
+        const segmentExtrusionPerMm = point.travel
+            ? 0
+            : (point.extrusionPerMmOverride ?? beadExtrusionPerMm);
         eAcc += segment * segmentExtrusionPerMm * extrusionScale;
         point.e = eAcc;
     }
@@ -438,21 +458,29 @@ export function applyMinimumLayerTime(points: ToolpathPoint[], settings: VaseSli
             continue;
         }
 
-        const baseSpeedMmPerSec = settings.printSpeedMmPerSec;
-        let layerPathLengthMm = 0;
-        for (let i = layerStart + 1; i < layerEnd; i++) {
-            layerPathLengthMm += distance3(points[i - 1], points[i]);
+        // Layer time from the per-point speeds (postprocess scripts may have
+        // varied them) plus dwell pauses. When the layer is too fast, every
+        // speed is scaled by a common factor so script-authored speed ratios
+        // survive; a uniform overwrite would erase per-segment control.
+        let moveTimeSec = 0;
+        let dwellTimeSec = 0;
+        for (let i = layerStart; i < layerEnd; i++) {
+            if (i > layerStart) {
+                const segmentMm = distance3(points[i - 1], points[i]);
+                moveTimeSec += segmentMm / Math.max(minAllowedSpeedMmPerSec, points[i].speedMmPerSec);
+            }
+            dwellTimeSec += (points[i].dwellAfterMs ?? 0) / 1000;
         }
 
-        const maxSpeedForMinTime = layerPathLengthMm / minLayerTimeSec;
-        const targetSpeedMmPerSec = clamp(
-            Math.min(baseSpeedMmPerSec, maxSpeedForMinTime),
-            minAllowedSpeedMmPerSec,
-            baseSpeedMmPerSec,
-        );
-
-        for (let i = layerStart; i < layerEnd; i++) {
-            points[i].speedMmPerSec = targetSpeedMmPerSec;
+        const requiredMoveTimeSec = minLayerTimeSec - dwellTimeSec;
+        if (moveTimeSec > 0 && moveTimeSec < requiredMoveTimeSec) {
+            const speedFactor = moveTimeSec / requiredMoveTimeSec;
+            for (let i = layerStart; i < layerEnd; i++) {
+                points[i].speedMmPerSec = Math.max(
+                    minAllowedSpeedMmPerSec,
+                    points[i].speedMmPerSec * speedFactor,
+                );
+            }
         }
 
         layerStart = layerEnd;

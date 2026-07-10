@@ -104,6 +104,9 @@ function buildDefaultPostprocessSource(scriptId: string, language: PostprocessSc
 // Mutate context.points in place or return a new array.
 // point.metrics.shapeLayerProgress gives smooth 0..1 progress across the full print.
 // Scene field samples (manifest \`fields\`) are available at point.sceneFields.<key>.
+// Per-segment control: point.speedMmPerSec, point.extrusionScale,
+// point.dwellAfterMs (G4 pause), point.travel (G0, no extrusion),
+// point.extrusionPerMmOverride (flow decoupled from layer height).
 
 export const controls = {
     strength: { default: 1.0, min: 0.0, max: 2.0, step: 0.05 },
@@ -126,6 +129,9 @@ export function transform(context) {
 // Mutate context.points in place or return a new array.
 // point.metrics.shapeLayerProgress gives smooth 0..1 progress across the full print.
 // Scene field samples (manifest \`fields\`) are available at point.sceneFields.<key>.
+// Per-segment control: point.speedMmPerSec, point.extrusionScale,
+// point.dwellAfterMs (G4 pause), point.travel (G0, no extrusion),
+// point.extrusionPerMmOverride (flow decoupled from layer height).
 import type { ToolpathPostprocessContext } from 'implicit/scene';
 
 export const controls = {

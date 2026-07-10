@@ -11,6 +11,16 @@ export interface ToolpathPoint {
     extrusionScale?: number;
     /** Local layer thickness in mm when adaptive layer heights are active. */
     layerThicknessMm?: number;
+    /** Pause after reaching this point, in milliseconds (G4 dwell). Ignored on the first point. */
+    dwellAfterMs?: number;
+    /** Marks the move ending at this point as a travel: emitted as G0 with no extrusion. */
+    travel?: boolean;
+    /**
+     * Direct filament mm per path mm for the move ending at this point,
+     * bypassing the line-width x layer-height bead model. extrusionScale
+     * still multiplies on top.
+     */
+    extrusionPerMmOverride?: number;
     sceneFields?: Record<string, SceneFieldValue>;
 }
 
