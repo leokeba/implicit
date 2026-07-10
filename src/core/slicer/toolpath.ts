@@ -191,6 +191,7 @@ function buildInterpolatedSpiralBaseToolpath(
         layerCount: layers,
         pointsPerLayer: perLayer,
         estimatedHeight: printedHeightMm,
+        contourLayers,
     };
 }
 

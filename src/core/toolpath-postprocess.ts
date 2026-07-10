@@ -3,6 +3,7 @@ import type { ResolvedPipelineStep } from './postprocess-registry';
 import { getSceneFieldDefinitions } from './shader-pipeline';
 import type { SceneFieldDefinition, SceneFieldValue } from './shaders/types';
 import { distance3 } from './slicer/math';
+import type { ToolpathSurface } from './slicer/surface';
 import type { ToolpathPipelineStepSummary, ToolpathPoint } from './slicer/types';
 import type { VaseSlicerSettings } from './slicer/config';
 
@@ -75,6 +76,14 @@ export interface ToolpathPostprocessContext {
     controls: ScalarControlSpec[];
     params: Record<string, number>;
     sceneFieldDefinitions: SceneFieldDefinition[];
+    /**
+     * Wall query over the sliced model: surface.at(u, yMm) returns the
+     * printer-space XZ position and unit outward normal of the wall at loop
+     * parameter u (0..1 around the perimeter, wraps) and height yMm. Lets a
+     * script displace points vertically and keep them on the surface. Null
+     * when the contour stack is unavailable.
+     */
+    surface: ToolpathSurface | null;
     layers: ToolpathPostprocessLayerSummary[];
     totals: {
         pointCount: number;
@@ -102,6 +111,7 @@ export function applyToolpathPipeline(
     points: ToolpathPoint[],
     settings: VaseSlicerSettings,
     steps: ResolvedPipelineStep[],
+    surface: ToolpathSurface | null = null,
 ): { points: ToolpathPoint[]; summaries: ToolpathPipelineStepSummary[] } {
     let currentPoints = points;
     const summaries: ToolpathPipelineStepSummary[] = [];
@@ -115,7 +125,7 @@ export function applyToolpathPipeline(
             throw new Error(`Postprocess step '${step.name}' is not runnable: ${step.error ?? 'no transform resolved'}.`);
         }
 
-        const context = buildToolpathPostprocessContext(currentPoints, settings, step.controls, step.params);
+        const context = buildToolpathPostprocessContext(currentPoints, settings, step.controls, step.params, surface);
         const startTime = performance.now();
         const output = step.transform(context);
         const normalized = normalizeToolpathPostprocessOutput(output, context.points);
@@ -144,6 +154,7 @@ export function buildToolpathPostprocessContext(
     settings: VaseSlicerSettings,
     controls: ScalarControlSpec[] = [],
     parameterValues: Record<string, number> = {},
+    surface: ToolpathSurface | null = null,
 ): ToolpathPostprocessContext {
     const sceneFieldDefinitions = getSceneFieldDefinitions();
     const layerSummaries: ToolpathPostprocessLayerSummary[] = [];
@@ -271,6 +282,7 @@ export function buildToolpathPostprocessContext(
         controls: controls.map((control) => ({ ...control })),
         params: { ...parameterValues },
         sceneFieldDefinitions: sceneFieldDefinitions.map((definition) => ({ ...definition })),
+        surface,
         layers: layerSummaries,
         totals: {
             pointCount: points.length,

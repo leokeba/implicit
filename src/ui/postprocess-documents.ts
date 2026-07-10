@@ -107,6 +107,8 @@ function buildDefaultPostprocessSource(scriptId: string, language: PostprocessSc
 // Per-segment control: point.speedMmPerSec, point.extrusionScale,
 // point.dwellAfterMs (G4 pause), point.travel (G0, no extrusion),
 // point.extrusionPerMmOverride (flow decoupled from layer height).
+// context.surface.at(u, yMm) returns the model wall position + outward
+// normal at any height, so vertically displaced points can stay on the surface.
 
 export const controls = {
     strength: { default: 1.0, min: 0.0, max: 2.0, step: 0.05 },
@@ -132,6 +134,8 @@ export function transform(context) {
 // Per-segment control: point.speedMmPerSec, point.extrusionScale,
 // point.dwellAfterMs (G4 pause), point.travel (G0, no extrusion),
 // point.extrusionPerMmOverride (flow decoupled from layer height).
+// context.surface.at(u, yMm) returns the model wall position + outward
+// normal at any height, so vertically displaced points can stay on the surface.
 import type { ToolpathPostprocessContext } from 'implicit/scene';
 
 export const controls = {

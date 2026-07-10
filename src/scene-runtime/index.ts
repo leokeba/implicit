@@ -24,6 +24,7 @@ export type {
     ToolpathPostprocessPointMetrics,
     ToolpathPostprocessResult,
 } from '../core/toolpath-postprocess';
+export type { ToolpathSurface, ToolpathSurfaceSample } from '../core/slicer/surface';
 export type {
     FieldSpecInput,
     FieldSpecObject,

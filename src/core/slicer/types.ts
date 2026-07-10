@@ -47,6 +47,12 @@ export interface VaseBaseToolpath {
     layerCount: number;
     pointsPerLayer: number;
     estimatedHeight: number;
+    /**
+     * Finalized contour stack the spiral was built from (cylindrical mode:
+     * the radial resample). Kept so postprocess scripts can query the model
+     * wall at arbitrary heights; survives the base-toolpath cache.
+     */
+    contourLayers?: SliceContourLayer[];
     /** Non-fatal issues from sampling (ignored holes, dropped loops, window fit). */
     warnings?: string[];
 }

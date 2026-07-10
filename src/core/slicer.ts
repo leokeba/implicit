@@ -52,6 +52,7 @@ import {
     recomputeExtrusion,
 } from './slicer/toolpath';
 import { buildGcode } from './slicer/gcode';
+import { buildToolpathSurface } from './slicer/surface';
 
 export type { VaseSlicerSettings } from './slicer/config';
 export type {
@@ -620,7 +621,8 @@ export class Slicer {
     ): VaseToolpath {
         const basePoints: ToolpathPoint[] = baseToolpath.points.map((point) => ({ ...point }));
         this.sampler.attachSceneFieldsToPoints(basePoints, settings);
-        const postprocessed = applyToolpathPipeline(basePoints, settings, pipeline ?? []);
+        const surface = buildToolpathSurface(baseToolpath.contourLayers, settings);
+        const postprocessed = applyToolpathPipeline(basePoints, settings, pipeline ?? [], surface);
         const optimizedPoints = optimizeToolpath(postprocessed.points, settings);
         recomputeExtrusion(optimizedPoints, settings);
         applyMinimumLayerTime(optimizedPoints, settings);
