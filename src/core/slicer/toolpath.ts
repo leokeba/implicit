@@ -1,5 +1,5 @@
 import { clamp, distance3, lerp, pointLineDistance3, turnAngleDegrees } from './math';
-import type { VaseSlicerSettings } from './config';
+import { getSpiralPitchMm, type VaseSlicerSettings } from './config';
 import type { SliceContourLayer, SlicePoint, ToolpathPoint, VaseBaseToolpath } from './types';
 
 /**
@@ -15,6 +15,15 @@ export function buildSpiralBaseToolpath(
 ): VaseBaseToolpath {
     return settings.slicerMode === 'cylindrical'
         ? buildCylindricalSpiralBaseToolpath(contourLayers, settings)
+        : buildPlanarSpiralBaseToolpath(contourLayers, settings);
+}
+
+function buildPlanarSpiralBaseToolpath(
+    contourLayers: SliceContourLayer[],
+    settings: VaseSlicerSettings,
+): VaseBaseToolpath {
+    return getSpiralPitchMm(settings) > 0
+        ? buildPitchedSpiralBaseToolpath(contourLayers, settings)
         : buildInterpolatedSpiralBaseToolpath(contourLayers, settings);
 }
 
@@ -41,7 +50,7 @@ function buildCylindricalSpiralBaseToolpath(
         };
     });
 
-    const baseToolpath = buildInterpolatedSpiralBaseToolpath(cylindricalLayers, settings);
+    const baseToolpath = buildPlanarSpiralBaseToolpath(cylindricalLayers, settings);
     if (bridgedLayerCount > 0) {
         baseToolpath.warnings = [
             `Cylindrical mode bridged reentrant geometry on ${bridgedRayCount} ray${bridgedRayCount === 1 ? '' : 's'} across ${bridgedLayerCount} layer${bridgedLayerCount === 1 ? '' : 's'} - the radial resample keeps only the outermost surface. Use planar mode for exact contours.`,
@@ -191,6 +200,111 @@ function buildInterpolatedSpiralBaseToolpath(
         layerCount: layers,
         pointsPerLayer: perLayer,
         estimatedHeight: printedHeightMm,
+        contourLayers,
+    };
+}
+
+/**
+ * Pitched helix: each revolution climbs spiralPitchMm while contours stay at
+ * layerHeight pitch, so every sample interpolates the wall through all
+ * intermediate contours instead of blending two adjacent revolutions. Built
+ * for coarse pattern rows (knit/loop postprocess scripts) over a finely
+ * resolved surface. No top cap: pitched prints are open-ended patterns and
+ * the extrusion-ramped cap would trace a full extra revolution at the rim.
+ */
+function buildPitchedSpiralBaseToolpath(
+    contourLayers: SliceContourLayer[],
+    settings: VaseSlicerSettings,
+): VaseBaseToolpath {
+    const layers = contourLayers.length;
+    const perLayer = settings.pointsPerLayer;
+    const pitchMm = getSpiralPitchMm(settings);
+    const heights = contourLayers.map((layer, index) => layer.printHeightMm ?? (settings.layerHeight * (index + 1)));
+
+    const firstLayerExtrusionPerMm = calculateExtrusionPerMm(settings, settings.firstLayerLineWidth);
+    const flatExtrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth);
+    // The bead height caps at the line width inside calculateExtrusionPerMm,
+    // so a multi-mm pitch defaults to a modest solid bead; pattern scripts
+    // set the real per-segment flow.
+    const pitchedExtrusionPerMm = calculateExtrusionPerMm(settings, settings.lineWidth, pitchMm);
+
+    const points: ToolpathPoint[] = [];
+    let eAcc = 0;
+    let prevX = 0;
+    let prevY = 0;
+    let prevZ = 0;
+    const pushPoint = (
+        x: number,
+        y: number,
+        z: number,
+        extrusionPerMm: number,
+        layer: number,
+        layerThicknessMm: number,
+        speedMmPerSec: number,
+    ): void => {
+        if (points.length > 0) {
+            eAcc += Math.hypot(x - prevX, y - prevY, z - prevZ) * extrusionPerMm;
+        }
+        points.push({ x, y, z, e: eAcc, speedMmPerSec, layer, layerThicknessMm });
+        prevX = x;
+        prevY = y;
+        prevZ = z;
+    };
+
+    // Flat adhesion/bottom layers, identical to the classic spiral.
+    const flatLayerCount = Math.max(1, Math.min(settings.bottomLayers, layers - 1));
+    for (let layerIndex = 0; layerIndex < flatLayerCount; layerIndex++) {
+        const contour = contourLayers[layerIndex].contour;
+        for (let k = 0; k < perLayer; k++) {
+            const point = contour[k] ?? contour[contour.length - 1];
+            pushPoint(
+                settings.centerX + (point.x * settings.modelScale),
+                heights[layerIndex],
+                settings.centerZ + (point.z * settings.modelScale),
+                layerIndex === 0 ? firstLayerExtrusionPerMm : flatExtrusionPerMm,
+                layerIndex,
+                settings.layerHeight,
+                layerIndex === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
+            );
+        }
+    }
+
+    // Helix at pitch spacing; the revolution count is floored so the last
+    // turn tops out at or below the model height.
+    const helixStartMm = heights[flatLayerCount - 1];
+    const topMm = heights[layers - 1];
+    const revolutions = Math.max(0, Math.floor((topMm - helixStartMm) / pitchMm));
+    let cursor = 0;
+    for (let revolution = 0; revolution < revolutions; revolution++) {
+        for (let k = 0; k < perLayer; k++) {
+            const y = helixStartMm + (pitchMm * (revolution + ((k + 1) / perLayer)));
+            while (cursor < layers - 2 && heights[cursor + 1] < y) {
+                cursor++;
+            }
+            const layerHigh = Math.min(cursor + 1, layers - 1);
+            const span = heights[layerHigh] - heights[cursor];
+            const blend = span > 1e-9 ? clamp((y - heights[cursor]) / span, 0, 1) : 0;
+            const lowContour = contourLayers[cursor].contour;
+            const highContour = contourLayers[layerHigh].contour;
+            const lowPoint = lowContour[k] ?? lowContour[lowContour.length - 1];
+            const highPoint = highContour[k] ?? highContour[highContour.length - 1];
+            pushPoint(
+                settings.centerX + (lerp(lowPoint.x, highPoint.x, blend) * settings.modelScale),
+                y,
+                settings.centerZ + (lerp(lowPoint.z, highPoint.z, blend) * settings.modelScale),
+                pitchedExtrusionPerMm,
+                flatLayerCount + revolution,
+                pitchMm,
+                settings.printSpeedMmPerSec,
+            );
+        }
+    }
+
+    return {
+        points,
+        layerCount: flatLayerCount + revolutions,
+        pointsPerLayer: perLayer,
+        estimatedHeight: revolutions > 0 ? helixStartMm + (pitchMm * revolutions) : helixStartMm,
         contourLayers,
     };
 }

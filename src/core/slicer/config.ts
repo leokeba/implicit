@@ -61,6 +61,16 @@ export interface VaseSlicerSettings {
      * keep the base layer height. Extrusion follows the local thickness.
      */
     maxLayerHeightMm: number;
+    /**
+     * Vertical rise per helix revolution in mm. 0 (or <= layerHeight) keeps
+     * the classic one-revolution-per-layer spiral. Above layerHeight the
+     * helix climbs this much per revolution while contours are still sampled
+     * at layerHeight pitch, so postprocess patterns get coarse row spacing
+     * over a finely resolved surface. Pitched prints skip the top cap and
+     * default to a lineWidth-capped bead; pattern scripts set flow per
+     * segment.
+     */
+    spiralPitchMm: number;
     brimWidthMm: number;
     brimGapMm: number;
     enableContourAlignment: boolean;
@@ -111,6 +121,7 @@ export function getDefaultVaseSettings(): VaseSlicerSettings {
         primeMm: 0.8,
         bottomLayers: 0,
         maxLayerHeightMm: 0,
+        spiralPitchMm: 0,
         brimWidthMm: 5,
         brimGapMm: 0.1,
         enableContourAlignment: true,
@@ -152,6 +163,7 @@ export function resolveVaseSettings(next: Partial<VaseSlicerSettings>): VaseSlic
     merged.primeMm = clamp(merged.primeMm, 0, 5);
     merged.bottomLayers = clampInt(merged.bottomLayers, 0, 3);
     merged.maxLayerHeightMm = clamp(merged.maxLayerHeightMm, 0, 1.5);
+    merged.spiralPitchMm = clamp(merged.spiralPitchMm, 0, 10);
     merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);
     merged.brimGapMm = clamp(merged.brimGapMm, 0, 5);
     merged.enableContourAlignment = Boolean(merged.enableContourAlignment);
@@ -161,6 +173,11 @@ export function resolveVaseSettings(next: Partial<VaseSlicerSettings>): VaseSlic
     }
 
     return merged;
+}
+
+/** Active pitch in mm, or 0 when the spiral follows the layer height. */
+export function getSpiralPitchMm(settings: VaseSlicerSettings): number {
+    return settings.spiralPitchMm > settings.layerHeight ? settings.spiralPitchMm : 0;
 }
 
 export function getModelHeightMm(settings: VaseSlicerSettings): number {

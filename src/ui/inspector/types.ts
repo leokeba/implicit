@@ -33,6 +33,7 @@ export type NumericSlicerKey =
     | 'primeMm'
     | 'bottomLayers'
     | 'maxLayerHeightMm'
+    | 'spiralPitchMm'
     | 'bedWidthMm'
     | 'bedDepthMm'
     | 'maxPrintHeightMm'

@@ -1,5 +1,5 @@
 import { clamp } from './math';
-import type { VaseSlicerSettings } from './config';
+import { getSpiralPitchMm, type VaseSlicerSettings } from './config';
 import type { ToolpathPoint, VaseToolpath } from './types';
 import { calculateExtrusionPerMm } from './toolpath';
 import {
@@ -55,6 +55,9 @@ export function buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings,
     lines.push(`; Layer height (mm): ${settings.layerHeight.toFixed(3)}`);
     if (settings.maxLayerHeightMm > settings.layerHeight) {
         lines.push(`; Max layer height (mm): ${settings.maxLayerHeightMm.toFixed(3)}`);
+    }
+    if (getSpiralPitchMm(settings) > 0) {
+        lines.push(`; Spiral pitch (mm): ${getSpiralPitchMm(settings).toFixed(3)}`);
     }
     lines.push(`; Target segment length (mm): ${settings.targetSegmentMm.toFixed(3)}`);
     lines.push(`; First layer print speed (mm/s): ${settings.firstLayerPrintSpeedMmPerSec.toFixed(1)}`);
