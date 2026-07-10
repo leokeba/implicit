@@ -1,20 +1,20 @@
 // Knit Loops
 //
-// Rebuilds each pitched-spiral revolution into rows of upward loops, like
-// wire-knit / fabric prints: slow anchor stitches welded to the wall, and
-// over-extruded loop segments drawn up through free air between them. The
-// nozzle dwells at each loop apex so the strand cools and stiffens before
-// descending to the next anchor. Requires a spiral pitch above the layer
-// height (Print Geometry -> Spiral pitch); loops stay pinned to the model
-// wall via context.surface, and the next row anchors onto the loop tops.
+// Rebuilds each pitched-spiral revolution into rows of interlocking loops,
+// like wire-knit / fabric prints. Each stitch ascends from an anchor,
+// bulging outward mid-climb, to an apex that sits ON the wall exactly one
+// pitch up at the next anchor's loop parameter - precisely where the next
+// revolution's anchor will print, so every loop top gets welded by the row
+// above. The nozzle dwells at the apex so the strand cools and stiffens
+// before descending straight down to the next anchor. Requires a spiral
+// pitch above the layer height (Print Geometry -> Spiral pitch).
 
 const PI = Math.PI;
 
 export const controls = {
     stitchesPerRow: { default: 72, min: 8, max: 256, step: 1, label: 'Stitches per row', section: 'Knit Loops', description: 'Anchor count per revolution.' },
-    loopDepthMm: { default: 2.5, min: 0.0, max: 8.0, step: 0.1, label: 'Loop depth (mm)', section: 'Knit Loops', description: 'Outward bulge of each loop from the wall.' },
-    loopRiseFactor: { default: 0.75, min: 0.0, max: 1.5, step: 0.05, label: 'Loop rise (x pitch)', section: 'Knit Loops', description: 'How far loops rise above the anchors, as a fraction of the spiral pitch.' },
-    loopSegments: { default: 4, min: 2, max: 8, step: 1, label: 'Loop segments', section: 'Knit Loops', description: 'Path samples per loop; more = rounder.' },
+    loopDepthMm: { default: 2.5, min: 0.0, max: 8.0, step: 0.1, label: 'Loop depth (mm)', section: 'Knit Loops', description: 'Outward bulge at mid-ascent; the apex itself stays on the wall.' },
+    loopSegments: { default: 4, min: 2, max: 8, step: 1, label: 'Loop segments', section: 'Knit Loops', description: 'Ascent samples per loop; more = rounder.' },
     loopFlowMmPerMm: { default: 0.05, min: 0.0, max: 0.5, step: 0.005, label: 'Loop flow (mm/mm)', section: 'Knit Loops', description: 'Filament mm per path mm for airborne loop segments.' },
     loopSpeedMmPerSec: { default: 12.0, min: 1.0, max: 60.0, step: 0.5, label: 'Loop speed (mm/s)', section: 'Knit Loops', description: 'Speed while drawing loops through the air.' },
     anchorSpeedMmPerSec: { default: 8.0, min: 1.0, max: 60.0, step: 0.5, label: 'Anchor speed (mm/s)', section: 'Knit Loops', description: 'Speed for the short welds at each anchor.' },
@@ -37,13 +37,11 @@ export function transform(context: any) {
 
     const stitchesPerRow = Math.max(8, Math.round(Number(context.params?.stitchesPerRow ?? 72)));
     const loopDepthMm = Number(context.params?.loopDepthMm ?? 2.5);
-    const loopRiseMm = Number(context.params?.loopRiseFactor ?? 0.75) * pitchMm;
     const loopSegments = Math.max(2, Math.round(Number(context.params?.loopSegments ?? 4)));
     const loopFlowMmPerMm = Number(context.params?.loopFlowMmPerMm ?? 0.05);
     const loopSpeedMmPerSec = Number(context.params?.loopSpeedMmPerSec ?? 12.0);
     const anchorSpeedMmPerSec = Number(context.params?.anchorSpeedMmPerSec ?? 8.0);
     const apexDwellMs = Number(context.params?.apexDwellMs ?? 250);
-    const apexSegment = Math.round(loopSegments / 2);
 
     // Flat adhesion/bottom layers pass through untouched.
     const flatLayerCount = Math.max(1, Number(settings.bottomLayers ?? 0));
@@ -79,26 +77,33 @@ export function transform(context: any) {
             const anchor = rowPoints[anchorIndex];
             if (previousAnchorIndex >= 0) {
                 const from = rowPoints[previousAnchorIndex];
-                // Loop rises outward and up between the two anchors, riding
-                // the wall at each sample's height. The apex dwells so the
-                // strand cools before the nozzle descends again.
-                for (let segment = 1; segment < loopSegments; segment++) {
+                const anchorU = anchor.metrics.layerPointIndex / perLayer;
+                const apexY = anchor.y + pitchMm;
+                // Ascent: climb from the previous anchor to the apex, riding
+                // the wall at each sample's height with an outward bulge
+                // that returns to zero at the top.
+                for (let segment = 1; segment <= loopSegments; segment++) {
                     const t = segment / loopSegments;
-                    const swell = Math.sin(PI * t);
+                    const bulge = Math.sin(PI * t);
+                    const isApex = segment === loopSegments;
                     const u = (from.metrics.layerPointIndex + ((anchor.metrics.layerPointIndex - from.metrics.layerPointIndex) * t)) / perLayer;
-                    const y = (from.y + ((anchor.y - from.y) * t)) + (loopRiseMm * swell);
-                    const wall = surface.at(u, y);
+                    const y = (from.y + ((anchor.y - from.y) * t)) + (pitchMm * Math.sin(PI * 0.5 * t));
+                    const wall = surface.at(isApex ? anchorU : u, isApex ? apexY : y);
                     nextPoints.push({
-                        x: wall.x + (wall.nx * loopDepthMm * swell),
-                        y,
-                        z: wall.z + (wall.nz * loopDepthMm * swell),
+                        x: wall.x + (wall.nx * loopDepthMm * bulge * (isApex ? 0 : 1)),
+                        y: isApex ? apexY : y,
+                        z: wall.z + (wall.nz * loopDepthMm * bulge * (isApex ? 0 : 1)),
                         layer: anchor.layer,
                         speedMmPerSec: loopSpeedMmPerSec,
                         extrusionPerMmOverride: loopFlowMmPerMm,
                         layerThicknessMm: anchor.layerThicknessMm,
-                        dwellAfterMs: segment === apexSegment ? apexDwellMs : undefined,
+                        // The apex is where the next revolution's anchor will
+                        // print; dwell so the strand cools before descending.
+                        dwellAfterMs: isApex ? apexDwellMs : undefined,
                     });
                 }
+                // Descent: straight down the wall from the apex onto the
+                // anchor, which welds the stitch.
                 stitchCount += 1;
             }
 
@@ -113,7 +118,7 @@ export function transform(context: any) {
     return {
         points: nextPoints,
         notes: [
-            `Knit loops: ${rowCount} rows, ${stitchCount} stitches, depth ${loopDepthMm.toFixed(1)}mm, rise ${loopRiseMm.toFixed(1)}mm, flow ${loopFlowMmPerMm.toFixed(3)}mm/mm.`,
+            `Knit loops: ${rowCount} rows, ${stitchCount} stitches, depth ${loopDepthMm.toFixed(1)}mm, rise ${pitchMm.toFixed(1)}mm (pitch), flow ${loopFlowMmPerMm.toFixed(3)}mm/mm.`,
         ],
     };
 }
