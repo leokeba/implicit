@@ -60,6 +60,14 @@ export interface SurfaceMarchOptions {
      * walks across it, while a dome keeps climbing all the way to its pole.
      */
     minRiseFraction: number;
+    /**
+     * Widest opening, in SDF units, that the march will spiral shut without
+     * asking whether the surface is still rising. A front converging onto a
+     * pole stops rising too - not because the face went flat but because
+     * there is hardly any face left - and closing the last few millimetres
+     * over air is what every vase-mode top does.
+     */
+    maxBridgedOpening: number;
 }
 
 export interface SurfaceMarchResult {
@@ -78,6 +86,7 @@ export function defaultSurfaceMarchOptions(settings: VaseSlicerSettings): Surfac
         overhangWarnDegrees: 5,
         maxBeadAdvance: settings.surfaceMaxBeadAdvance,
         minRiseFraction: 0.05,
+        maxBridgedOpening: (settings.lineWidth * 8) / scale,
     };
 }
 
@@ -120,9 +129,13 @@ export function marchSurfaceContours(
         onContour?.(index, contour);
 
         const perimeter = contourPerimeter(contour);
-        // Converged onto a pole: what is left is smaller than the bead that
-        // would close it.
-        if (perimeter < nominalPitch(options) * 2) {
+        // Converged onto a pole. The test has to be the step size, not some
+        // vanishing epsilon: near a pole the surface is shallow, so the step
+        // is close to a full bead width, and a front whose radius is already
+        // under one step lands past the centre and turns inside out. What is
+        // left when this fires is a hole about a bead across, half of which
+        // the last revolution's own width covers.
+        if (perimeter <= 2 * Math.PI * options.beadWidth) {
             break;
         }
 
@@ -164,10 +177,16 @@ export function marchSurfaceContours(
         }
         // A revolution that barely climbs is walking across a flat face, not
         // up a shallow one. That is the honest end of a single-wall print:
-        // there is nothing under a flat top to print onto. A dome keeps
-        // rising all the way to its pole, so this leaves it alone.
+        // there is nothing under a flat top to print onto.
+        //
+        // Except when there is hardly any opening left. A front converging
+        // onto a pole stops rising for a different reason, and refusing to
+        // close the last few millimetres would leave a dome with a hole in
+        // it for no better reason than a flat face has.
         const rise = averageHeight(next) - averageHeight(contour);
-        if (rise < options.beadHeight * options.minRiseFraction) {
+        const openingDiameter = nextPerimeter / Math.PI;
+        if (rise < options.beadHeight * options.minRiseFraction
+            && openingDiameter > options.maxBridgedOpening) {
             stopReason = 'the surface went flat, so the top is left open';
             break;
         }
