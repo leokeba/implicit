@@ -77,9 +77,17 @@ export interface VaseSliceBaseResult {
     warnings: string[];
 }
 
-/** A point on a slice contour in SDF space (XZ plane). */
+/**
+ * A point on a slice contour, in SDF space.
+ *
+ * `y` is the height the bead is deposited at, not the height the contour was
+ * sampled at. Planar slicing gives every point of a layer the same `y`, so a
+ * layer is flat; a contour marched across the surface carries a different
+ * `y` per point and the "layer" becomes a revolution rather than a plane.
+ */
 export interface SlicePoint {
     x: number;
+    y: number;
     z: number;
 }
 
@@ -92,9 +100,14 @@ export interface SliceBounds {
 }
 
 export interface SliceContourLayer {
+    /** SDF-space Y the field was sampled at. Planar slicing only. */
     sampleY: number;
     contour: SlicePoint[];
-    /** Height of the helix pass that deposits this contour, in mm. */
+    /**
+     * Representative deposit height of this revolution, in mm. Every point
+     * of a planar layer sits exactly here; for a non-planar contour this is
+     * the height the layer is *indexed* by, and each point carries its own.
+     */
     printHeightMm?: number;
 }
 

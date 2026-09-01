@@ -211,3 +211,16 @@ export function getSliceSearchWindow(settings: VaseSlicerSettings): { minX: numb
         maxZ: extent,
     };
 }
+
+/**
+ * SDF-space Y and printer-space deposit height are the same axis in
+ * different units: the slice window [minY, maxY] maps onto the print
+ * starting at the bed, scaled by modelScale.
+ */
+export function sdfYToHeightMm(y: number, settings: VaseSlicerSettings): number {
+    return (y - settings.minY) * settings.modelScale;
+}
+
+export function heightMmToSdfY(heightMm: number, settings: VaseSlicerSettings): number {
+    return settings.minY + (heightMm / settings.modelScale);
+}

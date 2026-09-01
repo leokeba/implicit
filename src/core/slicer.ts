@@ -555,7 +555,7 @@ export class Slicer {
         layerStats: SliceLayerWarningStats,
         tight: boolean,
     ): SliceContourLayer {
-        const contourExtraction = extractContoursFromField(batchResult.field, gridSize, bounds);
+        const contourExtraction = extractContoursFromField(batchResult.field, gridSize, bounds, batchResult.sampleY);
         const contourSelection = selectPrimaryContour(
             contourExtraction.closedContours,
             bounds,

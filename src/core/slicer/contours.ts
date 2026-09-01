@@ -78,7 +78,18 @@ export interface SliceLayerWarningStats {
  * tight typed-array loop. Shared cell edges are keyed by integer edge ids so
  * segment joining is exact.
  */
-export function extractContoursFromField(field: Float32Array, gridSize: number, bounds: SliceBounds): SliceContourExtractionDebug {
+/**
+ * Marching squares over one sampled slice. The cell walk works purely in the
+ * slice plane, so points come out with a placeholder height and `sampleY` is
+ * stamped over the whole result on the way out rather than threaded through
+ * every cell case.
+ */
+export function extractContoursFromField(
+    field: Float32Array,
+    gridSize: number,
+    bounds: SliceBounds,
+    sampleY: number,
+): SliceContourExtractionDebug {
     if (gridSize < 2) {
         return {
             closedContours: [],
@@ -119,6 +130,17 @@ export function extractContoursFromField(field: Float32Array, gridSize: number, 
     }
 
     const joined = joinSegmentsIntoContours(segments);
+    for (const contour of joined.closedContours) {
+        for (const point of contour) {
+            point.y = sampleY;
+        }
+    }
+    for (const polyline of joined.openPolylines) {
+        for (const point of polyline) {
+            point.y = sampleY;
+        }
+    }
+
     return {
         closedContours: joined.closedContours,
         openPolylines: joined.openPolylines,
@@ -248,28 +270,28 @@ function extractCellSegments(
 function createBottomVertex(gridSize: number, row: number, col: number, x0: number, x1: number, z0: number, bl: number, br: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
         edgeKey(0, gridSize, row, col),
-        interpolateIsoPoint({ x: x0, z: z0 }, bl, { x: x1, z: z0 }, br),
+        interpolateIsoPoint({ x: x0, y: 0, z: z0 }, bl, { x: x1, y: 0, z: z0 }, br),
     );
 }
 
 function createRightVertex(gridSize: number, row: number, col: number, x1: number, z0: number, z1: number, br: number, tr: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
         edgeKey(1, gridSize, row, col + 1),
-        interpolateIsoPoint({ x: x1, z: z0 }, br, { x: x1, z: z1 }, tr),
+        interpolateIsoPoint({ x: x1, y: 0, z: z0 }, br, { x: x1, y: 0, z: z1 }, tr),
     );
 }
 
 function createTopVertex(gridSize: number, row: number, col: number, x0: number, x1: number, z1: number, tr: number, tl: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
         edgeKey(0, gridSize, row + 1, col),
-        interpolateIsoPoint({ x: x1, z: z1 }, tr, { x: x0, z: z1 }, tl),
+        interpolateIsoPoint({ x: x1, y: 0, z: z1 }, tr, { x: x0, y: 0, z: z1 }, tl),
     );
 }
 
 function createLeftVertex(gridSize: number, row: number, col: number, x0: number, z0: number, z1: number, tl: number, bl: number): SliceSegmentVertex {
     return createSliceSegmentVertex(
         edgeKey(1, gridSize, row, col),
-        interpolateIsoPoint({ x: x0, z: z1 }, tl, { x: x0, z: z0 }, bl),
+        interpolateIsoPoint({ x: x0, y: 0, z: z1 }, tl, { x: x0, y: 0, z: z0 }, bl),
     );
 }
 
@@ -287,6 +309,7 @@ function interpolateIsoPoint(a: SlicePoint, aValue: number, b: SlicePoint, bValu
     const t = Math.abs(delta) < 1e-8 ? 0.5 : clamp((-aValue) / delta, 0, 1);
     return {
         x: lerp(a.x, b.x, t),
+        y: lerp(a.y, b.y, t),
         z: lerp(a.z, b.z, t),
     };
 }

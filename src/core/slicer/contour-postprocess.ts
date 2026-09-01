@@ -1,5 +1,5 @@
 import { clampInt, lerp } from './math';
-import type { VaseSlicerSettings } from './config';
+import { heightMmToSdfY, type VaseSlicerSettings } from './config';
 import type { SliceContourLayer, SlicePoint } from './types';
 import { contourPerimeter, dedupeClosedContour } from './contours';
 
@@ -39,11 +39,20 @@ export function finalizeContourLayers(
     }
     const pointsPerLayer = clampInt(Math.ceil(maxPerimeterMm / settings.targetSegmentMm), 48, 4096);
 
-    const layers: SliceContourLayer[] = rawLayers.map((layer, index) => ({
-        sampleY: layer.sampleY,
-        contour: buildPrintableContour(layer.contour, pointsPerLayer),
-        printHeightMm: settings.layerHeight * (index + 1),
-    }));
+    // Planar slicing samples the field at the middle of a layer but deposits
+    // the bead at its top, so the contour's own height is rewritten here from
+    // sample height to deposit height. Every point of a layer gets the same
+    // one; that flatness is what makes these layers planar, and it is the
+    // only thing a surface-marched contour would do differently.
+    const layers: SliceContourLayer[] = rawLayers.map((layer, index) => {
+        const printHeightMm = settings.layerHeight * (index + 1);
+        const depositY = heightMmToSdfY(printHeightMm, settings);
+        const contour = buildPrintableContour(layer.contour, pointsPerLayer);
+        for (const point of contour) {
+            point.y = depositY;
+        }
+        return { sampleY: layer.sampleY, contour, printHeightMm };
+    });
 
     if (settings.enableContourAlignment) {
         alignContourLayers(layers);
@@ -100,6 +109,7 @@ export function resampleClosedContour(points: SlicePoint[], count: number): Slic
         const localT = segmentLength <= 1e-8 ? 0 : (targetDistance - cumulative[segmentIndex]) / segmentLength;
         resampled.push({
             x: lerp(segmentStart.x, segmentEnd.x, localT),
+            y: lerp(segmentStart.y, segmentEnd.y, localT),
             z: lerp(segmentStart.z, segmentEnd.z, localT),
         });
     }
@@ -128,9 +138,11 @@ function smoothClosedContourPass(points: SlicePoint[], factor: number): SlicePoi
         const current = points[index];
         const next = points[(index + 1) % points.length];
         const laplacianX = 0.5 * (previous.x + next.x) - current.x;
+        const laplacianY = 0.5 * (previous.y + next.y) - current.y;
         const laplacianZ = 0.5 * (previous.z + next.z) - current.z;
         smoothed.push({
             x: current.x + laplacianX * factor,
+            y: current.y + laplacianY * factor,
             z: current.z + laplacianZ * factor,
         });
     }

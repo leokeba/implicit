@@ -1,5 +1,5 @@
 import { clamp, distance3, lerp, pointLineDistance3, turnAngleDegrees } from './math';
-import { getSpiralPitchMm, type VaseSlicerSettings } from './config';
+import { getSpiralPitchMm, sdfYToHeightMm, type VaseSlicerSettings } from './config';
 import type { SliceContourLayer, SlicePoint, ToolpathPoint, VaseBaseToolpath } from './types';
 
 /**
@@ -107,7 +107,7 @@ function buildInterpolatedSpiralBaseToolpath(
             const point = contour[k] ?? contour[contour.length - 1];
             sampleX = point.x;
             sampleZ = point.z;
-            y = heights[layerIndex];
+            y = sdfYToHeightMm(point.y, settings);
             segmentExtrusionPerMm = layerIndex === 0 ? firstLayerExtrusionPerMm : extrusionPerMm;
         } else {
             // spiralT advances by 1/perLayer per sample; virtualT places the
@@ -124,7 +124,10 @@ function buildInterpolatedSpiralBaseToolpath(
             const highPoint = highContour[k] ?? highContour[highContour.length - 1];
             sampleX = lerp(lowPoint.x, highPoint.x, blend);
             sampleZ = lerp(lowPoint.z, highPoint.z, blend);
-            y = lerp(heights[layerLow], heights[layerHigh], blend);
+            // Height comes from the contour points being blended, not from
+            // the layer ladder: on a planar stack the two agree, and on a
+            // surface-marched contour only the points know where they sit.
+            y = sdfYToHeightMm(lerp(lowPoint.y, highPoint.y, blend), settings);
             layerThicknessMm = Math.max(settings.layerHeight, heights[layerHigh] - heights[layerLow]);
             segmentExtrusionPerMm = layerIndex === flatLayerCount && flatLayerCount === 1
                 ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, blend)
@@ -164,7 +167,6 @@ function buildInterpolatedSpiralBaseToolpath(
     // a group.
     if (layers >= 2 && perLayer >= 3) {
         const topContour = contourLayers[layers - 1].contour;
-        const topY = printedHeightMm;
         const topLayerIndex = layers;
         const topThicknessMm = Math.max(
             settings.layerHeight,
@@ -175,6 +177,7 @@ function buildInterpolatedSpiralBaseToolpath(
             const sample = topContour[k] ?? topContour[topContour.length - 1];
             const x = settings.centerX + (sample.x * settings.modelScale);
             const z = settings.centerZ + (sample.z * settings.modelScale);
+            const topY = sdfYToHeightMm(sample.y, settings);
             const progress = k / divisor;
             const extrusionScale = Math.max(0, Math.pow(1 - progress, 1.2));
             const segment = Math.hypot(x - prevX, topY - prevY, z - prevZ);
@@ -347,6 +350,7 @@ function rayIntersectContourOuter(
     directionZ: number,
 ): { point: SlicePoint; crossings: number } | null {
     let bestDistance = -1;
+    let bestY = 0;
     let crossings = 0;
 
     for (let i = 0; i < contour.length; i++) {
@@ -368,6 +372,9 @@ function rayIntersectContourOuter(
         crossings++;
         if (t > bestDistance) {
             bestDistance = t;
+            // The resampled point inherits the height of the edge it landed
+            // on, so a non-planar contour survives the radial resample.
+            bestY = lerp(a.y, b.y, u);
         }
     }
 
@@ -378,6 +385,7 @@ function rayIntersectContourOuter(
     return {
         point: {
             x: directionX * bestDistance,
+            y: bestY,
             z: directionZ * bestDistance,
         },
         crossings,
