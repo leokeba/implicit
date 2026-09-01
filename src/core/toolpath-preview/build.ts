@@ -20,6 +20,7 @@ import {
     FEATURE_TRAVEL,
     FEATURE_WALL,
 } from './color-ramps';
+import { measureBeadNeighbourhood } from './bead-neighbours';
 import { measureChannelDomain } from './domain';
 import {
     META_STRIDE_FLOATS,
@@ -79,6 +80,8 @@ export function buildToolpathPreviewData(
     // of the ramp, and a duplicate point has no defined flow at all - one of
     // either is enough to waste half the colour range.
     const excluded = new Uint8Array(segmentCount);
+    const beadHalfWidthMm = new Float32Array(segmentCount);
+    const beadHalfHeightMm = new Float32Array(segmentCount);
 
     const filamentArea = Math.PI * Math.pow(settings.filamentDiameter * 0.5, 2);
     const halfTravelWidthScene = TRAVEL_WIDTH_MM * 0.5 * invScale;
@@ -128,6 +131,9 @@ export function buildToolpathPreviewData(
             : beadWidthMm(extrusionPerMm * filamentArea, thicknessMm) * 0.5 * invScale;
         const halfHeightScene = travel ? halfTravelWidthScene : thicknessMm * 0.5 * invScale;
 
+        beadHalfWidthMm[s] = travel ? 0 : beadWidthMm(extrusionPerMm * filamentArea, thicknessMm) * 0.5;
+        beadHalfHeightMm[s] = travel ? 0 : thicknessMm * 0.5;
+
         const base = s * META_STRIDE_FLOATS;
         meta[base + 0] = halfWidthScene;
         meta[base + 1] = halfHeightScene;
@@ -173,6 +179,7 @@ export function buildToolpathPreviewData(
         channels.push(sequentialChannel('dwell', 'Dwell', dwell, excluded, 'ms', 0));
     }
     channels.push(...buildSceneFieldChannels(points, fieldDefinitions, excluded));
+    channels.push(...buildBeadContactChannels(points, settings, beadHalfWidthMm, beadHalfHeightMm, excluded, layerCount));
 
     return {
         positions,
@@ -357,4 +364,96 @@ function emptyPreviewData(
         bounds,
         sceneUnitsPerMm,
     };
+}
+
+/**
+ * The two channels that say whether the wall is actually a wall.
+ *
+ * `Bead gap` is the distance to the nearest bead of another pass minus the
+ * distance at which the two beads would touch. Zero is tangent, negative is
+ * overlap (bonded), positive is a physical void between revolutions - which
+ * on a single-wall print is not a finish defect but a hole. `Wall angle` is
+ * the direction to that neighbour, which reads as the local slope of the
+ * surface and so explains where a gap came from.
+ */
+function buildBeadContactChannels(
+    points: ToolpathPoint[],
+    settings: VaseSlicerSettings,
+    beadHalfWidthMm: Float32Array,
+    beadHalfHeightMm: Float32Array,
+    excluded: Uint8Array,
+    layerCount: number,
+): ToolpathChannel[] {
+    const segmentCount = excluded.length;
+    const pointCount = points.length;
+    if (segmentCount === 0) {
+        return [];
+    }
+
+    const deposited = new Uint8Array(pointCount);
+    for (let i = 0; i < pointCount; i++) {
+        const incoming = i === 0 ? points[Math.min(1, pointCount - 1)] : points[i];
+        deposited[i] = incoming.travel === true ? 0 : 1;
+    }
+
+    // Two points count as different passes once they are half a revolution
+    // apart along the path; anything closer is the same bead being followed.
+    const pointsPerRevolution = pointCount / Math.max(1, layerCount);
+    const minPathSeparation = Math.max(8, Math.round(pointsPerRevolution * 0.5));
+    const searchLimitMm = Math.max(1, settings.lineWidth * 8);
+
+    const neighbourhood = measureBeadNeighbourhood(
+        points,
+        deposited,
+        minPathSeparation,
+        Math.max(0.15, settings.lineWidth),
+        searchLimitMm,
+    );
+
+    const gap = new Float32Array(segmentCount);
+    const angle = new Float32Array(segmentCount);
+    const gapExcluded = new Uint8Array(segmentCount);
+
+    for (let s = 0; s < segmentCount; s++) {
+        const pointIndex = s + 1;
+        angle[s] = neighbourhood.angleDeg[pointIndex];
+        if (excluded[s] === 1 || neighbourhood.found[pointIndex] === 0) {
+            // No neighbour inside the search radius is itself a finding, but
+            // it has no measured distance, so it must not set the domain.
+            gap[s] = searchLimitMm;
+            gapExcluded[s] = 1;
+            continue;
+        }
+
+        const contact = beadContactDistanceMm(
+            beadHalfWidthMm[s],
+            beadHalfHeightMm[s],
+            neighbourhood.angleDeg[pointIndex],
+        );
+        gap[s] = neighbourhood.distanceMm[pointIndex] - contact;
+    }
+
+    return [
+        divergingChannel('beadGap', 'Bead gap', gap, gapExcluded, 'mm', 3, 0, {
+            description: 'Distance to the nearest bead of another pass, less the distance at which they touch. Positive is an unbonded void between revolutions.',
+        }),
+        sequentialChannel('wallAngle', 'Wall angle', angle, gapExcluded, 'deg', 1, {
+            description: 'Direction to the neighbouring pass: 90 is a vertical wall, 0 a flat region. Planar slicing separates revolutions by layerHeight / tan(angle), so gaps open up as this falls.',
+        }),
+    ];
+}
+
+/**
+ * Centre distance at which two beads of this section, offset in the given
+ * direction, come into contact. The section is a flattened ellipse - a line
+ * width across the layer, a layer height between layers - so contact depends
+ * on the direction to the neighbour, not on one nominal width.
+ */
+function beadContactDistanceMm(halfWidthMm: number, halfHeightMm: number, angleDeg: number): number {
+    const a = Math.max(1e-4, halfWidthMm);
+    const b = Math.max(1e-4, halfHeightMm);
+    const radians = (angleDeg * Math.PI) / 180;
+    const horizontal = Math.cos(radians) / a;
+    const vertical = Math.sin(radians) / b;
+    return 2 / Math.sqrt(horizontal * horizontal + vertical * vertical);
 }
