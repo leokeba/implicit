@@ -3,6 +3,7 @@ import { UniformBinder } from '../gl/uniforms';
 import { buildSceneControlValueMap } from '../control-options';
 import {
     composeSceneFieldSamplerFragmentSource,
+    composeScenePointDistanceFragmentSource,
     composeSlicerFragmentSource,
     getSceneFieldDefinitions,
     getSceneFieldSamplerVertexSource,
@@ -58,6 +59,8 @@ export class GpuFieldSampler implements FieldSampler {
     private positionBuffer: WebGLBuffer | null = null;
     private offscreenCanvas: HTMLCanvasElement | OffscreenCanvas;
     private programSignature = '';
+    private readonly pointSamplerPrograms = new Map<string, { program: WebGLProgram; source: string }>();
+    private scenePointSourcesOverride: SlicerProgramSources | null = null;
     private programSourcesOverride: SlicerProgramSources | null = null;
     private uniforms: UniformBinder | null = null;
     private positionLocation = -1;
@@ -83,6 +86,16 @@ export class GpuFieldSampler implements FieldSampler {
      * Inject pre-composed shader sources (worker mode). Outside a worker the
      * sources come from the live scene registry on every ensure call.
      */
+    /**
+     * Injects pre-composed point-sampler sources, for the same reason the
+     * grid program takes them: inside the sampling worker there is no live
+     * scene registry, so composing there would silently evaluate whatever
+     * scene the bundle happens to list first.
+     */
+    public setScenePointSamplerSourcesOverride(vertex: string, fragment: string, signature: string): void {
+        this.scenePointSourcesOverride = { vertex, fragment, signature };
+    }
+
     public setProgramSourcesOverride(vertex: string, fragment: string, signature: string): void {
         this.programSourcesOverride = { vertex, fragment, signature };
     }
@@ -339,9 +352,83 @@ export class GpuFieldSampler implements FieldSampler {
         field: SceneFieldDefinition,
         componentIndex: number,
     ): number[] {
-        const pointCount = points.length;
+        const packed = new Float32Array(points.length * 3);
+        for (let index = 0; index < points.length; index++) {
+            const point = worldPointToScenePoint(points[index], settings);
+            packed[index * 3] = point.x;
+            packed[index * 3 + 1] = point.y;
+            packed[index * 3 + 2] = point.z;
+        }
+
+        const decoded = this.renderScenePointBatch(
+            packed,
+            points.length,
+            settings,
+            {
+                vertex: getSceneFieldSamplerVertexSource(),
+                fragment: composeSceneFieldSamplerFragmentSource(field, componentIndex),
+                signature: `field:${field.key}:${componentIndex}`,
+            },
+            field.minValue,
+            field.maxValue,
+        );
+        return Array.from(decoded);
+    }
+
+    /**
+     * Evaluates the scene's signed distance at arbitrary SDF-space points.
+     *
+     * `distanceRange` sets the encoding window: values are packed to 16 bits
+     * across [-range, +range], so a range near the step size being taken
+     * gives sub-micron resolution where it matters and saturates far away,
+     * which is what surface marching wants.
+     */
+    public sampleSceneDistances(
+        scenePoints: Float32Array,
+        pointCount: number,
+        settings: VaseSlicerSettings,
+        distanceRange: number,
+    ): Float32Array {
+        const result = new Float32Array(pointCount);
         if (pointCount === 0) {
-            return [];
+            return result;
+        }
+
+        const range = Math.max(1e-9, distanceRange);
+        const sources = this.scenePointSourcesOverride ?? {
+            vertex: getSceneFieldSamplerVertexSource(),
+            fragment: composeScenePointDistanceFragmentSource(),
+            signature: 'scene:distance',
+        };
+        const maxBatchSize = Math.max(1, this.getMaxTextureSize());
+
+        for (let start = 0; start < pointCount; start += maxBatchSize) {
+            const count = Math.min(maxBatchSize, pointCount - start);
+            const slice = scenePoints.subarray(start * 3, (start + count) * 3);
+            const decoded = this.renderScenePointBatch(
+                slice,
+                count,
+                settings,
+                sources,
+                -range,
+                range,
+            );
+            result.set(decoded, start);
+        }
+
+        return result;
+    }
+
+    private renderScenePointBatch(
+        scenePoints: Float32Array,
+        pointCount: number,
+        settings: VaseSlicerSettings,
+        sources: SlicerProgramSources,
+        minValue: number,
+        maxValue: number,
+    ): Float32Array {
+        if (pointCount === 0) {
+            return new Float32Array(0);
         }
 
         const width = Math.min(pointCount, Math.max(1, this.getMaxTextureSize()));
@@ -354,26 +441,22 @@ export class GpuFieldSampler implements FieldSampler {
         }
 
         const gl = this.gl;
-        const program = createProgram(
-            gl,
-            getSceneFieldSamplerVertexSource(),
-            composeSceneFieldSamplerFragmentSource(field, componentIndex),
-        );
+        // Surface marching issues hundreds of small sequential batches, so
+        // the program is cached rather than compiled and thrown away per call.
+        const program = this.getOrCreatePointSamplerProgram(sources);
 
         const pointBuffer = gl.createBuffer();
         if (!pointBuffer) {
-            gl.deleteProgram(program);
             throw new Error('Failed to allocate scene field point buffer.');
         }
 
         try {
             const packedPoints = new Float32Array(pointCount * 4);
             for (let index = 0; index < pointCount; index++) {
-                const point = worldPointToScenePoint(points[index], settings);
                 const offset = index * 4;
-                packedPoints[offset] = point.x;
-                packedPoints[offset + 1] = point.y;
-                packedPoints[offset + 2] = point.z;
+                packedPoints[offset] = scenePoints[index * 3];
+                packedPoints[offset + 1] = scenePoints[index * 3 + 1];
+                packedPoints[offset + 2] = scenePoints[index * 3 + 2];
                 packedPoints[offset + 3] = index;
             }
 
@@ -394,7 +477,7 @@ export class GpuFieldSampler implements FieldSampler {
             const pointPositionLocation = gl.getAttribLocation(program, 'aPointPosition');
             const pointIndexLocation = gl.getAttribLocation(program, 'aPointIndex');
             if (pointPositionLocation < 0 || pointIndexLocation < 0) {
-                throw new Error(`Scene field sampler for '${field.label}' is missing required vertex attributes.`);
+                throw new Error(`Scene point sampler '${sources.signature}' is missing required vertex attributes.`);
             }
 
             gl.enableVertexAttribArray(pointPositionLocation);
@@ -414,8 +497,8 @@ export class GpuFieldSampler implements FieldSampler {
             setProgramUniform1f(gl, program, 'uLayerHeight', settings.layerHeight);
             setProgramUniform1f(gl, program, 'uLineWidth', settings.lineWidth);
             setProgramUniform1f(gl, program, 'uFirstLayerLineWidth', settings.firstLayerLineWidth);
-            setProgramUniform1f(gl, program, 'uFieldMinValue', field.minValue);
-            setProgramUniform1f(gl, program, 'uFieldMaxValue', field.maxValue);
+            setProgramUniform1f(gl, program, 'uFieldMinValue', minValue);
+            setProgramUniform1f(gl, program, 'uFieldMaxValue', maxValue);
             applySceneControlUniforms(gl, program, this.sceneControlDefinitions, this.sceneControlValues);
 
             gl.clearColor(0, 0, 0, 0);
@@ -431,11 +514,25 @@ export class GpuFieldSampler implements FieldSampler {
             gl.bindBuffer(gl.ARRAY_BUFFER, null);
             gl.useProgram(null);
 
-            return decodeSceneFieldComponentBatch(pixels, pointCount, field.minValue, field.maxValue);
+            return decodeSceneFieldComponentBatch(pixels, pointCount, minValue, maxValue);
         } finally {
             gl.deleteBuffer(pointBuffer);
-            gl.deleteProgram(program);
         }
+    }
+
+    private getOrCreatePointSamplerProgram(sources: SlicerProgramSources): WebGLProgram {
+        const gl = this.getOrCreateGl();
+        const cached = this.pointSamplerPrograms.get(sources.signature);
+        if (cached && cached.source === sources.fragment) {
+            return cached.program;
+        }
+
+        if (cached) {
+            gl.deleteProgram(cached.program);
+        }
+        const program = createProgram(gl, sources.vertex, sources.fragment);
+        this.pointSamplerPrograms.set(sources.signature, { program, source: sources.fragment });
+        return program;
     }
 
     // ------------------------------------------------------------------
@@ -617,8 +714,8 @@ function decodeSceneFieldComponentBatch(
     pointCount: number,
     minValue: number,
     maxValue: number,
-): number[] {
-    const decoded = new Array<number>(pointCount).fill(minValue);
+): Float32Array {
+    const decoded = new Float32Array(pointCount).fill(minValue);
     const span = Math.max(1e-6, maxValue - minValue);
 
     for (let index = 0; index < pointCount; index++) {

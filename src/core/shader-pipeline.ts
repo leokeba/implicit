@@ -282,6 +282,24 @@ export function composeSceneFieldSamplerFragmentSource(field: SceneFieldDefiniti
     });
 }
 
+/**
+ * The same point sampler, pointed at the scene's own distance function.
+ *
+ * Surface marching needs `mapScene` at arbitrary positions rather than on a
+ * plane grid, and that is exactly what the scene-field sampler already does
+ * for a named field - so it is reused verbatim with `mapScene` substituted
+ * for the field body, rather than growing a second point-sampling path.
+ */
+export function composeScenePointDistanceFragmentSource(): string {
+    return substituteTokens(sceneFieldSampleFragmentTemplateSource, {
+        __ENGINE_UNIFORMS_GLSL__: buildEngineUniformBlock(SCENE_FIELD_SAMPLER_ENGINE_UNIFORMS),
+        __SDF_PRIMITIVES_GLSL__: activeSources.sdfPrimitives,
+        __UTILS_GLSL__: activeSources.utils,
+        __SCENE_GLSL__: composeSceneGlsl(requireActiveEntry()),
+        __FIELD_COMPONENT_GLSL__: 'float sampleSceneFieldComponent(vec3 p) { return mapScene(p); }',
+    });
+}
+
 export function getSlicerProgramSignature(): string {
     return `${activeSources.slicerVertex}::${composeSlicerFragmentSource()}`;
 }

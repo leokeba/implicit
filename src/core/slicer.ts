@@ -1,5 +1,7 @@
 import {
+    composeScenePointDistanceFragmentSource,
     composeSlicerFragmentSource,
+    getSceneFieldSamplerVertexSource,
     getSlicerProgramSignature,
     getSlicerVertexSource,
     type SceneControlDefinition,
@@ -146,6 +148,11 @@ export class Slicer {
      */
     public setSlicerProgramSourcesOverride(vertex: string, fragment: string, signature: string): void {
         this.sampler.setProgramSourcesOverride(vertex, fragment, signature);
+    }
+
+    /** Same injection for the arbitrary-point sampler; see the sampler's note. */
+    public setScenePointSamplerSourcesOverride(vertex: string, fragment: string, signature: string): void {
+        this.sampler.setScenePointSamplerSourcesOverride(vertex, fragment, signature);
     }
 
     /** Times repeated slices through the production (async, worker-preferred) pipeline. */
@@ -323,6 +330,9 @@ export class Slicer {
                 vertexSource: getSlicerVertexSource(),
                 fragmentSource: composeSlicerFragmentSource(),
                 signature: getSlicerProgramSignature(),
+                pointVertexSource: getSceneFieldSamplerVertexSource(),
+                pointFragmentSource: composeScenePointDistanceFragmentSource(),
+                pointSignature: 'scene:distance',
                 controlDefinitions: this.sceneControlDefinitions,
                 controlValues: this.sceneControlValues,
             });

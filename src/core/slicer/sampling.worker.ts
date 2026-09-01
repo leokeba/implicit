@@ -16,6 +16,9 @@ interface SampleRequest {
     vertexSource: string;
     fragmentSource: string;
     signature: string;
+    pointVertexSource: string;
+    pointFragmentSource: string;
+    pointSignature: string;
     controlDefinitions: SceneControlDefinition[];
     controlValues: SceneControlValueMap;
 }
@@ -31,6 +34,7 @@ workerScope.onmessage = async (event: MessageEvent<SampleRequest>) => {
 
     try {
         slicer.setSlicerProgramSourcesOverride(message.vertexSource, message.fragmentSource, message.signature);
+        slicer.setScenePointSamplerSourcesOverride(message.pointVertexSource, message.pointFragmentSource, message.pointSignature);
         slicer.setSceneControlState(message.controlDefinitions, message.controlValues);
         const result = await slicer.sampleContoursForWorker(message.settings, (update: SliceProgressUpdate) => {
             workerScope.postMessage({ type: 'progress', jobId: message.jobId, update });
