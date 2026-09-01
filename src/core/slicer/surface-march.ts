@@ -24,7 +24,7 @@
 
 import { clamp } from './math';
 import { heightMmToSdfY, type VaseSlicerSettings } from './config';
-import { contourPerimeter, dedupeClosedContour } from './contours';
+import { contourPerimeter, dedupeClosedContour, signedContourArea } from './contours';
 import { resampleClosedContour, smoothClosedContourTaubin } from './contour-postprocess';
 import type { GpuFieldSampler } from './field-sampler-gpu';
 import type { SliceContourLayer, SlicePoint } from './types';
@@ -47,6 +47,13 @@ export interface SurfaceMarchOptions {
     projectionIterations: number;
     /** Slope, in degrees below horizontal, that counts as an unsupported overhang. */
     overhangWarnDegrees: number;
+    /**
+     * Fraction of a new revolution's bead that must sit over the one below.
+     * Below this the bead is hanging beside its neighbour rather than resting
+     * on it, and the march stops - leaving the top open, which is the honest
+     * outcome for a flat or near-flat top on three axes.
+     */
+    minBeadOverlap: number;
 }
 
 export interface SurfaceMarchResult {
@@ -63,6 +70,7 @@ export function defaultSurfaceMarchOptions(settings: VaseSlicerSettings): Surfac
         maxContours: 20000,
         projectionIterations: 3,
         overhangWarnDegrees: 5,
+        minBeadOverlap: settings.surfaceMinBeadOverlap,
     };
 }
 
@@ -93,9 +101,12 @@ export function marchSurfaceContours(
     // and a per-step upward test would be ill-conditioned.
     contour = orientContourForAscent(sampler, settings, contour, options);
 
-    const topY = settings.maxY;
     let overhangContours = 0;
-    let stalledAt = -1;
+    let stopReason: string | null = null;
+    // Winding, watched so a front that runs past a pole and turns itself
+    // inside out is caught. Perimeter alone cannot say: a vase with a neck
+    // narrows and widens again, and marching should follow it.
+    let seedArea = signedContourArea(contour);
 
     for (let index = 0; index < options.maxContours; index++) {
         pushLayer(layers, contour, settings);
@@ -122,23 +133,42 @@ export function marchSurfaceContours(
         next = smoothClosedContourTaubin(next, 1);
         next = projectOntoSurface(sampler, settings, next, options, 1);
 
-        const rise = averageHeight(next) - averageHeight(contour);
-        if (rise < nominalPitch(options) * 1e-3 && averageHeight(next) < topY - nominalPitch(options)) {
-            // The front stopped climbing well below the top: it is circling
-            // in place rather than advancing, and more revolutions would
-            // only pile material in one band.
-            stalledAt = index;
+        const nextPerimeter = contourPerimeter(next);
+
+        // Most of the revolution would hang beside its neighbour rather than
+        // rest on it. This is only a reason to stop on a closing front: a
+        // closing front lays each bead over the hollow interior, so nothing
+        // will ever come along to hold it up, and a flat top cannot be
+        // printed as a single wall on three axes. On an opening front - the
+        // shallow base of a sphere - the model still has surface to follow,
+        // and whether that base is printable is a question about the model
+        // rather than about the march.
+        if (nextPerimeter <= perimeter && stepped.unsupportedPoints * 2 > contour.length) {
+            stopReason = `the surface flattened past the ${(options.minBeadOverlap * 100).toFixed(0)}% bead overlap a revolution needs to rest on the one below, leaving the top open`;
             break;
         }
 
+        // Past a pole the front has nowhere left to go and turns itself
+        // inside out: the winding flips, or the loop starts growing again
+        // after it had been closing.
+        if (signedContourArea(next) * seedArea <= 0) {
+            stopReason = 'the front turned itself inside out, which means it had already closed';
+            break;
+        }
+        const rise = averageHeight(next) - averageHeight(contour);
+        if (rise < nominalPitch(options) * 1e-3) {
+            stopReason = 'the front stopped climbing';
+            break;
+        }
+
+        seedArea = signedContourArea(next);
         contour = next;
     }
 
     if (layers.length >= options.maxContours) {
         warnings.push(`Surface marching hit its ${options.maxContours}-revolution cap before converging.`);
-    }
-    if (stalledAt >= 0) {
-        warnings.push(`Surface marching stopped advancing at revolution ${stalledAt + 1}; the front stopped climbing before reaching the top of the model.`);
+    } else if (stopReason) {
+        warnings.push(`Surface marching stopped after ${layers.length} revolutions: ${stopReason}.`);
     }
     if (overhangContours > 0) {
         warnings.push(`${overhangContours} revolution${overhangContours === 1 ? '' : 's'} march onto a downward-facing surface, which has nothing beneath it to print onto.`);
@@ -171,6 +201,8 @@ interface SteppedContour {
     contour: SlicePoint[];
     /** Points whose step ran onto a downward-facing surface. */
     overhangPoints: number;
+    /** Points whose new bead would not rest on the previous revolution. */
+    unsupportedPoints: number;
 }
 
 function stepContour(
@@ -182,7 +214,12 @@ function stepContour(
     const normals = sampleSurfaceNormals(sampler, settings, contour, options);
     const stepped: SlicePoint[] = new Array(contour.length);
     const overhangLimit = -Math.sin((options.overhangWarnDegrees * Math.PI) / 180);
+    // A revolution advances horizontally by pitch * cos(slope); once that
+    // exceeds the permitted share of a bead width the new bead has nothing
+    // under it.
+    const maxHorizontalAdvance = options.beadWidth * options.minBeadOverlap;
     let overhangPoints = 0;
+    let unsupportedPoints = 0;
 
     for (let i = 0; i < contour.length; i++) {
         const point = contour[i];
@@ -220,6 +257,9 @@ function stepContour(
         }
 
         const pitch = surfacePitchFor(options, uy);
+        if (pitch * Math.sqrt(Math.max(0, 1 - uy * uy)) > maxHorizontalAdvance) {
+            unsupportedPoints++;
+        }
         stepped[i] = {
             x: point.x + ux * pitch,
             y: point.y + uy * pitch,
@@ -230,6 +270,7 @@ function stepContour(
     return {
         contour: projectOntoSurface(sampler, settings, stepped, options, options.projectionIterations),
         overhangPoints,
+        unsupportedPoints,
     };
 }
 

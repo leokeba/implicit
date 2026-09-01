@@ -172,7 +172,11 @@ function buildInterpolatedSpiralBaseToolpath(
     // applyMinimumLayerTime treats it as a single revolution and gives it
     // the same speed as the helix layer below — not 2× faster from sharing
     // a group.
-    if (layers >= 2 && perLayer >= 3) {
+    // Surface mode ends where it ends: either the front converged onto the
+    // pole, or it stopped because the surface flattened past what a bead can
+    // rest on. Either way the last contour is already the right last move -
+    // a cap would retrace it, or roof over a top left open on purpose.
+    if (settings.slicerMode !== 'surface' && layers >= 2 && perLayer >= 3) {
         const topContour = contourLayers[layers - 1].contour;
         const topLayerIndex = layers;
         const topThicknessMm = Math.max(

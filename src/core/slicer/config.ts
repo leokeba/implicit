@@ -78,6 +78,15 @@ export interface VaseSlicerSettings {
      * segment.
      */
     spiralPitchMm: number;
+    /**
+     * Surface mode: how much of a new revolution's bead must sit over the
+     * one below it. A revolution advances horizontally by pitch * cos(slope),
+     * so this sets the shallowest printable slope - at the default 0.5 the
+     * march stops around 40 degrees, which is where a bead stops resting on
+     * its neighbour and starts hanging beside it. Marching past that does not
+     * print a flat top, it piles material into space.
+     */
+    surfaceMinBeadOverlap: number;
     brimWidthMm: number;
     brimGapMm: number;
     enableContourAlignment: boolean;
@@ -129,6 +138,7 @@ export function getDefaultVaseSettings(): VaseSlicerSettings {
         bottomLayers: 0,
         maxLayerHeightMm: 0,
         spiralPitchMm: 0,
+        surfaceMinBeadOverlap: 0.5,
         brimWidthMm: 5,
         brimGapMm: 0.1,
         enableContourAlignment: true,
@@ -150,6 +160,7 @@ export function resolveVaseSettings(next: Partial<VaseSlicerSettings>): VaseSlic
     merged.layerHeight = clamp(merged.layerHeight, 0.05, 1.0);
     merged.targetSegmentMm = clamp(merged.targetSegmentMm, 0.05, 2.0);
     merged.pointsPerLayer = clampInt(merged.pointsPerLayer, 48, 4096);
+    merged.surfaceMinBeadOverlap = clamp(merged.surfaceMinBeadOverlap, 0.05, 0.95);
     merged.maxRadius = clamp(merged.maxRadius, 0.1, 3.0);
     merged.hitEpsilon = clamp(merged.hitEpsilon, 0.0001, 0.02);
     merged.sliceIsoSnapFactor = clamp(merged.sliceIsoSnapFactor, 0.0, 4.0);

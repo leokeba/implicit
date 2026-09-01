@@ -152,6 +152,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                 caption: 'Shape and sampling parameters that affect the generated contour.',
                 fields: [
                     { kind: 'select', target: 'slicerMode', id: 'slicer-mode', label: 'Slicer mode', options: SLICER_MODE_OPTIONS },
+                    { kind: 'number', target: 'slicer', key: 'surfaceMinBeadOverlap', id: 'slicer-surface-overlap', label: 'Surface bead overlap', step: '0.05', min: '0.05', max: '0.95' },
                     { kind: 'number', target: 'slicer', key: 'minY', id: 'slicer-min-y', label: 'Min Y (SDF)', step: '0.01', min: '-5.0', max: '5.0' },
                     { kind: 'number', target: 'slicer', key: 'maxY', id: 'slicer-max-y', label: 'Max Y (SDF)', step: '0.01', min: '-5.0', max: '5.0' },
                     { kind: 'number', target: 'slicer', key: 'modelScale', id: 'slicer-model-scale', label: 'Scale (mm/unit)', step: '1', min: '1', max: '400' },
