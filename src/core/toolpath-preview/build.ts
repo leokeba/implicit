@@ -179,7 +179,7 @@ export function buildToolpathPreviewData(
         channels.push(sequentialChannel('dwell', 'Dwell', dwell, excluded, 'ms', 0));
     }
     channels.push(...buildSceneFieldChannels(points, fieldDefinitions, excluded));
-    channels.push(...buildBeadContactChannels(points, settings, beadHalfWidthMm, beadHalfHeightMm, excluded, layerCount));
+    channels.push(...buildBeadContactChannels(points, settings, beadHalfWidthMm, beadHalfHeightMm, excluded));
 
     return {
         positions,
@@ -382,7 +382,6 @@ function buildBeadContactChannels(
     beadHalfWidthMm: Float32Array,
     beadHalfHeightMm: Float32Array,
     excluded: Uint8Array,
-    layerCount: number,
 ): ToolpathChannel[] {
     const segmentCount = excluded.length;
     const pointCount = points.length;
@@ -390,22 +389,36 @@ function buildBeadContactChannels(
         return [];
     }
 
-    const deposited = new Uint8Array(pointCount);
-    for (let i = 0; i < pointCount; i++) {
-        const incoming = i === 0 ? points[Math.min(1, pointCount - 1)] : points[i];
-        deposited[i] = incoming.travel === true ? 0 : 1;
+    // Segment s runs from point s to s + 1 and is described by its end point,
+    // so a travel there means no material was laid on it.
+    const segmentDeposited = new Uint8Array(segmentCount);
+    for (let s = 0; s < segmentCount; s++) {
+        segmentDeposited[s] = points[s + 1].travel === true ? 0 : 1;
     }
 
-    // Two points count as different passes once they are half a revolution
-    // apart along the path; anything closer is the same bead being followed.
-    const pointsPerRevolution = pointCount / Math.max(1, layerCount);
-    const minPathSeparation = Math.max(8, Math.round(pointsPerRevolution * 0.5));
-    const searchLimitMm = Math.max(1, settings.lineWidth * 8);
+    // A pass is one continuous run of extrusion: a revolution of the spiral,
+    // or one brim or fill loop. Both boundaries are visible in the point
+    // stream - the layer index changes, or a travel starts a new run - and
+    // neither moves when move merging thins the points out.
+    const passId = new Int32Array(pointCount);
+    const arcMm = new Float32Array(pointCount);
+    for (let i = 1; i < pointCount; i++) {
+        const startsNewRun = points[i].travel === true || points[i].layer !== points[i - 1].layer;
+        passId[i] = passId[i - 1] + (startsNewRun ? 1 : 0);
+        arcMm[i] = arcMm[i - 1] + Math.hypot(
+            points[i].x - points[i - 1].x,
+            points[i].y - points[i - 1].y,
+            points[i].z - points[i - 1].z,
+        );
+    }
 
+    const searchLimitMm = Math.max(1, settings.lineWidth * 8);
     const neighbourhood = measureBeadNeighbourhood(
         points,
-        deposited,
-        minPathSeparation,
+        segmentDeposited,
+        passId,
+        arcMm,
+        settings.lineWidth * 2,
         Math.max(0.15, settings.lineWidth),
         searchLimitMm,
     );
@@ -438,7 +451,7 @@ function buildBeadContactChannels(
             description: 'Distance to the nearest bead of another pass, less the distance at which they touch. Positive is an unbonded void between revolutions.',
         }),
         sequentialChannel('wallAngle', 'Wall angle', angle, gapExcluded, 'deg', 1, {
-            description: 'Direction to the neighbouring pass: 90 is a vertical wall, 0 a flat region. Planar slicing separates revolutions by layerHeight / tan(angle), so gaps open up as this falls.',
+            description: 'Direction to the neighbouring pass: 90 is a vertical wall, 0 a flat region. Planar slicing separates revolutions by layerHeight / tan(angle), so gaps open up as this falls. On brim and fill loops it reads as whatever lies nearest, not a wall.',
         }),
     ];
 }
