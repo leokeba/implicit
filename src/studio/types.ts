@@ -3,6 +3,7 @@ import type { PrinterModel } from '../core/printer-models';
 import type { AnimationParams, RaymarchParams, ViewportParams } from '../core/renderer';
 import type { SceneControlDefinition, SceneOption } from '../core/shader-pipeline';
 import type { VaseSlicerSettings } from '../core/slicer';
+import type { ToolpathChannelSummary } from '../core/toolpath-preview/types';
 import type { ScalarControlSpec } from '../scene-runtime';
 
 /**
@@ -105,4 +106,23 @@ export interface SceneRegistrySyncResult {
 export interface PresetChangeResult {
     config: SceneConfigView;
     workspaceStatus: string;
+}
+
+/** Viewport-facing description of the toolpath currently in the preview. */
+export interface ToolpathPreviewView {
+    channels: ToolpathChannelSummary[];
+    activeChannelKey: string | null;
+    /**
+     * The ramp domain actually being drawn. Follows the visible layer range
+     * while auto-scaling is on, so it can differ from the active channel's
+     * whole-toolpath min/max.
+     */
+    domainMin: number;
+    domainMax: number;
+    autoScaleDomain: boolean;
+    layerCount: number;
+    segmentCount: number;
+    travelSegmentCount: number;
+    /** Set when the preview's GPU layer could not start; null when healthy. */
+    error: string | null;
 }

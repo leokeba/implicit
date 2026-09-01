@@ -1,32 +1,33 @@
 import type { CameraState } from './renderer';
+import type { ChannelDomain } from './toolpath-preview/domain';
+import { ToolpathRenderer, type ToolpathRendererStyle } from './toolpath-preview/renderer';
+import type { ToolpathChannel, ToolpathPreviewData } from './toolpath-preview/types';
 
-interface WorldPoint {
-    x: number;
-    y: number;
-    z: number;
-}
-
+/**
+ * Owns the two stacked canvases of the viewport: the raymarched surface
+ * underneath and the sliced toolpath on top. The toolpath layer is its own
+ * WebGL context with its own depth buffer, so the path self-occludes; it does
+ * not yet share depth with the surface below it.
+ */
 export class Preview {
-    private canvas: HTMLCanvasElement | null;
-    private overlayCanvas: HTMLCanvasElement | null;
-    private overlayContext: CanvasRenderingContext2D | null;
-    private previewHost: HTMLElement | null;
-    private overlayWorldPoints: WorldPoint[];
-    private renderingActive: boolean;
-    private overlayVisible: boolean;
+    private canvas: HTMLCanvasElement | null = null;
+    private overlayCanvas: HTMLCanvasElement | null = null;
+    private overlayGl: WebGLRenderingContext | null = null;
+    private previewHost: HTMLElement | null = null;
+    private toolpathRenderer: ToolpathRenderer | null = null;
+    private toolpathData: ToolpathPreviewData | null = null;
+    private overlayError: string | null = null;
+    private renderingActive = true;
+    private overlayVisible = true;
     private readonly handleWindowResize = (): void => {
         this.syncOverlaySize();
     };
-
-    constructor() {
-        this.canvas = null;
-        this.overlayCanvas = null;
-        this.overlayContext = null;
-        this.previewHost = null;
-        this.overlayWorldPoints = [];
-        this.renderingActive = true;
-        this.overlayVisible = true;
-    }
+    private readonly handleContextLost = (event: Event): void => {
+        event.preventDefault();
+        this.overlayError = 'The toolpath preview lost its GPU context. Reload the page to restore it.';
+        this.toolpathRenderer = null;
+        this.overlayGl = null;
+    };
 
     public init(): void {
         const previewHost = document.getElementById('preview');
@@ -57,16 +58,20 @@ export class Preview {
         }
 
         this.overlayCanvas = overlayCanvas;
-        this.overlayContext = overlayCanvas.getContext('2d');
+        overlayCanvas.addEventListener('webglcontextlost', this.handleContextLost);
+        this.createToolpathRenderer(overlayCanvas);
 
         this.syncOverlaySize();
         this.syncOverlayVisibility();
         window.addEventListener('resize', this.handleWindowResize);
     }
 
-    /** Removes the window listener registered by init(). */
     public dispose(): void {
         window.removeEventListener('resize', this.handleWindowResize);
+        this.overlayCanvas?.removeEventListener('webglcontextlost', this.handleContextLost);
+        this.toolpathRenderer?.dispose();
+        this.toolpathRenderer = null;
+        this.overlayGl = null;
     }
 
     public getCanvas(): HTMLCanvasElement {
@@ -77,15 +82,55 @@ export class Preview {
         return this.canvas;
     }
 
-    public setToolpathOverlayWorldPoints(points: WorldPoint[]): void {
-        this.overlayWorldPoints = points;
-        if (points.length === 0 && this.overlayContext && this.overlayCanvas) {
-            this.overlayContext.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
-        }
+    public setToolpathData(data: ToolpathPreviewData | null): void {
+        this.toolpathData = data && data.segmentCount > 0 ? data : null;
+        this.toolpathRenderer?.setData(this.toolpathData);
     }
 
-    public hasOverlayPoints(): boolean {
-        return this.overlayWorldPoints.length > 1;
+    public getToolpathData(): ToolpathPreviewData | null {
+        return this.toolpathData;
+    }
+
+    public getToolpathChannels(): ToolpathChannel[] {
+        return this.toolpathData?.channels ?? [];
+    }
+
+    public getActiveToolpathChannel(): ToolpathChannel | null {
+        return this.toolpathRenderer?.getChannel() ?? null;
+    }
+
+    /** Returns false when the key names no channel in the current slice. */
+    public setToolpathChannel(key: string): boolean {
+        return this.toolpathRenderer?.setChannel(key) ?? false;
+    }
+
+    public setToolpathLayerRange(minLayer: number, maxLayer: number): void {
+        this.toolpathRenderer?.setLayerRange(minLayer, maxLayer);
+    }
+
+    public setToolpathAutoScale(autoScale: boolean): void {
+        this.toolpathRenderer?.setAutoScaleDomain(autoScale);
+    }
+
+    /** The ramp domain currently in use, which the legend has to label. */
+    public getToolpathDomain(): ChannelDomain | null {
+        return this.toolpathRenderer?.getDomain() ?? null;
+    }
+
+    public setToolpathTravelsVisible(visible: boolean): void {
+        this.toolpathRenderer?.setShowTravels(visible);
+    }
+
+    public setToolpathStyle(style: Partial<ToolpathRendererStyle>): void {
+        this.toolpathRenderer?.setStyle(style);
+    }
+
+    public hasToolpath(): boolean {
+        return this.toolpathData !== null;
+    }
+
+    public getOverlayError(): string | null {
+        return this.overlayError;
     }
 
     public setOverlayVisible(visible: boolean): void {
@@ -103,118 +148,69 @@ export class Preview {
         this.syncOverlayVisibility();
     }
 
+    public renderOverlayInScene(cameraState: CameraState | null): void {
+        if (!this.toolpathRenderer || !this.overlayCanvas || !cameraState) {
+            return;
+        }
+        if (!this.overlayVisible) {
+            return;
+        }
+
+        this.syncOverlaySize();
+        this.toolpathRenderer.render({
+            ...cameraState,
+            viewportWidth: this.overlayCanvas.width,
+            viewportHeight: this.overlayCanvas.height,
+        });
+    }
+
+    private createToolpathRenderer(canvas: HTMLCanvasElement): void {
+        const attributes: WebGLContextAttributes = {
+            alpha: true,
+            depth: true,
+            antialias: true,
+            premultipliedAlpha: true,
+            preserveDrawingBuffer: false,
+        };
+
+        // WebGL2 first for native instancing; WebGL1 covers the rest through
+        // ANGLE_instanced_arrays. The GLSL is ES 1.00 either way.
+        const gl = (canvas.getContext('webgl2', attributes)
+            ?? canvas.getContext('webgl', attributes)) as WebGLRenderingContext | null;
+
+        if (!gl) {
+            this.overlayError = 'WebGL is unavailable, so the toolpath cannot be previewed.';
+            return;
+        }
+
+        try {
+            this.toolpathRenderer = new ToolpathRenderer(gl);
+            this.overlayGl = gl;
+            this.overlayError = null;
+        } catch (error) {
+            this.overlayError = error instanceof Error ? error.message : String(error);
+        }
+    }
+
+    /**
+     * Matches the raymarch canvas's device-pixel sizing. Drawing the toolpath
+     * at CSS resolution over a 2x surface is what made the old overlay look
+     * thin and crawly on high-density displays.
+     */
     private syncOverlaySize(): void {
         if (!this.previewHost || !this.overlayCanvas || !this.renderingActive) {
             return;
         }
 
-        const width = Math.max(1, this.previewHost.clientWidth);
-        const height = Math.max(1, this.previewHost.clientHeight);
-        this.overlayCanvas.width = width;
-        this.overlayCanvas.height = height;
-    }
-
-    public renderOverlayInScene(cameraState: CameraState | null): void {
-        if (!this.overlayCanvas || !this.overlayContext) {
-            return;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const width = Math.max(1, Math.floor(this.previewHost.clientWidth * dpr));
+        const height = Math.max(1, Math.floor(this.previewHost.clientHeight * dpr));
+        if (this.overlayCanvas.width !== width || this.overlayCanvas.height !== height) {
+            this.overlayCanvas.width = width;
+            this.overlayCanvas.height = height;
         }
 
-        this.syncOverlaySize();
-
-        const ctx = this.overlayContext;
-        const width = this.overlayCanvas.width;
-        const height = this.overlayCanvas.height;
-
-        ctx.clearRect(0, 0, width, height);
-
-        if (!this.overlayVisible) {
-            return;
-        }
-
-        if (!cameraState) {
-            return;
-        }
-
-        const points = this.overlayWorldPoints;
-        if (points.length < 2) {
-            return;
-        }
-
-        const sampleStep = Math.max(1, Math.ceil(points.length / 60000));
-        const aspect = Math.max(1e-6, cameraState.viewportWidth / Math.max(1, cameraState.viewportHeight));
-        const near = 0.02;
-
-        let minY = Number.POSITIVE_INFINITY;
-        let maxY = Number.NEGATIVE_INFINITY;
-        for (const point of points) {
-            if (point.y < minY) minY = point.y;
-            if (point.y > maxY) maxY = point.y;
-        }
-
-        let centerX = 0.0;
-        let centerZ = 0.0;
-        for (const point of points) {
-            centerX += point.x;
-            centerZ += point.z;
-        }
-        centerX /= points.length;
-        centerZ /= points.length;
-
-        const camAxisX = cameraState.position.x - centerX;
-        const camAxisZ = cameraState.position.z - centerZ;
-
-        ctx.lineWidth = 1.15;
-        ctx.lineJoin = 'round';
-        ctx.lineCap = 'round';
-
-        let prevScreen: { x: number; y: number; h: number } | null = null;
-        for (let i = 0; i < points.length; i += sampleStep) {
-            const point = points[i];
-
-            const v = {
-                x: point.x - cameraState.position.x,
-                y: point.y - cameraState.position.y,
-                z: point.z - cameraState.position.z,
-            };
-
-            const camX = dot3(v, cameraState.right);
-            const camY = dot3(v, cameraState.up);
-            const camZ = dot3(v, cameraState.forward);
-
-            if (camZ <= near) {
-                prevScreen = null;
-                continue;
-            }
-
-            const uvx = (camX * cameraState.focalLength) / (camZ * aspect);
-            const uvy = (camY * cameraState.focalLength) / camZ;
-            const sx = (uvx * 0.5 + 0.5) * width;
-            const sy = (1.0 - (uvy * 0.5 + 0.5)) * height;
-
-            const h = (point.y - minY) / Math.max(1e-6, maxY - minY);
-            const screen = { x: sx, y: sy, h };
-
-            if (prevScreen) {
-                const alpha = 0.22 + h * 0.58;
-                ctx.strokeStyle = `rgba(25, 73, 58, ${alpha.toFixed(3)})`;
-                ctx.beginPath();
-                ctx.moveTo(prevScreen.x, prevScreen.y);
-                ctx.lineTo(screen.x, screen.y);
-                ctx.stroke();
-            }
-
-            prevScreen = screen;
-        }
-
-        const label = 'Toolpath in scene';
-        ctx.font = '600 12px "IBM Plex Sans", sans-serif';
-        const labelWidth = ctx.measureText(label).width;
-        ctx.fillStyle = 'rgba(13, 24, 20, 0.72)';
-        ctx.beginPath();
-        ctx.roundRect(8, height - 32, labelWidth + 16, 24, 6);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(140, 226, 186, 0.95)';
-        ctx.fillText(label, 16, height - 16);
+        this.overlayGl?.viewport(0, 0, width, height);
     }
 
     private syncOverlayVisibility(): void {
@@ -224,8 +220,4 @@ export class Preview {
 
         this.overlayCanvas.style.visibility = this.overlayVisible ? 'visible' : 'hidden';
     }
-}
-
-function dot3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
 }

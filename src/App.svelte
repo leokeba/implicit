@@ -25,6 +25,7 @@
         type SceneOverrides,
         type SceneRegistrySyncResult,
         type SlicerSettingsUpdateResult,
+        type ToolpathPreviewView,
     } from './studio/types';
     import {
         type BooleanSlicerKey,
@@ -152,7 +153,8 @@
     let postprocessAutoUpdateTimer: number | null = null;
     let postprocessAutoUpdatePending = $state(false);
     let viewerFullscreen = $state(false);
-    let hasToolpath = $state(false);
+    let toolpathPreview: ToolpathPreviewView | null = $state(null);
+    const hasToolpath = $derived(toolpathPreview !== null);
     let nameDialog: {
         title: string;
         label: string;
@@ -497,7 +499,7 @@
         status.setShaderStatus('compiling', 'Compiling...');
         const result = studio.changeScene(nextSceneId, sceneOverridesBySceneId[nextSceneId] ?? null);
         status.applySceneChange(result);
-        hasToolpath = studio.hasToolpathOverlay();
+        refreshToolpathPreview();
     }
 
     function applySceneRegistryResult(result: SceneRegistrySyncResult): void {
@@ -698,7 +700,29 @@
             sliceSignature: currentSliceSignature,
             postprocessSignature: currentPostprocessSignature,
         };
-        hasToolpath = studio.hasToolpathOverlay();
+        refreshToolpathPreview();
+    }
+
+    function refreshToolpathPreview(): void {
+        toolpathPreview = studio.getToolpathPreviewView();
+    }
+
+    function selectToolpathChannel(key: string): void {
+        if (studio.setToolpathColorChannel(key)) {
+            refreshToolpathPreview();
+        }
+    }
+
+    // The scrubber and the auto-scale toggle both move the ramp domain, so
+    // the legend has to be re-read after either.
+    function setToolpathLayerRange(minLayer: number, maxLayer: number): void {
+        studio.setToolpathLayerRange(minLayer, maxLayer);
+        refreshToolpathPreview();
+    }
+
+    function setToolpathAutoScale(autoScale: boolean): void {
+        studio.setToolpathAutoScaleDomain(autoScale);
+        refreshToolpathPreview();
     }
 
     async function buildFullArtifactWithProgress(
@@ -852,7 +876,7 @@
         await status.runCommand(`Benchmarking ${measuredLabel} after ${warmupLabel}...`, async () => {
             const summary = await studio.benchmarkVaseGcode(iterations, warmups);
             sliceDebugSnapshot = studio.getLastSliceDebugSnapshot();
-            hasToolpath = studio.hasToolpathOverlay();
+            refreshToolpathPreview();
             return `Benchmark settled on ${summary.measuredRuns} measured run${summary.measuredRuns === 1 ? '' : 's'} after ${summary.warmupRuns} warmup run${summary.warmupRuns === 1 ? '' : 's'}: avg ${summary.averageMs.toFixed(1)} ms, median ${summary.medianMs.toFixed(1)} ms, min ${summary.minMs.toFixed(1)} ms, max ${summary.maxMs.toFixed(1)} ms, spread ${summary.spreadMs.toFixed(1)} ms. Phase avg: sample ${summary.averageContourSamplingMs.toFixed(1)} ms, toolpath ${summary.averageToolpathBuildMs.toFixed(1)} ms, gcode ${summary.averageGcodeBuildMs.toFixed(1)} ms. Last output: ${(summary.bytes / 1024).toFixed(1)} KB, ${summary.points} points, ${summary.layers} layers.`;
         });
     }
@@ -1461,6 +1485,11 @@
                 {hasToolpath}
                 toolpathVisible={$workspace.overlayVisible}
                 onToggleToolpath={() => workspace.toggleOverlay()}
+                {toolpathPreview}
+                onSelectToolpathChannel={selectToolpathChannel}
+                onToolpathLayerRange={setToolpathLayerRange}
+                onToggleToolpathTravels={(visible) => studio.setToolpathTravelsVisible(visible)}
+                onToggleToolpathAutoScale={setToolpathAutoScale}
             />
 
             {#if !$workspace.inspectorCollapsed && !compactWorkspaceLayout}

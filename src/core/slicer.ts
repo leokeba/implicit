@@ -218,10 +218,11 @@ export class Slicer {
         settings.pointsPerLayer = baseToolpath.pointsPerLayer;
         const warnings = baseToolpath.warnings ?? [];
         const finalized = this.finalizeSpiralToolpath(baseToolpath, settings, pipeline);
-        const gcode = buildGcode(finalized, settings, [
+        const headerLines = [
             ...(extraHeaderLines ?? []),
             ...warnings.map((warning) => `Slicer warning: ${warning}`),
-        ]);
+        ];
+        const gcode = buildGcode(finalized, settings, headerLines);
         return {
             settings,
             toolpath: finalized,

@@ -129,20 +129,7 @@ export function buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings,
 
     // Solid bottom layers: concentric inward fill rings generated from
     // each flat layer's perimeter, emitted when the layer completes.
-    const bottomFillRings = new Map<number, ToolpathPoint[]>();
-    if (settings.bottomLayers > 0) {
-        for (const point of toolpath.points) {
-            if (point.layer >= settings.bottomLayers) {
-                break;
-            }
-            const ring = bottomFillRings.get(point.layer);
-            if (ring) {
-                ring.push(point);
-            } else {
-                bottomFillRings.set(point.layer, [point]);
-            }
-        }
-    }
+    const bottomFillRings = collectBottomLayerRings(toolpath, settings);
 
     // Feedrate is modal in Marlin/Klipper and Z rarely changes on flat
     // layers; emitting them only on change trims the file by 10-20%.
@@ -162,34 +149,9 @@ export function buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings,
         const fillFeedrate = mmPerSecToFeedrate(
             layerIdx === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
         ).toFixed(0);
-        const ringArea = signedArea2D(ring.map((point) => ({ x: point.x, y: point.z })));
-        const ringSign = Math.sign(ringArea);
-        if (ringSign === 0) {
-            return;
-        }
 
         let emittedFillHeader = false;
-        for (let loopIndex = 0; loopIndex < 512; loopIndex++) {
-            // First ring sits ~0.9 line widths inside the perimeter for a
-            // slight overlap, then rings advance by one line width.
-            const inset = fillLineWidth * (0.9 + loopIndex);
-            const loop = buildBrimLoop(ring, -inset);
-            if (loop.length < 3) {
-                break;
-            }
-            const loopArea = signedArea2D(loop);
-            // Stop when the offset collapses: sign flip or sub-bead area.
-            if (Math.sign(loopArea) !== ringSign || Math.abs(loopArea) < fillLineWidth * fillLineWidth * 2) {
-                break;
-            }
-
-            // Interior fill does not need surface resolution; coarse
-            // segments keep the G-code size proportional to fill area.
-            const fillLoop = decimateLoop2D(loop, Math.max(0.8, settings.targetSegmentMm));
-            if (fillLoop.length < 3) {
-                break;
-            }
-
+        for (const fillLoop of buildBottomFillLoopSet(ring, layerIdx, settings)) {
             if (!emittedFillHeader) {
                 lines.push('; FEATURE: Bottom surface');
                 lines.push(';TYPE:Bottom surface');
@@ -306,6 +268,114 @@ export function buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings,
     return lines.join('\n');
 }
 
+/** A closed 2D loop in bed coordinates (X, Y = the toolpath's X, Z). */
+export type SupportLoop2D = Array<{ x: number; y: number }>;
+
+/**
+ * Groups the points of each solid bottom layer into that layer's perimeter
+ * ring. Only the flat layers below `bottomLayers` get concentric fill.
+ */
+export function collectBottomLayerRings(
+    toolpath: VaseToolpath,
+    settings: VaseSlicerSettings,
+): Map<number, ToolpathPoint[]> {
+    const rings = new Map<number, ToolpathPoint[]>();
+    if (settings.bottomLayers <= 0) {
+        return rings;
+    }
+
+    for (const point of toolpath.points) {
+        if (point.layer >= settings.bottomLayers) {
+            break;
+        }
+        const ring = rings.get(point.layer);
+        if (ring) {
+            ring.push(point);
+        } else {
+            rings.set(point.layer, [point]);
+        }
+    }
+
+    return rings;
+}
+
+/**
+ * Brim loops for the first layer, in print order (outermost first).
+ *
+ * Split out from emission so the preview can draw the same loops the printer
+ * will run: brim and bottom fill are generated here rather than in the
+ * toolpath, and would otherwise exist only as text in the exported file.
+ */
+export function buildBrimLoopSet(toolpath: VaseToolpath, settings: VaseSlicerSettings): SupportLoop2D[] {
+    const lineWidth = Math.max(0.01, settings.firstLayerLineWidth);
+    const brimLoops = Math.floor(settings.brimWidthMm / lineWidth);
+    const brimGap = Math.max(0, settings.brimGapMm);
+    if (brimLoops <= 0 || toolpath.pointsPerLayer < 3) {
+        return [];
+    }
+
+    const firstLayer = toolpath.points.filter((point) => point.layer === 0);
+    if (firstLayer.length < 3) {
+        return [];
+    }
+
+    const loops: SupportLoop2D[] = [];
+    for (let loopIndex = brimLoops; loopIndex >= 1; loopIndex--) {
+        const offset = lineWidth + brimGap + (loopIndex - 1) * lineWidth;
+        const loop = buildBrimLoop(firstLayer, offset);
+        if (loop.length >= 3) {
+            loops.push(loop);
+        }
+    }
+
+    return loops;
+}
+
+/** Concentric inward fill loops for one solid bottom layer, outermost first. */
+export function buildBottomFillLoopSet(
+    ring: ToolpathPoint[],
+    layerIndex: number,
+    settings: VaseSlicerSettings,
+): SupportLoop2D[] {
+    if (ring.length < 3) {
+        return [];
+    }
+
+    const fillLineWidth = layerIndex === 0 ? settings.firstLayerLineWidth : settings.lineWidth;
+    const ringArea = signedArea2D(ring.map((point) => ({ x: point.x, y: point.z })));
+    const ringSign = Math.sign(ringArea);
+    if (ringSign === 0) {
+        return [];
+    }
+
+    const loops: SupportLoop2D[] = [];
+    for (let loopIndex = 0; loopIndex < 512; loopIndex++) {
+        // First ring sits ~0.9 line widths inside the perimeter for a
+        // slight overlap, then rings advance by one line width.
+        const inset = fillLineWidth * (0.9 + loopIndex);
+        const loop = buildBrimLoop(ring, -inset);
+        if (loop.length < 3) {
+            break;
+        }
+        const loopArea = signedArea2D(loop);
+        // Stop when the offset collapses: sign flip or sub-bead area.
+        if (Math.sign(loopArea) !== ringSign || Math.abs(loopArea) < fillLineWidth * fillLineWidth * 2) {
+            break;
+        }
+
+        // Interior fill does not need surface resolution; coarse segments
+        // keep the G-code size proportional to fill area.
+        const fillLoop = decimateLoop2D(loop, Math.max(0.8, settings.targetSegmentMm));
+        if (fillLoop.length < 3) {
+            break;
+        }
+
+        loops.push(fillLoop);
+    }
+
+    return loops;
+}
+
 function percentToPwm(percent: number): number {
     const clamped = clamp(percent, 0, 100);
     return Math.round((clamped / 100) * 255);
@@ -318,15 +388,8 @@ function appendBrimGcode(
     firstLayerZ: number,
     extrusionPerMm: number
 ): boolean {
-    const lineWidth = Math.max(0.01, settings.firstLayerLineWidth);
-    const brimLoops = Math.floor(settings.brimWidthMm / lineWidth);
-    const brimGap = Math.max(0, settings.brimGapMm);
-    if (brimLoops <= 0 || toolpath.pointsPerLayer < 3) {
-        return false;
-    }
-
-    const firstLayer = toolpath.points.filter((point) => point.layer === 0);
-    if (firstLayer.length < 3) {
+    const brimLoopSet = buildBrimLoopSet(toolpath, settings);
+    if (brimLoopSet.length === 0) {
         return false;
     }
 
@@ -335,16 +398,7 @@ function appendBrimGcode(
 
     lines.push('; FEATURE: Brim');
     let isFirstBrimLoop = true;
-    let emittedAnyBrimLoop = false;
-    for (let loopIndex = brimLoops; loopIndex >= 1; loopIndex--) {
-        const offset = lineWidth + brimGap + (loopIndex - 1) * lineWidth;
-        const loop = buildBrimLoop(firstLayer, offset);
-        if (loop.length < 3) {
-            continue;
-        }
-
-        emittedAnyBrimLoop = true;
-
+    for (const loop of brimLoopSet) {
         const start = loop[0];
         lines.push(';TYPE:Brim');
         lines.push(`G0 F${travelFeed} X${start.x.toFixed(3)} Y${start.y.toFixed(3)} Z${firstLayerZ.toFixed(3)}`);
@@ -375,7 +429,7 @@ function appendBrimGcode(
         }
     }
 
-    return emittedAnyBrimLoop;
+    return true;
 }
 
 function buildBrimLoop(

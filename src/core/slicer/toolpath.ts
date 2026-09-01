@@ -188,6 +188,7 @@ function buildInterpolatedSpiralBaseToolpath(
                 layer: topLayerIndex,
                 extrusionScale,
                 layerThicknessMm: topThicknessMm,
+                feature: 'cap',
             });
             prevX = x;
             prevY = topY;

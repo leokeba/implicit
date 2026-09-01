@@ -21,6 +21,13 @@ export interface ToolpathPoint {
      * still multiplies on top.
      */
     extrusionPerMmOverride?: number;
+    /**
+     * Print feature this move belongs to. Unset means the spiral wall (or a
+     * flat bottom layer of it, distinguished by `layer`). Set for the top
+     * cap's extrusion-ramped revolution, and by the G-code builder for the
+     * brim and bottom-fill loops it prepends.
+     */
+    feature?: 'brim' | 'bottom' | 'cap';
     sceneFields?: Record<string, SceneFieldValue>;
 }
 

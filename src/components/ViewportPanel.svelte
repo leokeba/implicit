@@ -1,4 +1,7 @@
 <script lang="ts">
+    import ToolpathPreviewControls from './ToolpathPreviewControls.svelte';
+    import type { ToolpathPreviewView } from '../studio/types';
+
     export let actionPending: boolean;
     export let inspectorCollapsed: boolean;
     export let editorVisible: boolean;
@@ -12,6 +15,11 @@
     export let hasToolpath: boolean;
     export let toolpathVisible: boolean;
     export let onToggleToolpath: () => void;
+    export let toolpathPreview: ToolpathPreviewView | null;
+    export let onSelectToolpathChannel: (key: string) => void;
+    export let onToolpathLayerRange: (minLayer: number, maxLayer: number) => void;
+    export let onToggleToolpathTravels: (visible: boolean) => void;
+    export let onToggleToolpathAutoScale: (autoScale: boolean) => void;
 </script>
 
 <main class="workspace-main">
@@ -45,5 +53,14 @@
             </div>
         </div>
         <section id="preview" aria-label="Surface preview"></section>
+        {#if toolpathVisible}
+            <ToolpathPreviewControls
+                view={toolpathPreview}
+                onSelectChannel={onSelectToolpathChannel}
+                onLayerRange={onToolpathLayerRange}
+                onToggleTravels={onToggleToolpathTravels}
+                onToggleAutoScale={onToggleToolpathAutoScale}
+            />
+        {/if}
     </section>
 </main>

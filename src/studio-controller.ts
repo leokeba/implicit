@@ -17,6 +17,7 @@ import {
     getAvailableScenes,
     getSceneBundles,
     getSceneControlDefinitions,
+    getSceneFieldDefinitions,
     getSceneUniformContractWarnings,
     replaceSceneBundles,
     setActiveSceneById,
@@ -28,6 +29,7 @@ import {
 import {
     Slicer,
     type VaseBaseToolpath,
+    type VaseToolpath,
     type SliceDebugSnapshot,
     type SliceProgressUpdate,
     type VaseSlicerSettings,
@@ -48,7 +50,11 @@ import { Preview } from './core/preview';
 import { summarizeBenchmarkRuns } from './studio/benchmark-summary';
 import { buildSlicerFilename } from './studio/filename';
 import { attachRenderLifecycleHandlers, shouldRenderPreview } from './studio/render-lifecycle';
-import { convertToolpathToScenePoints } from './studio/toolpath-overlay';
+import { buildPreviewToolpathPoints } from './core/slicer/preview-points';
+import { buildToolpathPreviewData } from './core/toolpath-preview/build';
+import { summarizeChannel } from './core/toolpath-preview/types';
+import type { ToolpathRendererStyle } from './core/toolpath-preview/renderer';
+import type { ToolpathPreviewView } from './studio/types';
 
 function emptyOverrides(): SceneOverrides {
     return {
@@ -74,6 +80,7 @@ export class StudioController {
     private initialized: boolean;
     private renderLifecycleCleanup: (() => void) | null;
     private cachedBaseToolpath: { cacheKey: string; baseToolpath: VaseBaseToolpath } | null;
+    private toolpathAutoScaleDomain = true;
 
     /**
      * Single published source of truth for everything the UI mirrors:
@@ -287,7 +294,7 @@ export class StudioController {
 
         this.overrides = { ...emptyOverrides(), ...(overrides ?? {}) } as SceneOverrides;
         this.cachedBaseToolpath = null;
-        this.preview.setToolpathOverlayWorldPoints([]);
+        this.preview.setToolpathData(null);
         this.renderer.requestRender();
         this.resolveConfiguration();
         return {
@@ -467,7 +474,71 @@ export class StudioController {
     }
 
     public hasToolpathOverlay(): boolean {
-        return this.preview.hasOverlayPoints();
+        return this.preview.hasToolpath();
+    }
+
+    /** Everything the viewport controls need about the current slice, or null. */
+    public getToolpathPreviewView(): ToolpathPreviewView | null {
+        const data = this.preview.getToolpathData();
+        if (!data) {
+            return null;
+        }
+
+        const activeChannel = this.preview.getActiveToolpathChannel();
+        const domain = this.preview.getToolpathDomain();
+        return {
+            channels: data.channels.map(summarizeChannel),
+            activeChannelKey: activeChannel?.key ?? null,
+            domainMin: domain?.min ?? activeChannel?.min ?? 0,
+            domainMax: domain?.max ?? activeChannel?.max ?? 1,
+            autoScaleDomain: this.toolpathAutoScaleDomain,
+            layerCount: data.layerCount,
+            segmentCount: data.segmentCount,
+            travelSegmentCount: data.travelSegmentCount,
+            error: this.preview.getOverlayError(),
+        };
+    }
+
+    public setToolpathColorChannel(key: string): boolean {
+        const changed = this.preview.setToolpathChannel(key);
+        if (changed) {
+            this.renderer.requestRender();
+        }
+        return changed;
+    }
+
+    public setToolpathLayerRange(minLayer: number, maxLayer: number): void {
+        this.preview.setToolpathLayerRange(minLayer, maxLayer);
+        this.renderer.requestRender();
+    }
+
+    public setToolpathAutoScaleDomain(autoScale: boolean): void {
+        this.toolpathAutoScaleDomain = autoScale;
+        this.preview.setToolpathAutoScale(autoScale);
+        this.renderer.requestRender();
+    }
+
+    public setToolpathTravelsVisible(visible: boolean): void {
+        this.preview.setToolpathTravelsVisible(visible);
+        this.renderer.requestRender();
+    }
+
+    public setToolpathStyle(style: Partial<ToolpathRendererStyle>): void {
+        this.preview.setToolpathStyle(style);
+        this.renderer.requestRender();
+    }
+
+    /**
+     * Rebuilds the preview buffers from a finished toolpath. Scene field
+     * definitions come along so any field a postprocess script sampled becomes
+     * a colour mode.
+     */
+    private publishToolpathPreview(toolpath: VaseToolpath, settings: VaseSlicerSettings): void {
+        // The brim and solid-bottom fill live only in the G-code builder, so
+        // the preview stream is rebuilt to include them.
+        const points = buildPreviewToolpathPoints(toolpath, settings);
+        this.preview.setToolpathData(buildToolpathPreviewData(points, settings, getSceneFieldDefinitions()));
+        this.renderer.requestRender();
     }
 
     public getLastSliceDebugSnapshot(): SliceDebugSnapshot | null {
@@ -515,9 +586,7 @@ export class StudioController {
                 warmupRuns,
                 this.getEnabledPipelineSteps(),
             );
-            this.preview.setToolpathOverlayWorldPoints(
-                convertToolpathToScenePoints(benchmark.lastResult.toolpath.points, benchmark.settings)
-            );
+            this.publishToolpathPreview(benchmark.lastResult.toolpath, benchmark.settings);
             this.renderer.requestRender();
             return summarizeBenchmarkRuns(benchmark.runs, benchmark.warmupRuns, benchmark.measuredRuns);
         });
@@ -662,10 +731,7 @@ export class StudioController {
             this.getEnabledPipelineSteps(),
             this.buildReproducibilityHeader(),
         );
-        this.preview.setToolpathOverlayWorldPoints(
-            convertToolpathToScenePoints(result.toolpath.points, this.resolvedSettings)
-        );
-        this.renderer.requestRender();
+        this.publishToolpathPreview(result.toolpath, this.resolvedSettings);
         const filename = buildSlicerFilename(
             this.resolvedSettings,
             getActiveSceneManifest(),
