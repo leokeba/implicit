@@ -48,12 +48,18 @@ export interface SurfaceMarchOptions {
     /** Slope, in degrees below horizontal, that counts as an unsupported overhang. */
     overhangWarnDegrees: number;
     /**
-     * Fraction of a new revolution's bead that must sit over the one below.
-     * Below this the bead is hanging beside its neighbour rather than resting
-     * on it, and the march stops - leaving the top open, which is the honest
-     * outcome for a flat or near-flat top on three axes.
+     * How far a revolution may advance sideways, as a fraction of the bead
+     * width, before it counts as hanging beside its neighbour rather than
+     * resting on it. 1.0 is the natural pitch and disables the test.
      */
-    minBeadOverlap: number;
+    maxBeadAdvance: number;
+    /**
+     * Rise per revolution, as a fraction of the bead height, below which the
+     * surface counts as flat rather than merely shallow. This is what leaves
+     * a flat top open: a flat face rises by nothing however far the front
+     * walks across it, while a dome keeps climbing all the way to its pole.
+     */
+    minRiseFraction: number;
 }
 
 export interface SurfaceMarchResult {
@@ -70,7 +76,8 @@ export function defaultSurfaceMarchOptions(settings: VaseSlicerSettings): Surfac
         maxContours: 20000,
         projectionIterations: 3,
         overhangWarnDegrees: 5,
-        minBeadOverlap: settings.surfaceMinBeadOverlap,
+        maxBeadAdvance: settings.surfaceMaxBeadAdvance,
+        minRiseFraction: 0.05,
     };
 }
 
@@ -144,7 +151,7 @@ export function marchSurfaceContours(
         // and whether that base is printable is a question about the model
         // rather than about the march.
         if (nextPerimeter <= perimeter && stepped.unsupportedPoints * 2 > contour.length) {
-            stopReason = `the surface flattened past the ${(options.minBeadOverlap * 100).toFixed(0)}% bead overlap a revolution needs to rest on the one below, leaving the top open`;
+            stopReason = `a revolution would advance more than ${(options.maxBeadAdvance * 100).toFixed(0)}% of a bead width sideways, so it would hang beside the one below rather than rest on it`;
             break;
         }
 
@@ -155,9 +162,13 @@ export function marchSurfaceContours(
             stopReason = 'the front turned itself inside out, which means it had already closed';
             break;
         }
+        // A revolution that barely climbs is walking across a flat face, not
+        // up a shallow one. That is the honest end of a single-wall print:
+        // there is nothing under a flat top to print onto. A dome keeps
+        // rising all the way to its pole, so this leaves it alone.
         const rise = averageHeight(next) - averageHeight(contour);
-        if (rise < nominalPitch(options) * 1e-3) {
-            stopReason = 'the front stopped climbing';
+        if (rise < options.beadHeight * options.minRiseFraction) {
+            stopReason = 'the surface went flat, so the top is left open';
             break;
         }
 
@@ -217,7 +228,7 @@ function stepContour(
     // A revolution advances horizontally by pitch * cos(slope); once that
     // exceeds the permitted share of a bead width the new bead has nothing
     // under it.
-    const maxHorizontalAdvance = options.beadWidth * options.minBeadOverlap;
+    const maxHorizontalAdvance = options.beadWidth * options.maxBeadAdvance;
     let overhangPoints = 0;
     let unsupportedPoints = 0;
 

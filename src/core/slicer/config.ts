@@ -79,14 +79,18 @@ export interface VaseSlicerSettings {
      */
     spiralPitchMm: number;
     /**
-     * Surface mode: how much of a new revolution's bead must sit over the
-     * one below it. A revolution advances horizontally by pitch * cos(slope),
-     * so this sets the shallowest printable slope - at the default 0.5 the
-     * march stops around 40 degrees, which is where a bead stops resting on
-     * its neighbour and starts hanging beside it. Marching past that does not
-     * print a flat top, it piles material into space.
+     * Surface mode: how far a revolution may advance sideways before it is
+     * treated as no longer resting on the one below, as a fraction of the
+     * bead width. Higher marches further into shallow territory; 1.0 is the
+     * natural pitch, where beads merely touch, and disables the test.
+     *
+     * It is a blunt instrument for closing a dome, because the slope near a
+     * pole is small over a whole band, not just at the point: at 0.5 a 50 mm
+     * sphere is left with a 32 mm hole. The default leaves closure to the
+     * rise test instead, which stops on a surface that is flat rather than
+     * merely shallow. Lower this to be cautious about shallow overhangs.
      */
-    surfaceMinBeadOverlap: number;
+    surfaceMaxBeadAdvance: number;
     brimWidthMm: number;
     brimGapMm: number;
     enableContourAlignment: boolean;
@@ -138,7 +142,7 @@ export function getDefaultVaseSettings(): VaseSlicerSettings {
         bottomLayers: 0,
         maxLayerHeightMm: 0,
         spiralPitchMm: 0,
-        surfaceMinBeadOverlap: 0.5,
+        surfaceMaxBeadAdvance: 1.0,
         brimWidthMm: 5,
         brimGapMm: 0.1,
         enableContourAlignment: true,
@@ -160,7 +164,7 @@ export function resolveVaseSettings(next: Partial<VaseSlicerSettings>): VaseSlic
     merged.layerHeight = clamp(merged.layerHeight, 0.05, 1.0);
     merged.targetSegmentMm = clamp(merged.targetSegmentMm, 0.05, 2.0);
     merged.pointsPerLayer = clampInt(merged.pointsPerLayer, 48, 4096);
-    merged.surfaceMinBeadOverlap = clamp(merged.surfaceMinBeadOverlap, 0.05, 0.95);
+    merged.surfaceMaxBeadAdvance = clamp(merged.surfaceMaxBeadAdvance, 0.3, 1.0);
     merged.maxRadius = clamp(merged.maxRadius, 0.1, 3.0);
     merged.hitEpsilon = clamp(merged.hitEpsilon, 0.0001, 0.02);
     merged.sliceIsoSnapFactor = clamp(merged.sliceIsoSnapFactor, 0.0, 4.0);

@@ -22,7 +22,7 @@ export type NumericSlicerKey =
     | 'maxRadius'
     | 'hitEpsilon'
     | 'sliceIsoSnapFactor'
-    | 'surfaceMinBeadOverlap'
+    | 'surfaceMaxBeadAdvance'
     | 'brimWidthMm'
     | 'brimGapMm'
     | 'moveMergeMinMoveMm'
