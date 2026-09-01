@@ -46,7 +46,12 @@ import {
     summarizeSliceLayerWarnings,
     type SliceLayerWarningStats,
 } from './slicer/contours';
-import { finalizeContourLayers } from './slicer/contour-postprocess';
+import { finalizeContourLayers, finalizeMarchedContourLayers } from './slicer/contour-postprocess';
+import {
+    defaultSurfaceMarchOptions,
+    marchSurfaceContours,
+    surfaceSeedHeight,
+} from './slicer/surface-march';
 import {
     applyMinimumLayerTime,
     buildSpiralBaseToolpath,
@@ -455,6 +460,10 @@ export class Slicer {
         settings: VaseSlicerSettings,
         onProgress?: SliceProgressReporter,
     ): Promise<SampledSliceContours> {
+        if (settings.slicerMode === 'surface') {
+            return this.marchSurfaceSliceContours(settings, onProgress);
+        }
+
         const job = prepareSliceJob(this.sampler, settings);
         const rawLayers: SliceContourLayer[] = [];
         const layerStats = createSliceLayerWarningStats();
@@ -508,6 +517,64 @@ export class Slicer {
         }
 
         const finalized = finalizeContourLayers(rawLayers, settings, [...job.warnings, ...summarizeSliceLayerWarnings(layerStats)]);
+        settings.pointsPerLayer = finalized.pointsPerLayer;
+        return { layers: finalized.layers, warnings: finalized.warnings };
+    }
+
+    /**
+     * Surface mode: one planar slice seeds the front where the model meets
+     * the bed, then every following revolution is marched across the surface
+     * instead of cut from it.
+     */
+    private marchSurfaceSliceContours(
+        settings: VaseSlicerSettings,
+        onProgress?: SliceProgressReporter,
+    ): SampledSliceContours {
+        const job = prepareSliceJob(this.sampler, settings);
+        reportSliceProgress(onProgress, 'sampling', 0, 1, 0.02, 'Sampling the seed contour at the bed...');
+
+        const seedY = surfaceSeedHeight(settings);
+        const seedBatch = this.sampler.sampleBatch(settings, {
+            bounds: job.bounds,
+            gridSize: job.gridSize,
+            firstSampleY: seedY,
+            sliceYStep: 0,
+            batchLayerCount: 1,
+        })[0];
+        if (!seedBatch) {
+            throw new Error('Surface marching could not sample the seed slice.');
+        }
+
+        const extraction = extractContoursFromField(seedBatch.field, job.gridSize, job.bounds, seedY);
+        const selection = selectPrimaryContour(extraction.closedContours, job.bounds, job.gridSize, settings);
+        if (!selection.ok) {
+            this.lastSliceDebugSnapshot = buildSliceDebugSnapshot(
+                seedBatch.field, job.bounds, job.gridSize, seedY, 1, 0, settings, selection, extraction,
+            );
+            throw new Error(buildContourFailureMessage(selection, extraction, job.bounds, job.gridSize, settings, seedY, 0, 1));
+        }
+
+        const options = defaultSurfaceMarchOptions(settings);
+        // The march is sequential - each revolution depends on the last - so
+        // progress is reported by how far the front has climbed rather than
+        // by a layer count that is not known in advance.
+        const span = Math.max(1e-6, settings.maxY - seedY);
+        const marched = marchSurfaceContours(this.sampler, settings, selection.contour, options, (index, contour) => {
+            if ((index & 15) !== 0) {
+                return;
+            }
+            const climbed = clamp((contour[0].y - seedY) / span, 0, 1);
+            reportSliceProgress(
+                onProgress,
+                'sampling',
+                Math.round(climbed * 100),
+                100,
+                0.02 + climbed * 0.76,
+                `Marching revolution ${index + 1} across the surface...`,
+            );
+        });
+
+        const finalized = finalizeMarchedContourLayers(marched.layers, settings, [...job.warnings, ...marched.warnings]);
         settings.pointsPerLayer = finalized.pointsPerLayer;
         return { layers: finalized.layers, warnings: finalized.warnings };
     }

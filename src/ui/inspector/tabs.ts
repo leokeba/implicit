@@ -17,6 +17,7 @@ export const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
 
 const SLICER_MODE_OPTIONS: InspectorFieldOption[] = [
     { value: 'planar', label: 'Planar (strict)' },
+    { value: 'surface', label: 'Surface (non-planar)' },
     { value: 'cylindrical', label: 'Cylindrical (legacy)' },
 ];
 

@@ -66,6 +66,42 @@ export function finalizeContourLayers(
     return { layers: adaptiveLayers, warnings, pointsPerLayer };
 }
 
+/**
+ * Finalizes contours that already lie on the surface with their own heights.
+ *
+ * Unlike the planar path this must not touch `y`: the marched contour's
+ * height *is* the geometry. All it does is give every revolution the same
+ * point count - which the spiral builder needs to blend them index by index -
+ * and align the seams.
+ */
+export function finalizeMarchedContourLayers(
+    marchedLayers: SliceContourLayer[],
+    settings: VaseSlicerSettings,
+    initialWarnings: string[],
+): FinalizedContourLayers {
+    if (marchedLayers.length < 2) {
+        throw new Error('Surface marching produced too few revolutions (need at least 2).');
+    }
+
+    let maxPerimeterMm = 0;
+    for (const layer of marchedLayers) {
+        maxPerimeterMm = Math.max(maxPerimeterMm, contourPerimeter(layer.contour) * settings.modelScale);
+    }
+    const pointsPerLayer = clampInt(Math.ceil(maxPerimeterMm / settings.targetSegmentMm), 48, 4096);
+
+    const layers: SliceContourLayer[] = marchedLayers.map((layer) => ({
+        sampleY: layer.sampleY,
+        contour: resampleClosedContour(dedupeClosedContour(layer.contour), pointsPerLayer),
+        printHeightMm: layer.printHeightMm,
+    }));
+
+    if (settings.enableContourAlignment) {
+        alignContourLayers(layers);
+    }
+
+    return { layers, warnings: initialWarnings, pointsPerLayer };
+}
+
 export function buildPrintableContour(contour: SlicePoint[], pointsPerLayer: number): SlicePoint[] {
     const denseCount = clampInt(
         Math.max(pointsPerLayer, contour.length * 2),
@@ -92,7 +128,7 @@ export function resampleClosedContour(points: SlicePoint[], count: number): Slic
     for (let i = 0; i < source.length; i++) {
         const current = source[i];
         const next = source[(i + 1) % source.length];
-        cumulative.push(cumulative[cumulative.length - 1] + Math.hypot(next.x - current.x, next.z - current.z));
+        cumulative.push(cumulative[cumulative.length - 1] + Math.hypot(next.x - current.x, next.y - current.y, next.z - current.z));
     }
 
     const resampled: SlicePoint[] = [];

@@ -11,6 +11,12 @@
  *
  * The search deliberately ignores near neighbours along the path: what is
  * being asked is "where is the adjacent pass", not "where is the next point".
+ *
+ * The deposited bead is a continuous line, not the points that define it, and
+ * move merging leaves those points millimetres apart on straight runs. So
+ * long segments are densified into the lookup grid: measuring point to point
+ * would report a void wherever the neighbouring pass simply had no vertex
+ * nearby, which on a merged toolpath is most of it.
  */
 
 import type { ToolpathPoint } from '../slicer/types';
@@ -52,22 +58,53 @@ export function measureBeadNeighbourhood(
     const invCell = 1 / cellSize;
     const maxRing = Math.max(1, Math.ceil(searchLimitMm * invCell));
 
-    const cellX = new Int32Array(count);
-    const cellY = new Int32Array(count);
-    const cellZ = new Int32Array(count);
+    // Lookup entries: every deposited point, plus interpolated stand-ins
+    // along any segment longer than a cell so a long merged move still
+    // occupies the grid over its whole length. Each entry keeps the path
+    // index it came from, which is what the separation test needs.
+    const entryX: number[] = [];
+    const entryY: number[] = [];
+    const entryZ: number[] = [];
+    const entryPath: number[] = [];
+
     for (let i = 0; i < count; i++) {
-        cellX[i] = Math.floor(points[i].x * invCell);
-        cellY[i] = Math.floor(points[i].y * invCell);
-        cellZ[i] = Math.floor(points[i].z * invCell);
+        if (isDeposited[i] === 0) continue;
+        entryX.push(points[i].x);
+        entryY.push(points[i].y);
+        entryZ.push(points[i].z);
+        entryPath.push(i);
+
+        if (i + 1 >= count || isDeposited[i + 1] === 0) continue;
+        const next = points[i + 1];
+        const span = Math.hypot(next.x - points[i].x, next.y - points[i].y, next.z - points[i].z);
+        const steps = Math.floor(span * invCell);
+        for (let k = 1; k <= steps; k++) {
+            const t = k / (steps + 1);
+            entryX.push(points[i].x + (next.x - points[i].x) * t);
+            entryY.push(points[i].y + (next.y - points[i].y) * t);
+            entryZ.push(points[i].z + (next.z - points[i].z) * t);
+            // Attributed to the nearer end, so the separation test stays
+            // meaningful for a stand-in that belongs to no single point.
+            entryPath.push(t < 0.5 ? i : i + 1);
+        }
+    }
+
+    const entryCount = entryX.length;
+    const cellX = new Int32Array(entryCount);
+    const cellY = new Int32Array(entryCount);
+    const cellZ = new Int32Array(entryCount);
+    for (let i = 0; i < entryCount; i++) {
+        cellX[i] = Math.floor(entryX[i] * invCell);
+        cellY[i] = Math.floor(entryY[i] * invCell);
+        cellZ[i] = Math.floor(entryZ[i] * invCell);
     }
 
     // Hashed grid rather than a dense one: a 220 mm bed at bead resolution
     // would be hundreds of millions of cells, nearly all empty.
-    const tableSize = nextPowerOfTwo(Math.max(16, count * 2));
+    const tableSize = nextPowerOfTwo(Math.max(16, entryCount * 2));
     const mask = tableSize - 1;
     const bucketStart = new Int32Array(tableSize + 1);
-    for (let i = 0; i < count; i++) {
-        if (isDeposited[i] === 0) continue;
+    for (let i = 0; i < entryCount; i++) {
         bucketStart[hashCell(cellX[i], cellY[i], cellZ[i]) & mask]++;
     }
     let running = 0;
@@ -80,8 +117,7 @@ export function measureBeadNeighbourhood(
 
     const cursor = Int32Array.from(bucketStart.subarray(0, tableSize));
     const bucketItems = new Int32Array(running);
-    for (let i = 0; i < count; i++) {
-        if (isDeposited[i] === 0) continue;
+    for (let i = 0; i < entryCount; i++) {
         bucketItems[cursor[hashCell(cellX[i], cellY[i], cellZ[i]) & mask]++] = i;
     }
 
@@ -96,6 +132,9 @@ export function measureBeadNeighbourhood(
         const px = points[i].x;
         const py = points[i].y;
         const pz = points[i].z;
+        const queryCellX = Math.floor(px * invCell);
+        const queryCellY = Math.floor(py * invCell);
+        const queryCellZ = Math.floor(pz * invCell);
         let bestSq = searchLimitSq;
         let bestIndex = -1;
 
@@ -117,9 +156,9 @@ export function measureBeadNeighbourhood(
                             continue;
                         }
 
-                        const gx = cellX[i] + dx;
-                        const gy = cellY[i] + dy;
-                        const gz = cellZ[i] + dz;
+                        const gx = queryCellX + dx;
+                        const gy = queryCellY + dy;
+                        const gz = queryCellZ + dz;
                         const bucket = hashCell(gx, gy, gz) & mask;
                         const end = bucketStart[bucket + 1];
                         for (let slot = bucketStart[bucket]; slot < end; slot++) {
@@ -127,11 +166,11 @@ export function measureBeadNeighbourhood(
                             // Hash collisions land foreign cells in this
                             // bucket; the stored coordinates settle it.
                             if (cellX[j] !== gx || cellY[j] !== gy || cellZ[j] !== gz) continue;
-                            if (Math.abs(j - i) < minPathSeparation) continue;
+                            if (Math.abs(entryPath[j] - i) < minPathSeparation) continue;
 
-                            const ddx = points[j].x - px;
-                            const ddy = points[j].y - py;
-                            const ddz = points[j].z - pz;
+                            const ddx = entryX[j] - px;
+                            const ddy = entryY[j] - py;
+                            const ddz = entryZ[j] - pz;
                             const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
                             if (distSq < bestSq) {
                                 bestSq = distSq;
@@ -150,8 +189,8 @@ export function measureBeadNeighbourhood(
         }
 
         const distance = Math.sqrt(bestSq);
-        const dy = Math.abs(points[bestIndex].y - py);
-        const horizontal = Math.hypot(points[bestIndex].x - px, points[bestIndex].z - pz);
+        const dy = Math.abs(entryY[bestIndex] - py);
+        const horizontal = Math.hypot(entryX[bestIndex] - px, entryZ[bestIndex] - pz);
         distanceMm[i] = distance;
         angleDeg[i] = (Math.atan2(dy, horizontal) * 180) / Math.PI;
         found[i] = 1;

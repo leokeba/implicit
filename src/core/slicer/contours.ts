@@ -765,12 +765,13 @@ export function signedContourArea(points: SlicePoint[]): number {
     return area * 0.5;
 }
 
+/** True 3D length: identical to the XZ length for a planar contour. */
 export function contourPerimeter(points: SlicePoint[]): number {
     let perimeter = 0;
     for (let i = 0; i < points.length; i++) {
         const current = points[i];
         const next = points[(i + 1) % points.length];
-        perimeter += Math.hypot(next.x - current.x, next.z - current.z);
+        perimeter += Math.hypot(next.x - current.x, next.y - current.y, next.z - current.z);
     }
     return perimeter;
 }

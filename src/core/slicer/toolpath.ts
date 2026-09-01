@@ -13,9 +13,16 @@ export function buildSpiralBaseToolpath(
     contourLayers: SliceContourLayer[],
     settings: VaseSlicerSettings,
 ): VaseBaseToolpath {
-    return settings.slicerMode === 'cylindrical'
-        ? buildCylindricalSpiralBaseToolpath(contourLayers, settings)
-        : buildPlanarSpiralBaseToolpath(contourLayers, settings);
+    if (settings.slicerMode === 'cylindrical') {
+        return buildCylindricalSpiralBaseToolpath(contourLayers, settings);
+    }
+    if (settings.slicerMode === 'surface') {
+        // Marched contours already carry the spiral's rise in their own
+        // heights, so the pitched ladder - which climbs Z independently of
+        // the contours - has nothing to add and would fight them.
+        return buildInterpolatedSpiralBaseToolpath(contourLayers, settings);
+    }
+    return buildPlanarSpiralBaseToolpath(contourLayers, settings);
 }
 
 function buildPlanarSpiralBaseToolpath(

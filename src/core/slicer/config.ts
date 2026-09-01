@@ -2,7 +2,14 @@ import { clamp, clampInt } from './math';
 import { getDefaultEndGcode, getDefaultStartGcode } from './gcode-template';
 
 export interface VaseSlicerSettings {
-    slicerMode: 'planar' | 'cylindrical';
+    /**
+     * `planar` cuts contours out of the model with horizontal planes.
+     * `cylindrical` resamples those contours radially. `surface` abandons
+     * planes: contours are marched across the surface so consecutive
+     * revolutions stay one bead apart at every slope, which is what a
+     * sphere or any shallow region needs.
+     */
+    slicerMode: 'planar' | 'cylindrical' | 'surface';
     printerModelId: string;
     printerModelName: string;
     filamentProfileId: string;
