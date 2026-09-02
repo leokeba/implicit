@@ -54,16 +54,40 @@ export interface SurfaceMarchOptions {
      */
     maxBeadAdvance: number;
     /**
-     * Rise per revolution, as a fraction of the bead height, below which the
-     * surface counts as flat rather than merely shallow. This is what leaves
-     * a flat top open: a flat face rises by nothing however far the front
-     * walks across it, while a dome keeps climbing all the way to its pole.
+     * Climb of a single step, as a fraction of the bead height, below which
+     * that point counts as having stopped ascending. At the default bead this
+     * is about one and a half degrees of slope - flat, not merely gentle.
      */
     minRiseFraction: number;
     /**
+     * How near vertical a point's surface normal has to be, as its cosine,
+     * for a step that no longer climbs to mean the front has walked onto the
+     * top of the model.
+     *
+     * Both halves are needed. A step stops climbing wherever the front runs
+     * along a surface rather than up it, which on a twisted shape happens all
+     * over a perfectly printable wall - the contour there is far from level,
+     * so "perpendicular to the contour, along the surface" points sideways.
+     * What makes the top of a model different is that the surface under those
+     * points faces up: they are standing on a shelf with nothing beyond it,
+     * not on a wall they merely happen to be traversing.
+     */
+    flatTopNormal: number;
+    /**
+     * Share of a revolution that has to reach the top of the model before the
+     * march stops. Measured per point rather than as an average climb,
+     * because a front meeting a flat top rolls over the rim a few points at a
+     * time: by the time the mean has collapsed, several revolutions have
+     * already crept inward across the top face, each one raggedly, since
+     * which points crossed first is down to millimetre-scale wobble in the
+     * front. The fraction is what keeps a lone horizontal patch - a ledge, a
+     * noise crater - from ending an otherwise healthy march.
+     */
+    flatTopFraction: number;
+    /**
      * Widest opening, in SDF units, that the march will spiral shut without
      * asking whether the surface is still rising. A front converging onto a
-     * pole stops rising too - not because the face went flat but because
+     * pole goes horizontal too - not because the face went flat but because
      * there is hardly any face left - and closing the last few millimetres
      * over air is what every vase-mode top does.
      */
@@ -86,6 +110,8 @@ export function defaultSurfaceMarchOptions(settings: VaseSlicerSettings): Surfac
         overhangWarnDegrees: 5,
         maxBeadAdvance: settings.surfaceMaxBeadAdvance,
         minRiseFraction: 0.05,
+        flatTopNormal: 0.9,
+        flatTopFraction: 0.1,
         maxBridgedOpening: (settings.lineWidth * 8) / scale,
     };
 }
@@ -144,6 +170,21 @@ export function marchSurfaceContours(
             overhangContours++;
         }
 
+        // Part of the revolution has reached the top of the model and is
+        // walking inward across it. That is the honest end of a single-wall
+        // print: there is nothing under a flat top to print onto, and
+        // continuing lays bead after bead out over the hollow.
+        //
+        // Except when there is hardly any opening left. A front converging
+        // onto a pole goes horizontal for a different reason, and refusing to
+        // close the last few millimetres would leave a dome with a hole in it
+        // for no better reason than a flat top has.
+        if (stepped.flatTopPoints > contour.length * options.flatTopFraction
+            && perimeter / Math.PI > options.maxBridgedOpening) {
+            stopReason = 'the surface went flat, so the top is left open';
+            break;
+        }
+
         let next = prepareContour(stepped.contour, options);
         if (next.length < 3) {
             break;
@@ -173,21 +214,6 @@ export function marchSurfaceContours(
         // after it had been closing.
         if (signedContourArea(next) * seedArea <= 0) {
             stopReason = 'the front turned itself inside out, which means it had already closed';
-            break;
-        }
-        // A revolution that barely climbs is walking across a flat face, not
-        // up a shallow one. That is the honest end of a single-wall print:
-        // there is nothing under a flat top to print onto.
-        //
-        // Except when there is hardly any opening left. A front converging
-        // onto a pole stops rising for a different reason, and refusing to
-        // close the last few millimetres would leave a dome with a hole in
-        // it for no better reason than a flat face has.
-        const rise = averageHeight(next) - averageHeight(contour);
-        const openingDiameter = nextPerimeter / Math.PI;
-        if (rise < options.beadHeight * options.minRiseFraction
-            && openingDiameter > options.maxBridgedOpening) {
-            stopReason = 'the surface went flat, so the top is left open';
             break;
         }
 
@@ -233,6 +259,8 @@ interface SteppedContour {
     overhangPoints: number;
     /** Points whose new bead would not rest on the previous revolution. */
     unsupportedPoints: number;
+    /** Points that stopped climbing on an upward-facing surface. */
+    flatTopPoints: number;
 }
 
 function stepContour(
@@ -248,8 +276,10 @@ function stepContour(
     // exceeds the permitted share of a bead width the new bead has nothing
     // under it.
     const maxHorizontalAdvance = options.beadWidth * options.maxBeadAdvance;
+    const minRise = options.beadHeight * options.minRiseFraction;
     let overhangPoints = 0;
     let unsupportedPoints = 0;
+    let flatTopPoints = 0;
 
     for (let i = 0; i < contour.length; i++) {
         const point = contour[i];
@@ -290,6 +320,9 @@ function stepContour(
         if (pitch * Math.sqrt(Math.max(0, 1 - uy * uy)) > maxHorizontalAdvance) {
             unsupportedPoints++;
         }
+        if (uy * pitch < minRise && ny > options.flatTopNormal) {
+            flatTopPoints++;
+        }
         stepped[i] = {
             x: point.x + ux * pitch,
             y: point.y + uy * pitch,
@@ -301,6 +334,7 @@ function stepContour(
         contour: projectOntoSurface(sampler, settings, stepped, options, options.projectionIterations),
         overhangPoints,
         unsupportedPoints,
+        flatTopPoints,
     };
 }
 

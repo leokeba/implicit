@@ -87,8 +87,9 @@ export interface VaseSlicerSettings {
      * It is a blunt instrument for closing a dome, because the slope near a
      * pole is small over a whole band, not just at the point: at 0.5 a 50 mm
      * sphere is left with a 32 mm hole. The default leaves closure to the
-     * rise test instead, which stops on a surface that is flat rather than
-     * merely shallow. Lower this to be cautious about shallow overhangs.
+     * flatness test instead, which stops where the surface is horizontal
+     * rather than merely shallow. Lower this to be cautious about shallow
+     * overhangs.
      */
     surfaceMaxBeadAdvance: number;
     brimWidthMm: number;
