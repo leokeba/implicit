@@ -10,6 +10,12 @@ export interface FilamentProfile {
     flowRate: number;
     printSpeedMmPerSec: number;
     travelSpeedMmPerSec: number;
+    /** Solid density, used to report filament mass in exported packages. */
+    densityGramsPerCm3: number;
+    /** Bambu material name (e.g. `PLA`), shown on the printer's job screen. */
+    bambuType: string;
+    /** Bambu filament code (e.g. `GFL99` for generic PLA). */
+    bambuTrayInfoIndex: string;
 }
 
 interface FilamentProfileFile {
@@ -22,6 +28,9 @@ interface FilamentProfileFile {
     flowRate?: unknown;
     printSpeedMmPerSec?: unknown;
     travelSpeedMmPerSec?: unknown;
+    densityGramsPerCm3?: unknown;
+    bambuType?: unknown;
+    bambuTrayInfoIndex?: unknown;
 }
 
 const filamentProfileModules = import.meta.glob('../filaments/profiles/*.json', {
@@ -81,8 +90,11 @@ function safeParseFilamentProfile(path: string, moduleValue: unknown): FilamentP
     const flowRate = toFiniteNumber(profile.flowRate);
     const printSpeedMmPerSec = toFiniteNumber(profile.printSpeedMmPerSec);
     const travelSpeedMmPerSec = toFiniteNumber(profile.travelSpeedMmPerSec);
+    const densityGramsPerCm3 = toFiniteNumber(profile.densityGramsPerCm3);
+    const bambuType = toTrimmedString(profile.bambuType);
+    const bambuTrayInfoIndex = toTrimmedString(profile.bambuTrayInfoIndex);
 
-    if (!id || !name || filamentDiameter <= 0 || nozzleTempC <= 0 || flowRate <= 0) {
+    if (!id || !name || filamentDiameter <= 0 || nozzleTempC <= 0 || flowRate <= 0 || densityGramsPerCm3 <= 0) {
         console.warn(`Skipping incomplete filament profile: ${path}`);
         return null;
     }
@@ -97,7 +109,14 @@ function safeParseFilamentProfile(path: string, moduleValue: unknown): FilamentP
         flowRate,
         printSpeedMmPerSec,
         travelSpeedMmPerSec,
+        densityGramsPerCm3,
+        bambuType,
+        bambuTrayInfoIndex,
     };
+}
+
+function toTrimmedString(value: unknown): string {
+    return typeof value === 'string' ? value.trim() : '';
 }
 
 function toFiniteNumber(value: unknown): number {

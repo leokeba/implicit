@@ -59,10 +59,22 @@
     import {
         applyPrinterModelConnectionDefaults as resolvePrinterConnectionDefaults,
         checkPrinterAvailability,
+        isPrinterConfigured,
         persistPrinterTarget,
         readPrinterTarget,
         type PrinterTarget,
     } from './app/printer-connection';
+    import type { PrinterConnectionKind } from './core/bambu/connection-kind';
+    import {
+        describeHandoffPathProblem,
+        isBambuHandoffSupported,
+        pickBambuHandoffFolder as openBambuHandoffFolderPicker,
+        reconnectBambuHandoffFolder,
+        restoreBambuHandoffFolder,
+        type BambuHandoffFolder,
+        type BambuHandoffFolderStatus,
+    } from './ui/bambu-handoff';
+    import { sendPlateToBambuConnect } from './app/bambu-send';
     import { SliceEtaEstimator } from './app/slice-eta';
     import { createLayoutResizeController } from './app/layout-resize';
     import {
@@ -143,11 +155,15 @@
     let compactWorkspaceLayout = $state(false);
     let runtimeSnapshotHydrated = $state(false);
     let printerTarget: PrinterTarget = $state({
+        kind: 'moonraker',
         baseUrl: '',
         apiKey: '',
         uploadPath: '',
         autoStartPrint: true,
+        handoffFolderPath: '',
     });
+    let bambuHandoffFolder: BambuHandoffFolder | null = $state(null);
+    let bambuHandoffStatus: BambuHandoffFolderStatus = $state('none');
     let generatedGcodeArtifact: GeneratedGcodeArtifact | null = $state(null);
     let printerAvailable = $state(false);
     let postprocessAutoUpdateTimer: number | null = null;
@@ -334,7 +350,29 @@
             (!persistedActivePostprocessDocument || activePostprocessDocument.source !== persistedActivePostprocessDocument.source)
     ));
     const postprocessModeLabel = $derived(sceneEditorModeLabel);
-    const printerConfigured = $derived(printerTarget.baseUrl.trim().length > 0);
+    const printerConfigured = $derived(isPrinterConfigured(printerTarget));
+    const bambuHandoff = $derived.by((): { folderName: string | null; problem: string | null } => {
+        const folder = bambuHandoffFolder;
+        const folderName = folder?.name ?? null;
+
+        if (printerTarget.kind !== 'bambu-connect') {
+            return { folderName, problem: null };
+        }
+        if (!isBambuHandoffSupported()) {
+            return { folderName, problem: 'This browser has no File System Access API; Bambu handoff needs Chrome or Edge.' };
+        }
+        if (!folder) {
+            return { folderName, problem: 'Choose a handoff folder, then enter its absolute path.' };
+        }
+
+        return { folderName, problem: describeHandoffPathProblem(printerTarget.handoffFolderPath, folder.name) };
+    });
+    // Bambu Connect has nothing to probe: readiness is the handoff folder plus
+    // a path that agrees with it. A revoked permission is recoverable from the
+    // send click itself, so it does not gate the button.
+    const printerReady = $derived(printerTarget.kind === 'bambu-connect'
+        ? bambuHandoff.problem === null
+        : printerAvailable);
     const currentSliceSignature = $derived(buildSliceSignature(sceneId, activeSceneBundle, config));
     const currentPostprocessSignature = $derived(buildPostprocessSignature(config));
     const hasGeneratedArtifactForCurrentSlice = $derived.by(() => Boolean(
@@ -385,13 +423,18 @@
         outputStatus: $status.outputStatus,
         sliceDebugSnapshot,
         printerConnection: {
+            kind: printerTarget.kind,
             baseUrl: printerTarget.baseUrl,
             apiKey: printerTarget.apiKey,
             uploadPath: printerTarget.uploadPath,
             autoStartPrint: printerTarget.autoStartPrint,
+            handoffFolderPath: printerTarget.handoffFolderPath,
         },
+        bambuHandoffFolderName: bambuHandoff.folderName,
+        bambuHandoffStatus,
+        bambuHandoffProblem: bambuHandoff.problem,
         printerConfigured,
-        printerAvailable,
+        printerAvailable: printerReady,
         exportActionLabel: generateActionLabel,
         hasGeneratedGcode: hasGeneratedArtifactForCurrentState,
     } satisfies InspectorSchemaState);
@@ -580,7 +623,10 @@
         void applyPrinterModelConnectionDefaults(printerModelId);
     }
 
-    function updatePrinterConnectionString(key: 'baseUrl' | 'apiKey' | 'uploadPath', value: string): void {
+    function updatePrinterConnectionString(
+        key: 'baseUrl' | 'apiKey' | 'uploadPath' | 'handoffFolderPath',
+        value: string,
+    ): void {
         printerTarget = {
             ...printerTarget,
             [key]: value.trim(),
@@ -588,6 +634,33 @@
         persistCurrentPrinterTarget();
         if (key === 'baseUrl' || key === 'apiKey') {
             void refreshPrinterAvailability();
+        }
+    }
+
+    function updatePrinterConnectionKind(kind: PrinterConnectionKind): void {
+        printerTarget = { ...printerTarget, kind };
+        persistCurrentPrinterTarget();
+        void refreshPrinterAvailability();
+    }
+
+    async function pickBambuHandoffFolder(): Promise<void> {
+        if (!isBambuHandoffSupported()) {
+            status.setWorkspaceStatus('This browser has no File System Access API; Bambu handoff needs Chrome or Edge.');
+            return;
+        }
+
+        try {
+            bambuHandoffFolder = await openBambuHandoffFolderPicker();
+            bambuHandoffStatus = 'connected';
+            status.setWorkspaceStatus(
+                `Handoff folder set to "${bambuHandoffFolder.name}". Enter its absolute path so Bambu Connect can find the file.`,
+            );
+        } catch (error) {
+            // An aborted picker is a normal cancel, not a failure.
+            if (error instanceof DOMException && error.name === 'AbortError') {
+                return;
+            }
+            status.setWorkspaceStatus(error instanceof Error ? error.message : 'Could not open the folder picker.');
         }
     }
 
@@ -801,6 +874,11 @@
     }
 
     async function sendVaseGcodeToPrinter(): Promise<void> {
+        if (printerTarget.kind === 'bambu-connect') {
+            await sendVaseGcodeToBambuConnect();
+            return;
+        }
+
         if (!printerConfigured) {
             status.setWorkspaceStatus('Set Moonraker URL in Machine > Printer Connection to enable Print.');
             return;
@@ -812,6 +890,33 @@
 
         if (!printerAvailable) {
             status.setWorkspaceStatus(`Printer is not reachable at ${printerTarget.baseUrl}.`);
+            return;
+        }
+
+        await executeSendVaseGcodeToPrinter(printerTarget);
+    }
+
+    /**
+     * Runs inside the click handler on purpose: a folder whose permission
+     * lapsed between sessions can only be re-granted from a user gesture.
+     */
+    async function sendVaseGcodeToBambuConnect(): Promise<void> {
+        if (!bambuHandoffFolder) {
+            status.setWorkspaceStatus('Choose a handoff folder in Machine > Printer Connection first.');
+            return;
+        }
+
+        if (bambuHandoffStatus !== 'connected') {
+            if (!(await reconnectBambuHandoffFolder(bambuHandoffFolder))) {
+                status.setWorkspaceStatus('Write permission for the handoff folder was denied.');
+                return;
+            }
+            bambuHandoffStatus = 'connected';
+        }
+
+        const pathProblem = describeHandoffPathProblem(printerTarget.handoffFolderPath, bambuHandoffFolder.name);
+        if (pathProblem) {
+            status.setWorkspaceStatus(pathProblem);
             return;
         }
 
@@ -837,6 +942,30 @@
 
                 if (!canSendCached) {
                     setGeneratedArtifactForCurrentState(artifact);
+                }
+
+                if (configuredTarget.kind === 'bambu-connect') {
+                    if (!bambuHandoffFolder) {
+                        throw new Error('No handoff folder is connected.');
+                    }
+
+                    reportProgress({
+                        percent: 96,
+                        phaseLabel: 'Package',
+                        detail: `Packing ${artifact.filename} into a Bambu plate...`,
+                    });
+
+                    const sendResult = await sendPlateToBambuConnect({
+                        filename: artifact.filename,
+                        gcode: artifact.gcode,
+                        settings: config.settings,
+                        printerModel: printerModels.find((model) => model.id === config.settings.printerModelId),
+                        filamentProfile: filamentProfiles.find((profile) => profile.id === config.settings.filamentProfileId),
+                        folder: bambuHandoffFolder,
+                        handoffFolderPath: configuredTarget.handoffFolderPath,
+                    });
+
+                    return `Wrote ${sendResult.packageFilename} (${sendResult.summary}) and opened Bambu Connect. Press Print there to start the job.`;
                 }
 
                 reportProgress({
@@ -1179,6 +1308,8 @@
         setBenchmarkWarmups: (value) => status.setBenchmarkWarmups(value),
         updatePrinterConnectionString,
         updatePrinterConnectionAutoStart,
+        updatePrinterConnectionKind,
+        pickBambuHandoffFolder,
         generateVaseGcode,
         downloadGeneratedGcode,
         sendVaseGcodeToPrinter,
@@ -1325,9 +1456,12 @@
 
                 studio.init();
                 printerTarget = readPrinterTarget();
-                if (!printerTarget.baseUrl.trim()) {
+                if (!isPrinterConfigured(printerTarget)) {
                     await applyPrinterModelConnectionDefaults($studioState.config.settings.printerModelId);
                 }
+                const restoredHandoff = await restoreBambuHandoffFolder();
+                bambuHandoffFolder = restoredHandoff.folder;
+                bambuHandoffStatus = restoredHandoff.status;
                 await refreshPrinterAvailability();
                 if (disposed) {
                     return;

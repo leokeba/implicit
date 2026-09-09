@@ -1,3 +1,5 @@
+import type { BambuHandoffFolderStatus } from '../bambu-handoff';
+import type { PrinterConnectionKind } from '../../core/bambu/connection-kind';
 import type { AnimationParams, RaymarchParams, ViewportParams } from '../../core/renderer';
 import type { SceneControlDefinition, SceneOption } from '../../core/shader-pipeline';
 import type { SliceDebugSnapshot, VaseSlicerSettings } from '../../core/slicer';
@@ -54,7 +56,7 @@ export type BooleanSlicerKey =
     | 'enableContourAlignment'
     | 'enableMoveMerging';
 
-export type PrinterConnectionStringKey = 'baseUrl' | 'apiKey' | 'uploadPath';
+export type PrinterConnectionStringKey = 'baseUrl' | 'apiKey' | 'uploadPath' | 'handoffFolderPath';
 
 export interface InspectorSchemaState {
     sceneOptions: SceneOption[];
@@ -92,11 +94,18 @@ export interface InspectorSchemaState {
     outputStatus: string;
     sliceDebugSnapshot: SliceDebugSnapshot | null;
     printerConnection: {
+        kind: PrinterConnectionKind;
         baseUrl: string;
         apiKey: string;
         uploadPath: string;
         autoStartPrint: boolean;
+        handoffFolderPath: string;
     };
+    /** Folder name behind the granted handle, or null when none is connected. */
+    bambuHandoffFolderName: string | null;
+    bambuHandoffStatus: BambuHandoffFolderStatus;
+    /** Why the Bambu handoff cannot run yet, or null when it is ready. */
+    bambuHandoffProblem: string | null;
     printerConfigured: boolean;
     printerAvailable: boolean;
     exportActionLabel: string;
@@ -132,6 +141,8 @@ export interface InspectorSchemaHandlers {
     setBenchmarkWarmups: (value: number) => void;
     updatePrinterConnectionString: (key: PrinterConnectionStringKey, value: string) => void;
     updatePrinterConnectionAutoStart: (value: boolean) => void;
+    updatePrinterConnectionKind: (kind: PrinterConnectionKind) => void;
+    pickBambuHandoffFolder: () => void | Promise<void>;
     generateVaseGcode: () => void | Promise<void>;
     downloadGeneratedGcode: () => void | Promise<void>;
     sendVaseGcodeToPrinter: () => void | Promise<void>;
@@ -193,6 +204,7 @@ export type InspectorFieldSchema =
     | (SelectFieldBase & { target: 'postprocessScript'; optionsSource: 'postprocessDocuments' })
     | (SelectFieldBase & { target: 'postprocessAutoUpdate'; options: InspectorFieldOption[] })
     | (SelectFieldBase & { target: 'printerConnectionAutoStart'; options: InspectorFieldOption[] })
+    | (SelectFieldBase & { target: 'printerConnectionKind'; options: InspectorFieldOption[] })
     | (TextFieldBase & { target: 'printerConnection'; key: PrinterConnectionStringKey })
     | (TextareaFieldBase & { target: 'slicerText'; key: keyof Pick<VaseSlicerSettings, 'startGcode' | 'endGcode'> });
 
@@ -210,7 +222,7 @@ export interface InspectorSectionSchema {
 }
 
 export interface InspectorActionSchema {
-    id: 'resetView' | 'generateVaseGcode' | 'downloadGeneratedGcode' | 'sendVaseGcodeToPrinter' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript' | 'resetAllOverrides';
+    id: 'resetView' | 'generateVaseGcode' | 'downloadGeneratedGcode' | 'sendVaseGcodeToPrinter' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript' | 'resetAllOverrides' | 'pickBambuHandoffFolder';
     label: string;
     tone?: 'secondary';
     disabledWhenPending?: boolean;

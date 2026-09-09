@@ -7,5 +7,8 @@
   "fanPercent": 100,
   "flowRate": 1.0,
   "printSpeedMmPerSec": 35,
-  "travelSpeedMmPerSec": 120
+  "travelSpeedMmPerSec": 120,
+  "densityGramsPerCm3": 1.24,
+  "bambuType": "PLA",
+  "bambuTrayInfoIndex": "GFL99"
 }

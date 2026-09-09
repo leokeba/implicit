@@ -20,6 +20,8 @@ export function readFieldValue(field: InspectorFieldSchema, state: InspectorSche
             return String(state.postprocessAutoUpdate);
         case 'printerConnectionAutoStart':
             return String(state.printerConnection.autoStartPrint);
+        case 'printerConnectionKind':
+            return state.printerConnection.kind;
         case 'printerConnection':
             return state.printerConnection[field.key];
         case 'uniform':
@@ -59,6 +61,7 @@ export function readFieldOptions(field: InspectorFieldSchema, state: InspectorSc
         field.target === 'slicerMode' ||
         field.target === 'slicerBoolean' ||
         field.target === 'postprocessAutoUpdate' ||
+        field.target === 'printerConnectionKind' ||
         field.target === 'printerConnectionAutoStart'
     ) {
         return field.options;

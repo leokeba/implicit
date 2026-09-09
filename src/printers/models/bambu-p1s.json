@@ -4,6 +4,8 @@
   "plateWidthMm": 256,
   "plateDepthMm": 256,
   "maxHeightMm": 250,
+  "defaultConnectionKind": "bambu-connect",
+  "bambuModelId": "C12",
   "defaultFirstLayerPrintSpeedMmPerSec": 30,
   "defaultPrintSpeedMmPerSec": 80,
   "defaultTravelSpeedMmPerSec": 220,

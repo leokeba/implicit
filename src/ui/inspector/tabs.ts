@@ -1,12 +1,75 @@
 import type {
     ControlTabId,
     InspectorFieldOption,
+    InspectorFieldSchema,
     InspectorSchemaState,
+    InspectorSectionSchema,
     InspectorTabSchema,
 } from './types';
 import { buildPipelineSections, buildSceneControlSections } from './dynamic-sections';
 
 import type { VaseSlicerSettings } from '../../core/slicer';
+
+const PRINTER_CONNECTION_SECTION_ID = 'machine-printer-connection';
+
+const CONNECTION_KIND_OPTIONS: InspectorFieldOption[] = [
+    { value: 'moonraker', label: 'Moonraker (Klipper)' },
+    { value: 'bambu-connect', label: 'Bambu Connect' },
+];
+
+/**
+ * Replaced per-render by buildPrinterConnectionSection; the static tab table
+ * needs a slot because the fields depend on the selected backend.
+ */
+const PRINTER_CONNECTION_PLACEHOLDER_SECTION: InspectorSectionSchema = {
+    id: PRINTER_CONNECTION_SECTION_ID,
+    title: 'Printer Connection',
+    caption: '',
+    fields: [],
+};
+
+function buildPrinterConnectionSection(state: InspectorSchemaState): InspectorSectionSchema {
+    const kindField: InspectorFieldSchema = {
+        kind: 'select',
+        target: 'printerConnectionKind',
+        id: 'printer-connection-kind',
+        label: 'Send via',
+        options: CONNECTION_KIND_OPTIONS,
+    };
+
+    if (state.printerConnection.kind === 'bambu-connect') {
+        return {
+            id: PRINTER_CONNECTION_SECTION_ID,
+            title: 'Printer Connection',
+            caption: state.bambuHandoffProblem
+                ?? `Writes a .gcode.3mf to ${state.bambuHandoffFolderName ?? 'the handoff folder'} and opens Bambu Connect.`,
+            fields: [
+                kindField,
+                {
+                    kind: 'text',
+                    target: 'printerConnection',
+                    key: 'handoffFolderPath',
+                    id: 'printer-connection-handoff-path',
+                    label: 'Handoff folder path',
+                    placeholder: '/Users/you/Implicit/plates',
+                },
+            ],
+        };
+    }
+
+    return {
+        id: PRINTER_CONNECTION_SECTION_ID,
+        title: 'Printer Connection',
+        caption: 'Configure Moonraker connection details for one-click prints.',
+        fields: [
+            kindField,
+            { kind: 'text', target: 'printerConnection', key: 'baseUrl', id: 'printer-connection-base-url', label: 'Moonraker URL', placeholder: 'http://printer.local:7125', inputType: 'url' },
+            { kind: 'text', target: 'printerConnection', key: 'apiKey', id: 'printer-connection-api-key', label: 'API key (optional)', placeholder: 'Leave blank for trusted LAN', inputType: 'password' },
+            { kind: 'text', target: 'printerConnection', key: 'uploadPath', id: 'printer-connection-upload-path', label: 'Upload subfolder (optional)', placeholder: 'implicit' },
+            { kind: 'select', target: 'printerConnectionAutoStart', id: 'printer-connection-auto-start', label: 'Auto-start after upload', options: BOOLEAN_TOGGLE_OPTIONS },
+        ],
+    };
+}
 
 export const VIEW_MODE_OPTIONS: InspectorFieldOption[] = [
     { value: '0', label: 'Shaded' },
@@ -224,17 +287,7 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'textarea', target: 'slicerText', key: 'endGcode', id: 'slicer-end-gcode', label: 'End G-code', rows: 5 },
                 ],
             },
-            {
-                id: 'machine-printer-connection',
-                title: 'Printer Connection',
-                caption: 'Configure Moonraker connection details for one-click prints.',
-                fields: [
-                    { kind: 'text', target: 'printerConnection', key: 'baseUrl', id: 'printer-connection-base-url', label: 'Moonraker URL', placeholder: 'http://printer.local:7125', inputType: 'url' },
-                    { kind: 'text', target: 'printerConnection', key: 'apiKey', id: 'printer-connection-api-key', label: 'API key (optional)', placeholder: 'Leave blank for trusted LAN', inputType: 'password' },
-                    { kind: 'text', target: 'printerConnection', key: 'uploadPath', id: 'printer-connection-upload-path', label: 'Upload subfolder (optional)', placeholder: 'implicit' },
-                    { kind: 'select', target: 'printerConnectionAutoStart', id: 'printer-connection-auto-start', label: 'Auto-start after upload', options: BOOLEAN_TOGGLE_OPTIONS },
-                ],
-            },
+            PRINTER_CONNECTION_PLACEHOLDER_SECTION,
         ],
     },
     {
@@ -335,7 +388,11 @@ export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSch
         }
 
         if (state.printerConfigured && state.printerAvailable) {
-            outputActions.push({ id: 'sendVaseGcodeToPrinter', label: 'Print', disabledWhenPending: true });
+            outputActions.push({
+                id: 'sendVaseGcodeToPrinter',
+                label: state.printerConnection.kind === 'bambu-connect' ? 'Send to Bambu Connect' : 'Print',
+                disabledWhenPending: true,
+            });
         }
 
         outputActions.push({ id: 'benchmarkVaseGcode', label: 'Benchmark', tone: 'secondary', disabledWhenPending: true });
@@ -352,6 +409,23 @@ export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSch
             ...baseTab,
             sections: [...pipelineSections, ...baseTab.sections],
         };
+    }
+
+    if (tabId === 'machine') {
+        const machineTab: InspectorTabSchema = {
+            ...baseTab,
+            sections: baseTab.sections.map((section) => (
+                section.id === PRINTER_CONNECTION_SECTION_ID ? buildPrinterConnectionSection(state) : section
+            )),
+            actions: state.printerConnection.kind === 'bambu-connect'
+                ? [{
+                    id: 'pickBambuHandoffFolder',
+                    label: state.bambuHandoffFolderName ? 'Change Handoff Folder' : 'Choose Handoff Folder',
+                    tone: 'secondary',
+                }]
+                : baseTab.actions,
+        };
+        return withOverrideActions(machineTab, state);
     }
 
     if (tabId !== 'scene') {

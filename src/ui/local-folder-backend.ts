@@ -1,15 +1,17 @@
 import { buildScriptDocument, type PostprocessScriptDocument } from '../core/postprocess-registry';
 import type { SceneBundle } from '../core/shader-pipeline';
+import {
+    forgetStoredDirectoryHandle,
+    PROJECT_ROOT_HANDLE_KEY,
+    readStoredDirectoryHandle,
+    storeDirectoryHandle,
+} from './handle-store';
 import type { WorkspaceBackend } from './workspace-backend';
 
 // Mirrors the dev server file API's safety patterns (vite.config.ts).
 const SCENE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/i;
 const SCENE_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(glsl|ts|js)$/i;
 const POSTPROCESS_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(js|ts)$/i;
-
-const HANDLE_DB_NAME = 'implicit-workspace';
-const HANDLE_STORE_NAME = 'handles';
-const PROJECT_ROOT_KEY = 'project-root';
 
 const POSTPROCESS_DIR_NAME = 'postprocess-scripts';
 
@@ -35,7 +37,7 @@ export function isLocalFolderSupported(): boolean {
 export async function pickLocalFolderBackend(): Promise<WorkspaceBackend> {
     const root = await window.showDirectoryPicker({ id: 'implicit-project', mode: 'readwrite' });
     const backend = await createLocalFolderBackend(root);
-    await storeRootHandle(root);
+    await storeDirectoryHandle(PROJECT_ROOT_HANDLE_KEY, root);
     return backend;
 }
 
@@ -45,7 +47,7 @@ export async function pickLocalFolderBackend(): Promise<WorkspaceBackend> {
  * reconnect callback to invoke from a user gesture.
  */
 export async function restoreLocalFolderBackend(): Promise<LocalFolderRestoreResult> {
-    const root = await readStoredRootHandle();
+    const root = await readStoredDirectoryHandle(PROJECT_ROOT_HANDLE_KEY);
     if (!root) {
         return { status: 'none' };
     }
@@ -61,7 +63,7 @@ export async function restoreLocalFolderBackend(): Promise<LocalFolderRestoreRes
         try {
             return { status: 'connected', backend: await createLocalFolderBackend(root) };
         } catch {
-            await forgetStoredRootHandle();
+            await forgetStoredDirectoryHandle(PROJECT_ROOT_HANDLE_KEY);
             return { status: 'none' };
         }
     }
@@ -81,7 +83,7 @@ export async function restoreLocalFolderBackend(): Promise<LocalFolderRestoreRes
                 try {
                     return await createLocalFolderBackend(root);
                 } catch {
-                    await forgetStoredRootHandle();
+                    await forgetStoredDirectoryHandle(PROJECT_ROOT_HANDLE_KEY);
                     return null;
                 }
             },
@@ -227,50 +229,3 @@ async function writeFile(directory: FileSystemDirectoryHandle, fileName: string,
     await writable.close();
 }
 
-function openHandleDb(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open(HANDLE_DB_NAME, 1);
-        request.onupgradeneeded = () => {
-            request.result.createObjectStore(HANDLE_STORE_NAME);
-        };
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error ?? new Error('IndexedDB open failed.'));
-    });
-}
-
-async function withHandleStore<T>(
-    mode: IDBTransactionMode,
-    operation: (store: IDBObjectStore) => IDBRequest<T>,
-): Promise<T | null> {
-    if (typeof indexedDB === 'undefined') {
-        return null;
-    }
-
-    try {
-        const db = await openHandleDb();
-        try {
-            return await new Promise<T>((resolve, reject) => {
-                const request = operation(db.transaction(HANDLE_STORE_NAME, mode).objectStore(HANDLE_STORE_NAME));
-                request.onsuccess = () => resolve(request.result);
-                request.onerror = () => reject(request.error ?? new Error('IndexedDB request failed.'));
-            });
-        } finally {
-            db.close();
-        }
-    } catch {
-        return null;
-    }
-}
-
-async function readStoredRootHandle(): Promise<FileSystemDirectoryHandle | null> {
-    const stored = await withHandleStore('readonly', (store) => store.get(PROJECT_ROOT_KEY));
-    return stored instanceof FileSystemDirectoryHandle ? stored : null;
-}
-
-async function storeRootHandle(handle: FileSystemDirectoryHandle): Promise<void> {
-    await withHandleStore('readwrite', (store) => store.put(handle, PROJECT_ROOT_KEY));
-}
-
-async function forgetStoredRootHandle(): Promise<void> {
-    await withHandleStore('readwrite', (store) => store.delete(PROJECT_ROOT_KEY));
-}

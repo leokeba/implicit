@@ -1,3 +1,4 @@
+import { isPrinterConnectionKind } from '../../core/bambu/connection-kind';
 import type { InspectorActionSchema, InspectorFieldSchema, InspectorSchemaHandlers } from './types';
 
 function coerceNumber(rawValue: string): number {
@@ -70,6 +71,11 @@ export function commitFieldValue(field: InspectorFieldSchema, rawValue: string, 
             return;
         case 'printerConnectionAutoStart':
             handlers.updatePrinterConnectionAutoStart(rawValue === 'true');
+            return;
+        case 'printerConnectionKind':
+            if (isPrinterConnectionKind(rawValue)) {
+                handlers.updatePrinterConnectionKind(rawValue);
+            }
             return;
         case 'printerConnection':
             handlers.updatePrinterConnectionString(field.key, rawValue);
@@ -156,5 +162,7 @@ export function triggerInspectorAction(action: InspectorActionSchema, handlers: 
             return handlers.revertPostprocessScript();
         case 'resetAllOverrides':
             return handlers.resetAllOverrides();
+        case 'pickBambuHandoffFolder':
+            return handlers.pickBambuHandoffFolder();
     }
 }

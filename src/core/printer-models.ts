@@ -1,3 +1,4 @@
+import type { PrinterConnectionKind } from './bambu/connection-kind';
 import type { VaseSlicerSettings } from './slicer';
 
 export interface PrinterModel {
@@ -13,6 +14,10 @@ export interface PrinterModel {
     defaultMoonrakerApiKey?: string;
     defaultMoonrakerUploadPath?: string;
     defaultMoonrakerAutoStartPrint?: boolean;
+    /** Connection backend this printer is driven through. */
+    defaultConnectionKind?: PrinterConnectionKind;
+    /** Bambu's internal printer code (e.g. `C12` for the P1S). */
+    bambuModelId?: string;
     startGcode: string[];
     endGcode: string[];
 }
@@ -30,6 +35,8 @@ interface PrinterModelFile {
     defaultMoonrakerApiKey?: unknown;
     defaultMoonrakerUploadPath?: unknown;
     defaultMoonrakerAutoStartPrint?: unknown;
+    defaultConnectionKind?: unknown;
+    bambuModelId?: unknown;
     startGcode?: unknown;
     endGcode?: unknown;
 }
@@ -106,6 +113,8 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
     const defaultMoonrakerApiKey = toOptionalString(model.defaultMoonrakerApiKey);
     const defaultMoonrakerUploadPath = toOptionalString(model.defaultMoonrakerUploadPath);
     const defaultMoonrakerAutoStartPrint = toOptionalBoolean(model.defaultMoonrakerAutoStartPrint);
+    const defaultConnectionKind = toOptionalConnectionKind(model.defaultConnectionKind);
+    const bambuModelId = toOptionalString(model.bambuModelId);
     const startGcode = toGcodeLines(model.startGcode);
     const endGcode = toGcodeLines(model.endGcode);
 
@@ -127,9 +136,15 @@ function safeParsePrinterModel(path: string, moduleValue: unknown): PrinterModel
         defaultMoonrakerApiKey,
         defaultMoonrakerUploadPath,
         defaultMoonrakerAutoStartPrint,
+        defaultConnectionKind,
+        bambuModelId,
         startGcode,
         endGcode,
     };
+}
+
+function toOptionalConnectionKind(value: unknown): PrinterConnectionKind | undefined {
+    return value === 'moonraker' || value === 'bambu-connect' ? value : undefined;
 }
 
 function extractModuleData(moduleValue: unknown): unknown {
