@@ -150,8 +150,6 @@ export function triggerInspectorAction(action: InspectorActionSchema, handlers: 
             return handlers.generateVaseGcode();
         case 'downloadGeneratedGcode':
             return handlers.downloadGeneratedGcode();
-        case 'sendVaseGcodeToPrinter':
-            return handlers.sendVaseGcodeToPrinter();
         case 'benchmarkVaseGcode':
             return handlers.benchmarkVaseGcode();
         case 'createPostprocessScript':

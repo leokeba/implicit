@@ -17,6 +17,8 @@
     export let actionPending: boolean;
     export let showDownloadButton: boolean;
     export let showPrintButton: boolean;
+    /** "Print" for Moonraker; Bambu hands off to Connect rather than starting. */
+    export let printActionLabel: string;
     export let onCommitScene: (sceneId: string) => void;
     export let onCommitViewMode: (viewMode: number) => void;
     export let onCommitPrinterModel: (printerModelId: string) => void;
@@ -74,7 +76,7 @@
             <button class="chrome-button" type="button" disabled={actionPending} on:click={onDownloadGeneratedGcode}>Download</button>
         {/if}
         {#if showPrintButton}
-            <button class="chrome-button" type="button" disabled={actionPending} on:click={onSendVaseGcodeToPrinter}>Print</button>
+            <button class="chrome-button" type="button" disabled={actionPending} on:click={onSendVaseGcodeToPrinter}>{printActionLabel}</button>
         {/if}
         <div class={`shader-status shader-status-${shaderStatusMode}`} role="status" aria-live="polite">{shaderStatusText}</div>
     </div>

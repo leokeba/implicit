@@ -106,8 +106,6 @@ export interface InspectorSchemaState {
     bambuHandoffStatus: BambuHandoffFolderStatus;
     /** Why the Bambu handoff cannot run yet, or null when it is ready. */
     bambuHandoffProblem: string | null;
-    printerConfigured: boolean;
-    printerAvailable: boolean;
     exportActionLabel: string;
     hasGeneratedGcode: boolean;
 }
@@ -145,7 +143,6 @@ export interface InspectorSchemaHandlers {
     pickBambuHandoffFolder: () => void | Promise<void>;
     generateVaseGcode: () => void | Promise<void>;
     downloadGeneratedGcode: () => void | Promise<void>;
-    sendVaseGcodeToPrinter: () => void | Promise<void>;
     benchmarkVaseGcode: () => void | Promise<void>;
 }
 
@@ -222,7 +219,7 @@ export interface InspectorSectionSchema {
 }
 
 export interface InspectorActionSchema {
-    id: 'resetView' | 'generateVaseGcode' | 'downloadGeneratedGcode' | 'sendVaseGcodeToPrinter' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript' | 'resetAllOverrides' | 'pickBambuHandoffFolder';
+    id: 'resetView' | 'generateVaseGcode' | 'downloadGeneratedGcode' | 'benchmarkVaseGcode' | 'createPostprocessScript' | 'savePostprocessScript' | 'revertPostprocessScript' | 'resetAllOverrides' | 'pickBambuHandoffFolder';
     label: string;
     tone?: 'secondary';
     disabledWhenPending?: boolean;

@@ -387,14 +387,6 @@ export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSch
             outputActions.push({ id: 'downloadGeneratedGcode', label: 'Download', disabledWhenPending: true });
         }
 
-        if (state.printerConfigured && state.printerAvailable) {
-            outputActions.push({
-                id: 'sendVaseGcodeToPrinter',
-                label: state.printerConnection.kind === 'bambu-connect' ? 'Send to Bambu Connect' : 'Print',
-                disabledWhenPending: true,
-            });
-        }
-
         outputActions.push({ id: 'benchmarkVaseGcode', label: 'Benchmark', tone: 'secondary', disabledWhenPending: true });
 
         return {

@@ -387,6 +387,7 @@
         ? 'Update'
         : 'Generate');
     const showDownloadButton = $derived(hasGeneratedArtifactForCurrentState);
+    const printActionLabel = $derived(printerTarget.kind === 'bambu-connect' ? 'Send to Bambu Connect' : 'Print');
     const inspectorState = $derived({
         sceneOptions,
         uniformControls: config.uniformControls,
@@ -433,8 +434,6 @@
         bambuHandoffFolderName: bambuHandoff.folderName,
         bambuHandoffStatus,
         bambuHandoffProblem: bambuHandoff.problem,
-        printerConfigured,
-        printerAvailable: printerReady,
         exportActionLabel: generateActionLabel,
         hasGeneratedGcode: hasGeneratedArtifactForCurrentState,
     } satisfies InspectorSchemaState);
@@ -1312,7 +1311,6 @@
         pickBambuHandoffFolder,
         generateVaseGcode,
         downloadGeneratedGcode,
-        sendVaseGcodeToPrinter,
         benchmarkVaseGcode,
     };
 
@@ -1579,7 +1577,8 @@
         shaderStatusText={$status.shaderStatusText}
         actionPending={$status.actionPending}
         showDownloadButton={showDownloadButton}
-        showPrintButton={printerConfigured && printerAvailable}
+        showPrintButton={printerConfigured && printerReady}
+        printActionLabel={printActionLabel}
         onCommitScene={commitScene}
         onCommitViewMode={commitViewMode}
         onCommitPrinterModel={commitPrinterModel}
