@@ -84,7 +84,12 @@ interface ShaderSources {
     utils: string;
 }
 
-const sceneEntries: SceneEntry[] = buildSceneEntriesFromModules(bundledSceneModules);
+/** Scene files shipped with the app; always available, overlaid by workspace scenes. */
+const bundledSceneFiles: ReadonlyMap<string, SceneFiles> = collectSceneFilesFromModules(bundledSceneModules);
+
+const sceneEntries: SceneEntry[] = sortSceneEntries(
+    Array.from(bundledSceneFiles.entries()).map(([sceneId, files]) => buildSceneEntry(sceneId, files))
+);
 
 let activeSceneId: string = resolveInitialActiveSceneId();
 
@@ -172,6 +177,29 @@ export function getSceneUniformContractWarnings(sceneId: string = activeSceneId)
     }
 
     return warnings;
+}
+
+/**
+ * Lays workspace scenes over the bundled ones. The overlay is per file: a
+ * workspace folder that holds only scene.glsl for a bundled scene id keeps
+ * the bundled scene.ts, so saving one file of a bundled scene into the
+ * workspace does not strip the rest of it.
+ */
+export function mergeWithBundledScenes(workspace: SceneBundle[]): SceneBundle[] {
+    const byId = new Map<string, SceneBundle>();
+    for (const [sceneId, files] of bundledSceneFiles) {
+        byId.set(sceneId, { id: sceneId, name: sceneId, files: { ...files } });
+    }
+    for (const bundle of workspace) {
+        byId.set(bundle.id, overlayBundledScene(bundle));
+    }
+    return Array.from(byId.values()).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/** One workspace scene with the bundled files of the same id underneath it. */
+export function overlayBundledScene(bundle: SceneBundle): SceneBundle {
+    const bundledFiles = bundledSceneFiles.get(bundle.id);
+    return bundledFiles ? { ...bundle, files: { ...bundledFiles, ...bundle.files } } : bundle;
 }
 
 export function replaceSceneBundles(bundles: SceneBundle[]): SceneBundle[] {
@@ -338,7 +366,7 @@ function buildSceneUniformBlock(manifest: SceneManifest): string {
         .join('\n');
 }
 
-function buildSceneEntriesFromModules(modules: Record<string, string>): SceneEntry[] {
+function collectSceneFilesFromModules(modules: Record<string, string>): Map<string, SceneFiles> {
     const filesByScene = new Map<string, SceneFiles>();
 
     for (const [modulePath, source] of Object.entries(modules)) {
@@ -354,9 +382,7 @@ function buildSceneEntriesFromModules(modules: Record<string, string>): SceneEnt
         filesByScene.set(sceneId, files);
     }
 
-    return sortSceneEntries(
-        Array.from(filesByScene.entries()).map(([sceneId, files]) => buildSceneEntry(sceneId, files))
-    );
+    return filesByScene;
 }
 
 function buildSceneEntry(sceneId: string, files: SceneFiles): SceneEntry {

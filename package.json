@@ -6,6 +6,7 @@
   "scripts": {
     "build": "vite build",
     "check": "svelte-check --tsconfig tsconfig.json",
+    "check:workspace": "node scripts/check-workspace.mjs",
     "serve": "vite",
     "dev": "vite"
   },

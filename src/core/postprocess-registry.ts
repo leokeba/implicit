@@ -42,13 +42,30 @@ const bundledScriptModules = import.meta.glob('../postprocess-scripts/*.{js,ts}'
     import: 'default',
 }) as Record<string, string>;
 
-const scriptRegistry = new Map<string, PostprocessScriptDocument>(
+/** Scripts shipped with the app; always available, overlaid by workspace scripts. */
+export const bundledPostprocessScripts: PostprocessScriptDocument[] = sortScriptDocuments(
     Object.entries(bundledScriptModules).map(([modulePath, source]) => {
         const fileName = modulePath.split('/').pop() ?? 'postprocess.ts';
-        const document = buildScriptDocument(fileName, typeof source === 'string' ? source : '');
-        return [document.id, document];
+        return buildScriptDocument(fileName, typeof source === 'string' ? source : '');
     })
 );
+
+const scriptRegistry = new Map<string, PostprocessScriptDocument>(
+    bundledPostprocessScripts.map((document) => [document.id, document])
+);
+
+/** Bundled scripts overlaid by workspace scripts; on the same id the workspace wins. */
+export function mergeWithBundledPostprocessScripts(workspace: PostprocessScriptDocument[]): PostprocessScriptDocument[] {
+    const byId = new Map(bundledPostprocessScripts.map((document) => [document.id, document]));
+    for (const document of workspace) {
+        byId.set(document.id, document);
+    }
+    return sortScriptDocuments(Array.from(byId.values()));
+}
+
+function sortScriptDocuments(documents: PostprocessScriptDocument[]): PostprocessScriptDocument[] {
+    return documents.slice().sort((left, right) => left.name.localeCompare(right.name));
+}
 
 export function listPostprocessScripts(): PostprocessScriptDocument[] {
     return Array.from(scriptRegistry.values()).sort((left, right) => left.name.localeCompare(right.name));

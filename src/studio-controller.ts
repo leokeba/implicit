@@ -1,6 +1,6 @@
 import { get, writable, type Readable, type Writable } from 'svelte/store';
-import { applyFilamentProfile, loadFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
-import { applyPrinterModel, loadPrinterModels, type PrinterModel } from './core/printer-models';
+import { applyFilamentProfile, bundledFilamentProfiles, type FilamentProfile } from './core/filament-profiles';
+import { applyPrinterModel, bundledPrinterModels, type PrinterModel } from './core/printer-models';
 import { snapToNearestOptionValue } from './core/control-options';
 import {
     resolvePipelineSteps,
@@ -104,8 +104,8 @@ export class StudioController {
         this.renderer = new Renderer();
         this.slicer = new Slicer();
         this.preview = new Preview();
-        this.printerModels = loadPrinterModels();
-        this.filamentProfiles = loadFilamentProfiles();
+        this.printerModels = [...bundledPrinterModels];
+        this.filamentProfiles = [...bundledFilamentProfiles];
         this.sceneOptions = getAvailableScenes();
         this.isSlicing = false;
         this.renderFrameHandle = null;
@@ -465,6 +465,24 @@ export class StudioController {
 
     /** Re-runs the resolution ladder, e.g. after the postprocess registry changed. */
     public refreshConfiguration(): void {
+        this.resolveConfiguration();
+    }
+
+    /**
+     * Replaces the preset lists (bundled + workspace, already merged) and
+     * re-resolves when they differ from what is loaded, so a preset edited on
+     * disk reaches the settings ladder without a reload.
+     */
+    public syncPresets(printerModels: PrinterModel[], filamentProfiles: FilamentProfile[]): void {
+        if (
+            JSON.stringify(printerModels) === JSON.stringify(this.printerModels)
+            && JSON.stringify(filamentProfiles) === JSON.stringify(this.filamentProfiles)
+        ) {
+            return;
+        }
+
+        this.printerModels = [...printerModels];
+        this.filamentProfiles = [...filamentProfiles];
         this.resolveConfiguration();
     }
 

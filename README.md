@@ -11,7 +11,7 @@ Implicit is a browser-based tool for realtime raymarch rendering and vase-mode G
 
 ## Scene Authoring
 
-A scene is a folder under `src/scenes/<id>/` with two files:
+A scene is a folder `scenes/<id>/` (in `src/` for the bundled defaults, or in a workspace folder, see below) with two files:
 
 - `scene.glsl` — the implicit surface: `mapScene(vec3 p)` plus optional field functions. Uniform declarations are injected automatically from the manifest.
 - `scene.ts` — the orchestration manifest (optional): uniforms, parameters, slicer configuration, computed defaults, and the postprocess pipeline.
@@ -39,7 +39,7 @@ export default defineScene({
 
 Everything print-relevant lives in these files; inspector tweaks are session-only overrides, are badged in the UI, and are recorded in the exported G-code header (`IMPLICIT_BLOCK_START`) together with content hashes of the scene sources.
 
-Generic postprocess scripts live in `src/postprocess-scripts/` and export `controls` plus `transform(context)`. Scene manifests reference them by id (`usePostprocess('sine-wave', {...})`) or by scene-local path (`usePostprocess('./flare')`).
+Generic postprocess scripts live in `postprocess-scripts/` and export `controls` plus `transform(context)`. Scene manifests reference them by id (`usePostprocess('sine-wave', {...})`) or by scene-local path (`usePostprocess('./flare')`).
 
 ## Project Structure
 
@@ -50,8 +50,8 @@ implicit
 │   ├── App.svelte               # UI shell and state wiring
 │   ├── studio-controller.ts     # Facade: configuration ladder, overrides, slicing, export
 │   ├── scene-runtime/           # defineScene/usePostprocess API + manifest types ('implicit/scene')
-│   ├── scenes/<id>/             # Scene folders: scene.glsl + scene.ts (+ helpers)
-│   ├── postprocess-scripts/     # Generic toolpath scripts (controls + transform)
+│   ├── scenes/<id>/             # Bundled scene folders: scene.glsl + scene.ts (+ helpers)
+│   ├── postprocess-scripts/     # Bundled toolpath scripts (controls + transform)
 │   ├── core
 │   │   ├── renderer.ts          # Realtime raymarch viewport
 │   │   ├── slicer.ts            # GPU-assisted vase slicing and G-code emission
@@ -61,15 +61,44 @@ implicit
 │   │   ├── postprocess-registry.ts # Script registry + pipeline resolution
 │   │   └── toolpath-postprocess.ts # Pipeline executor + transform context
 │   ├── shaders/                 # Shader templates and GLSL libs
-│   ├── printers/models/         # Printer presets (JSON)
-│   ├── filaments/profiles/      # Filament presets (JSON)
+│   ├── printers/                # Bundled printer presets (JSON)
+│   ├── filaments/               # Bundled filament presets (JSON)
 │   ├── ui/, components/         # Svelte UI: inspector schema, panels, document sync
 │   └── studio/                  # Export, benchmark, overlay helpers
 ├── index.html
 ├── package.json
 ├── tsconfig.json                # includes the 'implicit/scene' path alias
-└── vite.config.ts               # dev-server file API for src/scenes and src/postprocess-scripts
+├── scripts/check-workspace.mjs  # type-checks the workspace's manifests against 'implicit/scene'
+└── vite.config.ts               # dev-server file API for the workspace folder
 ```
+
+## Workspace Folder
+
+Everything the app reads from files has two layers: the **bundled defaults** in
+this repo's `src/` (two example scenes, the generic postprocess scripts, and the
+stock printer/filament presets, all compiled into the build) and an optional
+**workspace folder** laid out the same way:
+
+```
+<workspace>/scenes/<id>/scene.glsl + scene.ts
+<workspace>/postprocess-scripts/*.ts
+<workspace>/printers/*.json
+<workspace>/filaments/*.json
+```
+
+The workspace is laid over the defaults: a workspace scene can use a bundled
+script, and a workspace file with the same id as a bundled one replaces it.
+Saves from the in-app editors always land in the workspace, so editing a
+bundled scene forks it there. This is how private designs stay out of the
+public repo while remaining available everywhere:
+
+- **Dev server:** put `IMPLICIT_WORKSPACE=../my-designs` in `.env.local`
+  (gitignored). Unset, the workspace is `src/` itself, i.e. you are editing the
+  bundled defaults. `npm run check:workspace` type-checks the workspace's
+  manifests and scripts against `implicit/scene`.
+- **Static build (GitHub Pages):** press *Connect Project Folder…* in the
+  status strip and pick the workspace folder (Chromium's File System Access
+  API). The folder handle is remembered per browser.
 
 ## Setup Instructions
 
@@ -108,11 +137,11 @@ You can also run `Preview: Open in VS Code Tab` if the dev server is already run
 - Choose a filament profile in the slicer section to apply material temperatures, flow, fan, and speed defaults.
 - Set brim width and brim gap in the slicer section to control brim size and spacing from the model (`0` width disables brim).
 - Generate vase-mode G-code from the slicer section.
-- Scene edits in `src/scenes/<id>/` (in the app editor or any external editor) hot-reload both rendering and slicing while the dev server runs.
+- Scene edits in the workspace (in the app editor or any external editor) hot-reload both rendering and slicing while the dev server runs.
 
 ## Printer Models
 
-Printer models are loaded from JSON files in `src/printers/models/`.
+Printer models are loaded from JSON files in `printers/` (bundled: `src/printers/`).
 Each file should define one model with this structure:
 
 ```json
@@ -134,7 +163,7 @@ The G-code templates support placeholders like `{nozzleTempC}`, `{bedTempC}`, an
 
 ## Filament Profiles
 
-Filament profiles are loaded from JSON files in `src/filaments/profiles/`.
+Filament profiles are loaded from JSON files in `filaments/` (bundled: `src/filaments/`).
 Each file should define one profile with this structure:
 
 ```json

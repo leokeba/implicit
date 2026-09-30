@@ -1,4 +1,6 @@
+import { parseFilamentProfileJson, type FilamentProfile } from '../core/filament-profiles';
 import { buildScriptDocument, type PostprocessScriptDocument } from '../core/postprocess-registry';
+import { parsePrinterModelJson, type PrinterModel } from '../core/printer-models';
 import type { SceneBundle } from '../core/shader-pipeline';
 import {
     forgetStoredDirectoryHandle,
@@ -6,14 +8,18 @@ import {
     readStoredDirectoryHandle,
     storeDirectoryHandle,
 } from './handle-store';
-import type { WorkspaceBackend } from './workspace-backend';
-
-// Mirrors the dev server file API's safety patterns (vite.config.ts).
-const SCENE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/i;
-const SCENE_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(glsl|ts|js)$/i;
-const POSTPROCESS_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(js|ts)$/i;
-
-const POSTPROCESS_DIR_NAME = 'postprocess-scripts';
+import {
+    FILAMENTS_DIR_NAME,
+    POSTPROCESS_DIR_NAME,
+    POSTPROCESS_FILE_PATTERN,
+    PRESET_FILE_PATTERN,
+    PRINTERS_DIR_NAME,
+    SCENE_FILE_PATTERN,
+    SCENE_ID_PATTERN,
+    SCENES_DIR_NAME,
+    type WorkspaceBackend,
+    type WorkspaceContents,
+} from './workspace-backend';
 
 export interface StoredLocalFolder {
     name: string;
@@ -35,7 +41,7 @@ export function isLocalFolderSupported(): boolean {
  * layout, and remembers the handle for the next visit.
  */
 export async function pickLocalFolderBackend(): Promise<WorkspaceBackend> {
-    const root = await window.showDirectoryPicker({ id: 'implicit-project', mode: 'readwrite' });
+    const root = await window.showDirectoryPicker({ id: 'implicit-workspace', mode: 'readwrite' });
     const backend = await createLocalFolderBackend(root);
     await storeDirectoryHandle(PROJECT_ROOT_HANDLE_KEY, root);
     return backend;
@@ -91,8 +97,14 @@ export async function restoreLocalFolderBackend(): Promise<LocalFolderRestoreRes
     };
 }
 
+/**
+ * The workspace root must hold a scenes/ folder (the check that the right
+ * folder was picked); postprocess-scripts/, printers/ and filaments/ are
+ * optional and the scripts folder is created on the first save.
+ */
 async function createLocalFolderBackend(root: FileSystemDirectoryHandle): Promise<WorkspaceBackend> {
-    const layout = await resolveProjectLayout(root);
+    const scenesDir = await requireScenesDirectory(root);
+
     // Skip re-reading file contents whose identity has not changed between
     // polls; keyed by path, validated by File metadata.
     const fileTextCache = new Map<string, { lastModified: number; size: number; text: string }>();
@@ -109,70 +121,96 @@ async function createLocalFolderBackend(root: FileSystemDirectoryHandle): Promis
         return text;
     }
 
+    async function readFilesIn(
+        dirName: string,
+        pattern: RegExp,
+    ): Promise<Array<{ fileName: string; source: string }>> {
+        const directory = await getSubdirectory(root, dirName, false);
+        if (!directory) {
+            return [];
+        }
+
+        const files: Array<{ fileName: string; source: string }> = [];
+        for await (const [fileName, handle] of directory.entries()) {
+            if (handle.kind !== 'file' || !pattern.test(fileName)) {
+                continue;
+            }
+            files.push({
+                fileName,
+                source: await readFileText(`${dirName}/${fileName}`, handle as FileSystemFileHandle),
+            });
+        }
+        return files;
+    }
+
     async function readSceneBundle(sceneId: string, sceneDir: FileSystemDirectoryHandle): Promise<SceneBundle> {
         const files: Record<string, string> = {};
         for await (const [fileName, handle] of sceneDir.entries()) {
             if (handle.kind !== 'file' || !SCENE_FILE_PATTERN.test(fileName)) {
                 continue;
             }
-            files[fileName] = await readFileText(`${sceneId}/${fileName}`, handle as FileSystemFileHandle);
+            files[fileName] = await readFileText(`${SCENES_DIR_NAME}/${sceneId}/${fileName}`, handle as FileSystemFileHandle);
         }
         return { id: sceneId, name: sceneId, files };
+    }
+
+    async function listScenes(): Promise<SceneBundle[]> {
+        const bundles: SceneBundle[] = [];
+        for await (const [name, handle] of scenesDir.entries()) {
+            if (handle.kind !== 'directory' || !SCENE_ID_PATTERN.test(name)) {
+                continue;
+            }
+            const bundle = await readSceneBundle(name, handle as FileSystemDirectoryHandle);
+            if (Object.keys(bundle.files).length > 0) {
+                bundles.push(bundle);
+            }
+        }
+        return bundles.sort((left, right) => left.id.localeCompare(right.id));
     }
 
     return {
         kind: 'local-folder',
         writable: true,
-        scenesLabel: layout.scenesLabel,
-        postprocessLabel: layout.postprocessLabel,
+        label: root.name,
 
-        async listScenes() {
-            const bundles: SceneBundle[] = [];
-            for await (const [name, handle] of layout.scenesDir.entries()) {
-                if (handle.kind !== 'directory' || !SCENE_ID_PATTERN.test(name)) {
-                    continue;
-                }
-                const bundle = await readSceneBundle(name, handle as FileSystemDirectoryHandle);
-                if (Object.keys(bundle.files).length > 0) {
-                    bundles.push(bundle);
-                }
-            }
-            return bundles.sort((left, right) => left.id.localeCompare(right.id));
+        async listContents(): Promise<WorkspaceContents> {
+            const [scenes, scriptFiles, printerFiles, filamentFiles] = await Promise.all([
+                listScenes(),
+                readFilesIn(POSTPROCESS_DIR_NAME, POSTPROCESS_FILE_PATTERN),
+                readFilesIn(PRINTERS_DIR_NAME, PRESET_FILE_PATTERN),
+                readFilesIn(FILAMENTS_DIR_NAME, PRESET_FILE_PATTERN),
+            ]);
+
+            return {
+                scenes,
+                postprocessScripts: scriptFiles
+                    .map((file) => buildScriptDocument(file.fileName, file.source))
+                    .sort((left, right) => left.name.localeCompare(right.name)),
+                printerModels: printerFiles
+                    .map((file) => parsePrinterModelJson(file.fileName, file.source))
+                    .filter((model): model is PrinterModel => model !== null),
+                filamentProfiles: filamentFiles
+                    .map((file) => parseFilamentProfileJson(file.fileName, file.source))
+                    .filter((profile): profile is FilamentProfile => profile !== null),
+            };
         },
 
         async saveSceneFile(sceneId, fileName, source) {
             if (!SCENE_ID_PATTERN.test(sceneId) || !SCENE_FILE_PATTERN.test(fileName)) {
                 throw new Error(`Unsafe scene path: ${sceneId}/${fileName}`);
             }
-            const sceneDir = await layout.scenesDir.getDirectoryHandle(sceneId, { create: true });
+            const sceneDir = await scenesDir.getDirectoryHandle(sceneId, { create: true });
             await writeFile(sceneDir, fileName, source);
             return readSceneBundle(sceneId, sceneDir);
         },
 
-        async listPostprocessDocuments() {
-            const directory = await layout.getPostprocessDir(false);
-            if (!directory) {
-                return null;
-            }
-
-            const documents: PostprocessScriptDocument[] = [];
-            for await (const [fileName, handle] of directory.entries()) {
-                if (handle.kind !== 'file' || !POSTPROCESS_FILE_PATTERN.test(fileName)) {
-                    continue;
-                }
-                const source = await readFileText(`${POSTPROCESS_DIR_NAME}/${fileName}`, handle as FileSystemFileHandle);
-                documents.push(buildScriptDocument(fileName, source));
-            }
-            return documents.sort((left, right) => left.name.localeCompare(right.name));
-        },
-
-        async savePostprocessDocument(document) {
+        async savePostprocessDocument(document: PostprocessScriptDocument) {
             if (!POSTPROCESS_FILE_PATTERN.test(document.fileName)) {
                 throw new Error(`Unsafe postprocess filename: ${document.fileName}`);
             }
-            const directory = await layout.getPostprocessDir(true);
+            const directory = await getSubdirectory(root, POSTPROCESS_DIR_NAME, true);
             if (!directory) {
-                throw new Error('Postprocess folder is unavailable in the connected project.');
+                throw new Error(`Could not create ${root.name}/${POSTPROCESS_DIR_NAME}.`);
             }
             await writeFile(directory, document.fileName, document.source);
             return buildScriptDocument(document.fileName, document.source);
@@ -180,46 +218,24 @@ async function createLocalFolderBackend(root: FileSystemDirectoryHandle): Promis
     };
 }
 
-interface LocalProjectLayout {
-    scenesDir: FileSystemDirectoryHandle;
-    scenesLabel: string;
-    postprocessLabel: string;
-    getPostprocessDir(create: boolean): Promise<FileSystemDirectoryHandle | null>;
+async function requireScenesDirectory(root: FileSystemDirectoryHandle): Promise<FileSystemDirectoryHandle> {
+    const scenesDir = await getSubdirectory(root, SCENES_DIR_NAME, false);
+    if (!scenesDir) {
+        throw new Error(`'${root.name}' has no ${SCENES_DIR_NAME}/ folder: pick a workspace laid out like implicit's src/.`);
+    }
+    return scenesDir;
 }
 
-/**
- * Accepts the project root ('src/scenes' inside) or a sources folder
- * ('scenes' inside); the postprocess folder lives next to the scenes folder.
- */
-async function resolveProjectLayout(root: FileSystemDirectoryHandle): Promise<LocalProjectLayout> {
-    const sourceParent = await (async () => {
-        try {
-            return await root.getDirectoryHandle('src');
-        } catch {
-            return root;
-        }
-    })();
-
-    let scenesDir: FileSystemDirectoryHandle;
+async function getSubdirectory(
+    root: FileSystemDirectoryHandle,
+    name: string,
+    create: boolean,
+): Promise<FileSystemDirectoryHandle | null> {
     try {
-        scenesDir = await sourceParent.getDirectoryHandle('scenes');
+        return await root.getDirectoryHandle(name, { create });
     } catch {
-        throw new Error(`'${root.name}' has no scenes folder: pick the project root containing src/scenes.`);
+        return null;
     }
-
-    const prefix = sourceParent === root ? root.name : `${root.name}/src`;
-    return {
-        scenesDir,
-        scenesLabel: `${prefix}/scenes`,
-        postprocessLabel: `${prefix}/${POSTPROCESS_DIR_NAME}`,
-        async getPostprocessDir(create: boolean) {
-            try {
-                return await sourceParent.getDirectoryHandle(POSTPROCESS_DIR_NAME, { create });
-            } catch {
-                return null;
-            }
-        },
-    };
 }
 
 async function writeFile(directory: FileSystemDirectoryHandle, fileName: string, source: string): Promise<void> {
@@ -228,4 +244,3 @@ async function writeFile(directory: FileSystemDirectoryHandle, fileName: string,
     await writable.write(source);
     await writable.close();
 }
-

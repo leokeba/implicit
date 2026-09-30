@@ -6,43 +6,6 @@ import {
 
 export type { PostprocessScriptDocument } from '../core/postprocess-registry';
 
-const POSTPROCESS_API_ENDPOINT = '/__implicit_api/postprocess-scripts';
-
-interface ScriptApiDocumentPayload {
-    id?: unknown;
-    name?: unknown;
-    fileName?: unknown;
-    language?: unknown;
-    source?: unknown;
-}
-
-interface ScriptApiListResponse {
-    documents?: ScriptApiDocumentPayload[];
-}
-
-/** Null when the dev server file API is unavailable (static build). */
-export async function reloadFilesystemPostprocessDocuments(): Promise<PostprocessScriptDocument[] | null> {
-    return fetchFilesystemPostprocessDocuments();
-}
-
-export async function savePostprocessDocument(document: PostprocessScriptDocument): Promise<PostprocessScriptDocument> {
-    const response = await fetch(`${POSTPROCESS_API_ENDPOINT}/${encodeURIComponent(document.fileName)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            source: document.source,
-            language: document.language,
-        }),
-    });
-
-    if (!response.ok) {
-        throw new Error(await readErrorPayload(response));
-    }
-
-    const payload = (await response.json()) as { document?: ScriptApiDocumentPayload };
-    return normalizeScriptDocument(payload.document) ?? { ...document };
-}
-
 export function createPostprocessDocument(
     existingDocuments: PostprocessScriptDocument[],
     language: PostprocessScriptLanguage = 'typescript',
@@ -62,39 +25,6 @@ export function createPostprocessDocument(
     const extension = language === 'javascript' ? 'js' : 'ts';
     const document = buildScriptDocument(`${nextId}.${extension}`, buildDefaultPostprocessSource(nextId, language));
     return document;
-}
-
-async function fetchFilesystemPostprocessDocuments(): Promise<PostprocessScriptDocument[] | null> {
-    if (typeof fetch === 'undefined') {
-        return null;
-    }
-
-    try {
-        const response = await fetch(POSTPROCESS_API_ENDPOINT, { cache: 'no-store' });
-        if (!response.ok) {
-            return null;
-        }
-
-        const payload = (await response.json()) as ScriptApiListResponse;
-        if (!Array.isArray(payload.documents)) {
-            return null;
-        }
-
-        const documents = payload.documents
-            .map(normalizeScriptDocument)
-            .filter((document): document is PostprocessScriptDocument => document !== null);
-        return documents.sort((leftDoc, rightDoc) => leftDoc.name.localeCompare(rightDoc.name));
-    } catch {
-        return null;
-    }
-}
-
-function normalizeScriptDocument(payload: ScriptApiDocumentPayload | undefined): PostprocessScriptDocument | null {
-    if (!payload || typeof payload.fileName !== 'string' || typeof payload.source !== 'string') {
-        return null;
-    }
-
-    return buildScriptDocument(payload.fileName, payload.source);
 }
 
 function buildDefaultPostprocessSource(scriptId: string, language: PostprocessScriptLanguage): string {
@@ -172,13 +102,4 @@ function toScriptLabel(value: string): string {
         .filter(Boolean)
         .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
         .join(' ') || 'Postprocess';
-}
-
-async function readErrorPayload(response: Response): Promise<string> {
-    try {
-        const payload = (await response.json()) as { error?: string };
-        return payload.error || `Postprocess save failed with status ${response.status}.`;
-    } catch {
-        return `Postprocess save failed with status ${response.status}.`;
-    }
 }

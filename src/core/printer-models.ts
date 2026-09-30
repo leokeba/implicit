@@ -41,24 +41,41 @@ interface PrinterModelFile {
     endGcode?: unknown;
 }
 
-const printerModelModules = import.meta.glob('../printers/models/*.json', {
+const printerModelModules = import.meta.glob('../printers/*.json', {
     eager: true,
     import: 'default',
 }) as Record<string, unknown>;
 
-export function loadPrinterModels(): PrinterModel[] {
-    const models: PrinterModel[] = [];
+/** Presets shipped with the app; always available, overlaid by workspace presets. */
+export const bundledPrinterModels: PrinterModel[] = sortPrinterModels(
+    Object.entries(printerModelModules)
+        .map(([path, moduleValue]) => safeParsePrinterModel(path, moduleValue))
+        .filter((model): model is PrinterModel => model !== null)
+);
 
-    for (const [path, moduleValue] of Object.entries(printerModelModules)) {
-        const parsed = safeParsePrinterModel(path, moduleValue);
-        if (!parsed) {
-            continue;
-        }
-        models.push(parsed);
+/** Parses one workspace preset file; null (with a console warning) on bad input. */
+export function parsePrinterModelJson(label: string, source: string): PrinterModel | null {
+    let value: unknown;
+    try {
+        value = JSON.parse(source);
+    } catch {
+        console.warn(`Skipping unparsable printer model: ${label}`);
+        return null;
     }
+    return safeParsePrinterModel(label, value);
+}
 
-    models.sort((a, b) => a.name.localeCompare(b.name));
-    return models;
+/** Bundled presets overlaid by workspace presets; on the same id the workspace wins. */
+export function mergeWithBundledPrinterModels(workspace: PrinterModel[]): PrinterModel[] {
+    const byId = new Map(bundledPrinterModels.map((model) => [model.id, model]));
+    for (const model of workspace) {
+        byId.set(model.id, model);
+    }
+    return sortPrinterModels(Array.from(byId.values()));
+}
+
+function sortPrinterModels(models: PrinterModel[]): PrinterModel[] {
+    return models.slice().sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function applyPrinterModel(

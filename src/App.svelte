@@ -3,16 +3,21 @@
 
     import type { AnimationParams, RaymarchParams, ViewportParams } from './core/renderer';
     import {
+        mergeWithBundledScenes,
+        overlayBundledScene,
         SCENE_GLSL_FILE,
         type SceneBundle,
     } from './core/shader-pipeline';
     import type { VaseSlicerSettings } from './core/slicer';
     import {
         listPostprocessScripts,
+        mergeWithBundledPostprocessScripts,
         setPostprocessScripts,
         upsertPostprocessScript,
         type PostprocessScriptDocument,
     } from './core/postprocess-registry';
+    import { mergeWithBundledPrinterModels } from './core/printer-models';
+    import { mergeWithBundledFilamentProfiles } from './core/filament-profiles';
     import DocumentEditorPanel from './components/DocumentEditorPanel.svelte';
     import NameDialog from './components/NameDialog.svelte';
     import InspectorPanel from './components/InspectorPanel.svelte';
@@ -38,9 +43,10 @@
     import { createPostprocessDocumentSet, createSceneDocumentSet } from './ui/documents';
     import {
         bundledWorkspaceBackend,
-        probeDevServerBackend,
         type WorkspaceBackend,
+        type WorkspaceContents,
     } from './ui/workspace-backend';
+    import { probeDevServerBackend } from './ui/dev-server-backend';
     import {
         isLocalFolderSupported,
         pickLocalFolderBackend,
@@ -147,8 +153,7 @@
         postprocessSignature: string;
     }
 
-    let sceneRepositoryPollHandle: number | null = null;
-    let postprocessRepositoryPollHandle: number | null = null;
+    let workspacePollHandle: number | null = null;
     let printerAvailabilityPollHandle: number | null = null;
     let editorDockSide = $state(false);
     let sliceDebugSnapshot = $state(studio.getLastSliceDebugSnapshot());
@@ -1021,7 +1026,7 @@
         }
 
         sceneDocs.setSavePending(true);
-        sceneEditorStatus = `Saving ${activeSceneFileName} to ${workspaceBackend.scenesLabel}/${activeSceneBundle.id}...`;
+        sceneEditorStatus = `Saving ${activeSceneFileName} to ${workspaceBackend.label}/scenes/${activeSceneBundle.id}...`;
 
         try {
             const savedBundle = await workspaceBackend.saveSceneFile(
@@ -1030,9 +1035,9 @@
                 activeSceneBundle.files[activeSceneFileName] ?? ''
             );
 
-            sceneDocs.applySaved(savedBundle);
+            sceneDocs.applySaved(overlayBundledScene(savedBundle));
             applySceneRegistryResult(studio.syncSceneBundles(sceneDocs.current().documents));
-            sceneEditorStatus = `Saved ${activeSceneFileName} to ${workspaceBackend.scenesLabel}/${savedBundle.id}.`;
+            sceneEditorStatus = `Saved ${activeSceneFileName} to ${workspaceBackend.label}/scenes/${savedBundle.id}.`;
             status.setWorkspaceStatus(sceneEditorStatus);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Scene save failed.';
@@ -1077,7 +1082,7 @@
             postprocessDocs.applySaved(savedDocument);
             upsertPostprocessScript(savedDocument);
             studio.refreshConfiguration();
-            postprocessStatus = `Saved ${savedDocument.fileName} to ${workspaceBackend.postprocessLabel}.`;
+            postprocessStatus = `Saved ${savedDocument.fileName} to ${workspaceBackend.label}/postprocess-scripts.`;
             status.setWorkspaceStatus(postprocessStatus);
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Postprocess save failed.';
@@ -1156,7 +1161,7 @@
             try {
                 await workspaceBackend.saveSceneFile(nextSceneId, SCENE_GLSL_FILE, glslSource);
                 const savedBundle = await workspaceBackend.saveSceneFile(nextSceneId, 'scene.ts', manifestSource);
-                sceneDocs.applySaved(savedBundle);
+                sceneDocs.applySaved(overlayBundledScene(savedBundle));
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Scene creation failed.';
                 sceneEditorStatus = message;
@@ -1178,7 +1183,7 @@
         commitScene(nextSceneId);
         activeSceneFileName = SCENE_GLSL_FILE;
         sceneEditorStatus = workspaceBackend.writable
-            ? `Created ${workspaceBackend.scenesLabel}/${nextSceneId}/ with scene.glsl and scene.ts.`
+            ? `Created ${workspaceBackend.label}/scenes/${nextSceneId}/ with scene.glsl and scene.ts.`
             : `Created scene '${nextSceneId}' in memory. Connect a project folder or run the dev server to persist it.`;
         status.setWorkspaceStatus(sceneEditorStatus);
         await resizeViewportAfterLayout();
@@ -1227,8 +1232,8 @@
         if (workspaceBackend.writable) {
             try {
                 const savedBundle = await workspaceBackend.saveSceneFile(targetSceneId, fileName, initialSource);
-                sceneDocs.applySaved(savedBundle);
-                sceneEditorStatus = `Created ${workspaceBackend.scenesLabel}/${targetSceneId}/${fileName}.`;
+                sceneDocs.applySaved(overlayBundledScene(savedBundle));
+                sceneEditorStatus = `Created ${workspaceBackend.label}/scenes/${targetSceneId}/${fileName}.`;
             } catch (error) {
                 sceneEditorStatus = error instanceof Error ? error.message : 'Scene file creation failed.';
             }
@@ -1326,25 +1331,44 @@
         }
 
         return {
-            scene: `Editing scene folders directly from ${backend.scenesLabel}.`,
-            postprocess: `Editing postprocess files directly from ${backend.postprocessLabel}.`,
+            scene: `Editing scene folders directly from ${backend.label}/scenes (over the bundled defaults).`,
+            postprocess: `Editing postprocess files directly from ${backend.label}/postprocess-scripts (over the bundled defaults).`,
         };
+    }
+
+    /**
+     * Lays the workspace over the bundled defaults and applies whatever
+     * changed. Scenes and scripts are left alone while their editor holds
+     * unsaved edits, since a refresh would replace the working copy.
+     */
+    function applyWorkspaceContents(contents: WorkspaceContents): void {
+        studio.syncPresets(
+            mergeWithBundledPrinterModels(contents.printerModels),
+            mergeWithBundledFilamentProfiles(contents.filamentProfiles),
+        );
+
+        if (!postprocessDirty) {
+            const scripts = mergeWithBundledPostprocessScripts(contents.postprocessScripts);
+            if (postprocessDocs.replaceAll(scripts)) {
+                setPostprocessScripts(scripts);
+                studio.refreshConfiguration();
+            }
+        }
+
+        if (!sceneEditorDirty) {
+            const scenes = mergeWithBundledScenes(contents.scenes);
+            if (sceneDocs.replaceAll(scenes)) {
+                applySceneRegistryResult(studio.syncSceneBundles(scenes));
+            }
+        }
     }
 
     async function activateWorkspaceBackend(backend: WorkspaceBackend): Promise<void> {
         workspaceBackend = backend;
 
-        const scenes = await backend.listScenes();
-        if (scenes) {
-            sceneDocs.replaceAll(scenes);
-            applySceneRegistryResult(studio.syncSceneBundles(scenes));
-        }
-
-        const documents = await backend.listPostprocessDocuments();
-        if (documents) {
-            postprocessDocs.replaceAll(documents);
-            setPostprocessScripts(documents);
-            studio.refreshConfiguration();
+        const contents = await backend.listContents();
+        if (contents) {
+            applyWorkspaceContents(contents);
         }
 
         const statuses = describeWorkspaceStatuses(backend);
@@ -1405,31 +1429,21 @@
 
         let disposed = false;
 
-        const refreshWorkspaceScenes = async (): Promise<void> => {
-            if (!workspaceBackend.writable || sceneEditorDirty) {
+        let workspaceRefreshInFlight = false;
+        const refreshWorkspace = async (): Promise<void> => {
+            if (!workspaceBackend.writable || workspaceRefreshInFlight) {
                 return;
             }
 
-            const nextBundles = await workspaceBackend.listScenes();
-            if (!nextBundles || !sceneDocs.replaceAll(nextBundles)) {
-                return;
+            workspaceRefreshInFlight = true;
+            try {
+                const contents = await workspaceBackend.listContents();
+                if (contents && !disposed) {
+                    applyWorkspaceContents(contents);
+                }
+            } finally {
+                workspaceRefreshInFlight = false;
             }
-
-            applySceneRegistryResult(studio.syncSceneBundles(nextBundles));
-        };
-
-        const refreshWorkspacePostprocessScripts = async (): Promise<void> => {
-            if (!workspaceBackend.writable || postprocessDirty) {
-                return;
-            }
-
-            const nextDocuments = await workspaceBackend.listPostprocessDocuments();
-            if (!nextDocuments || !postprocessDocs.replaceAll(nextDocuments)) {
-                return;
-            }
-
-            setPostprocessScripts(nextDocuments);
-            studio.refreshConfiguration();
         };
 
         void (async () => {
@@ -1473,15 +1487,12 @@
                 runtimeSnapshotHydrated = true;
                 persistRuntimeSnapshot(captureRuntimeSnapshot());
 
-                // Polling is cheap and self-guarding (the refreshers no-op on
+                // Polling is cheap and self-guarding (the refresher no-ops on
                 // read-only backends), so it always runs: a folder connected
                 // later starts syncing without extra wiring. The disposed
-                // guards above keep a mid-init unmount from leaking them.
-                sceneRepositoryPollHandle = window.setInterval(() => {
-                    void refreshWorkspaceScenes();
-                }, 1200);
-                postprocessRepositoryPollHandle = window.setInterval(() => {
-                    void refreshWorkspacePostprocessScripts();
+                // guards above keep a mid-init unmount from leaking it.
+                workspacePollHandle = window.setInterval(() => {
+                    void refreshWorkspace();
                 }, 1200);
                 printerAvailabilityPollHandle = window.setInterval(() => {
                     void refreshPrinterAvailability();
@@ -1499,13 +1510,9 @@
             window.removeEventListener('resize', handleWindowResize);
             window.removeEventListener('beforeunload', handlePersistRuntimeSnapshot);
             window.removeEventListener('pagehide', handlePersistRuntimeSnapshot);
-            if (sceneRepositoryPollHandle !== null) {
-                window.clearInterval(sceneRepositoryPollHandle);
-                sceneRepositoryPollHandle = null;
-            }
-            if (postprocessRepositoryPollHandle !== null) {
-                window.clearInterval(postprocessRepositoryPollHandle);
-                postprocessRepositoryPollHandle = null;
+            if (workspacePollHandle !== null) {
+                window.clearInterval(workspacePollHandle);
+                workspacePollHandle = null;
             }
             if (printerAvailabilityPollHandle !== null) {
                 window.clearInterval(printerAvailabilityPollHandle);

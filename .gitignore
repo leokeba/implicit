@@ -4,3 +4,6 @@ dist
 src/shaders/scenes/*.glsl
 !src/shaders/scenes/defaultScene.glsl
 .tmp
+# Local dev settings (IMPLICIT_WORKSPACE etc.)
+.env.local
+.env.*.local

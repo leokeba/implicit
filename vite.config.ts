@@ -1,18 +1,17 @@
 import { promises as fs } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { defineConfig, type Connect, type Plugin } from 'vite';
+import { defineConfig, loadEnv, type Connect, type Plugin } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
+const WORKSPACE_API = '/__implicit_api/workspace';
 const SCENE_API_PREFIX = '/__implicit_api/scenes';
+const POSTPROCESS_API_PREFIX = '/__implicit_api/postprocess-scripts';
 const SCENE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]*$/i;
 const SCENE_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(glsl|ts|js)$/i;
-const POSTPROCESS_API_PREFIX = '/__implicit_api/postprocess-scripts';
 const POSTPROCESS_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.(js|ts)$/i;
-const scenesDirectory = fileURLToPath(new URL('./src/scenes', import.meta.url));
-const postprocessDirectory = fileURLToPath(new URL('./src/postprocess-scripts', import.meta.url));
+const PRESET_FILE_PATTERN = /^[a-z0-9][a-z0-9 _.()-]*\.json$/i;
 const codeMirrorPackages = [
   'svelte-codemirror-editor',
   'codemirror',
@@ -28,31 +27,50 @@ interface SceneApiBundle {
   files: Record<string, string>;
 }
 
-interface PostprocessApiDocument {
-  id: string;
-  name: string;
+interface WorkspaceApiFile {
   fileName: string;
-  language: 'javascript' | 'typescript';
   source: string;
 }
 
-function createSceneFilesApiPlugin(): Plugin {
-  const middleware = createWorkspaceFilesApiMiddleware();
+/**
+ * The folder the in-app editors read and write: scenes/, postprocess-scripts/,
+ * printers/ and filaments/ under one root. IMPLICIT_WORKSPACE (env or
+ * .env.local) points it at a private designs checkout; unset, it is this
+ * repo's src/, i.e. the bundled defaults themselves.
+ */
+interface WorkspaceRoot {
+  dir: string;
+  label: string;
+}
+
+function resolveWorkspaceRoot(mode: string): WorkspaceRoot {
+  const env = loadEnv(mode, process.cwd(), '');
+  const configured = env.IMPLICIT_WORKSPACE?.trim();
+  if (!configured) {
+    return { dir: path.resolve('src'), label: 'src' };
+  }
+  const dir = path.resolve(configured);
+  return { dir, label: path.basename(dir) };
+}
+
+function createWorkspaceFilesApiPlugin(workspace: WorkspaceRoot): Plugin {
+  const middleware = createWorkspaceFilesApiMiddleware(workspace);
 
   return {
-    name: 'implicit-scene-files-api',
-    // Scene and postprocess sources reach the running app through this file
-    // API: the app polls it and hot-applies edits in place (recompiling
-    // shaders without losing camera, fullscreen, or the WebGL context). The
-    // `?raw` glob imports of the same files only exist for bundled builds, so
-    // suppress Vite's own HMR reaction to them — otherwise every IDE edit
-    // invalidates an unaccepted raw module and forces a full page reload.
+    name: 'implicit-workspace-files-api',
+    // Workspace sources reach the running app through this file API: the app
+    // polls it and hot-applies edits in place (recompiling shaders without
+    // losing camera, fullscreen, or the WebGL context). The `?raw` glob
+    // imports of src/ only exist for bundled builds, so when the workspace is
+    // src/ itself suppress Vite's own HMR reaction to them — otherwise every
+    // IDE edit invalidates an unaccepted raw module and forces a full reload.
     hotUpdate({ file }) {
-      if (isWorkspaceManagedFile(file)) {
+      if (path.normalize(file).startsWith(workspace.dir + path.sep)) {
         return [];
       }
     },
     configureServer(server) {
+      server.config.logger.info(`  ➜  workspace: ${workspace.dir}`);
       server.middlewares.use(middleware);
     },
     configurePreviewServer(server) {
@@ -61,13 +79,12 @@ function createSceneFilesApiPlugin(): Plugin {
   };
 }
 
-function isWorkspaceManagedFile(file: string): boolean {
-  const normalized = path.normalize(file);
-  return normalized.startsWith(scenesDirectory + path.sep)
-    || normalized.startsWith(postprocessDirectory + path.sep);
-}
+function createWorkspaceFilesApiMiddleware(workspace: WorkspaceRoot): Connect.NextHandleFunction {
+  const scenesDirectory = path.join(workspace.dir, 'scenes');
+  const postprocessDirectory = path.join(workspace.dir, 'postprocess-scripts');
+  const printersDirectory = path.join(workspace.dir, 'printers');
+  const filamentsDirectory = path.join(workspace.dir, 'filaments');
 
-function createWorkspaceFilesApiMiddleware(): Connect.NextHandleFunction {
   return async (req, res, next) => {
     const requestUrl = req.url;
     if (!requestUrl) {
@@ -76,185 +93,136 @@ function createWorkspaceFilesApiMiddleware(): Connect.NextHandleFunction {
     }
 
     const url = new URL(requestUrl, 'http://localhost');
-    const isSceneRequest = url.pathname === SCENE_API_PREFIX || url.pathname.startsWith(`${SCENE_API_PREFIX}/`);
-    const isPostprocessRequest = url.pathname === POSTPROCESS_API_PREFIX || url.pathname.startsWith(`${POSTPROCESS_API_PREFIX}/`);
-    if (!isSceneRequest && !isPostprocessRequest) {
+    const isWorkspaceRequest = url.pathname === WORKSPACE_API;
+    const isSceneRequest = url.pathname.startsWith(`${SCENE_API_PREFIX}/`);
+    const isPostprocessRequest = url.pathname.startsWith(`${POSTPROCESS_API_PREFIX}/`);
+    if (!isWorkspaceRequest && !isSceneRequest && !isPostprocessRequest) {
       next();
       return;
     }
 
     try {
-      if (isSceneRequest) {
-        if (req.method === 'GET' && url.pathname === SCENE_API_PREFIX) {
-          const scenes = await readAllSceneBundles();
-          sendJson(res, 200, { mode: 'filesystem', scenes });
-          return;
-        }
+      if (isWorkspaceRequest && req.method === 'GET') {
+        const [scenes, postprocessScripts, printers, filaments] = await Promise.all([
+          readAllSceneBundles(scenesDirectory),
+          readFilesIn(postprocessDirectory, POSTPROCESS_FILE_PATTERN),
+          readFilesIn(printersDirectory, PRESET_FILE_PATTERN),
+          readFilesIn(filamentsDirectory, PRESET_FILE_PATTERN),
+        ]);
+        sendJson(res, 200, { label: workspace.label, scenes, postprocessScripts, printers, filaments });
+        return;
+      }
 
+      if (isSceneRequest && req.method === 'PUT') {
         const segments = url.pathname
           .slice(`${SCENE_API_PREFIX}/`.length)
           .split('/')
           .map((segment) => decodeURIComponent(segment));
         const [sceneId, fileName] = segments;
-        if (segments.length !== 2 || !isSafeSceneId(sceneId) || !isSafeSceneFileName(fileName)) {
+        if (segments.length !== 2 || !isSafeSceneId(sceneId) || !isSafeFileName(fileName, SCENE_FILE_PATTERN)) {
           sendJson(res, 400, { error: 'Expected /scenes/<sceneId>/<fileName> with safe names.' });
           return;
         }
 
+        const source = readSourcePayload(await readJsonBody(req));
+        if (source === null) {
+          sendJson(res, 400, { error: 'Scene source is required.' });
+          return;
+        }
+
         const sceneDirectory = path.join(scenesDirectory, sceneId);
-
-        if (req.method === 'GET') {
-          const source = await fs.readFile(path.join(sceneDirectory, fileName), 'utf8');
-          sendJson(res, 200, { sceneId, fileName, source });
-          return;
-        }
-
-        if (req.method === 'PUT') {
-          const body = await readJsonBody(req);
-          const source = isSceneWritePayload(body) ? body.source : null;
-          if (source === null) {
-            sendJson(res, 400, { error: 'Scene source is required.' });
-            return;
-          }
-
-          await fs.mkdir(sceneDirectory, { recursive: true });
-          await fs.writeFile(path.join(sceneDirectory, fileName), source, 'utf8');
-          const scene = await readSceneBundle(sceneId);
-          sendJson(res, 200, { scene });
-          return;
-        }
+        await fs.mkdir(sceneDirectory, { recursive: true });
+        await fs.writeFile(path.join(sceneDirectory, fileName), source, 'utf8');
+        sendJson(res, 200, { scene: await readSceneBundle(scenesDirectory, sceneId) });
+        return;
       }
 
-      if (isPostprocessRequest) {
-        if (req.method === 'GET' && url.pathname === POSTPROCESS_API_PREFIX) {
-          const documents = await readAllPostprocessDocuments();
-          sendJson(res, 200, { mode: 'filesystem', documents });
-          return;
-        }
-
+      if (isPostprocessRequest && req.method === 'PUT') {
         const fileName = decodeURIComponent(url.pathname.slice(`${POSTPROCESS_API_PREFIX}/`.length));
-        if (!isSafePostprocessFileName(fileName)) {
+        if (!isSafeFileName(fileName, POSTPROCESS_FILE_PATTERN)) {
           sendJson(res, 400, { error: 'Invalid postprocess filename.' });
           return;
         }
 
-        if (req.method === 'GET') {
-          const document = await readPostprocessDocument(fileName);
-          sendJson(res, 200, { document });
+        const source = readSourcePayload(await readJsonBody(req));
+        if (source === null) {
+          sendJson(res, 400, { error: 'Postprocess source is required.' });
           return;
         }
 
-        if (req.method === 'PUT') {
-          const body = await readJsonBody(req);
-          const source = isScriptWritePayload(body) ? body.source : null;
-          if (source === null) {
-            sendJson(res, 400, { error: 'Postprocess source is required.' });
-            return;
-          }
-
-          await fs.mkdir(postprocessDirectory, { recursive: true });
-          await fs.writeFile(path.join(postprocessDirectory, fileName), source, 'utf8');
-          const document = buildPostprocessApiDocument(fileName, source);
-          sendJson(res, 200, { document });
-          return;
-        }
+        await fs.mkdir(postprocessDirectory, { recursive: true });
+        await fs.writeFile(path.join(postprocessDirectory, fileName), source, 'utf8');
+        sendJson(res, 200, { document: { fileName, source } });
+        return;
       }
 
       sendJson(res, 405, { error: 'Method not allowed.' });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Scene API failed.';
+      const message = error instanceof Error ? error.message : 'Workspace API failed.';
       const status = message.includes('ENOENT') ? 404 : 500;
       sendJson(res, status, { error: message });
     }
   };
 }
 
-async function readAllSceneBundles(): Promise<SceneApiBundle[]> {
-  const entries = await fs.readdir(scenesDirectory, { withFileTypes: true });
+async function readAllSceneBundles(scenesDirectory: string): Promise<SceneApiBundle[]> {
+  const entries = await readDirectoryOrEmpty(scenesDirectory);
   const bundles = await Promise.all(
     entries
-      .filter((entry: { isDirectory: () => boolean; name: string }) => entry.isDirectory() && isSafeSceneId(entry.name))
-      .map((entry: { name: string }) => readSceneBundle(entry.name))
+      .filter((entry) => entry.isDirectory() && isSafeSceneId(entry.name))
+      .map((entry) => readSceneBundle(scenesDirectory, entry.name))
   );
 
   return bundles
-    .filter((bundle: SceneApiBundle) => Object.keys(bundle.files).length > 0)
-    .sort((left: SceneApiBundle, right: SceneApiBundle) => left.id.localeCompare(right.id));
+    .filter((bundle) => Object.keys(bundle.files).length > 0)
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-async function readSceneBundle(sceneId: string): Promise<SceneApiBundle> {
+async function readSceneBundle(scenesDirectory: string, sceneId: string): Promise<SceneApiBundle> {
   const sceneDirectory = path.join(scenesDirectory, sceneId);
-  const entries = await fs.readdir(sceneDirectory, { withFileTypes: true });
   const files: Record<string, string> = {};
-
-  for (const entry of entries) {
-    if (!entry.isFile() || !isSafeSceneFileName(entry.name)) {
-      continue;
-    }
-
-    files[entry.name] = await fs.readFile(path.join(sceneDirectory, entry.name), 'utf8');
+  for (const file of await readFilesIn(sceneDirectory, SCENE_FILE_PATTERN)) {
+    files[file.fileName] = file.source;
   }
-
   return { id: sceneId, files };
 }
 
-async function readAllPostprocessDocuments(): Promise<PostprocessApiDocument[]> {
-  const entries = await fs.readdir(postprocessDirectory, { withFileTypes: true });
-  const documents = await Promise.all(
+/** Text files matching `pattern` directly inside `directory`; [] when it does not exist. */
+async function readFilesIn(directory: string, pattern: RegExp): Promise<WorkspaceApiFile[]> {
+  const entries = await readDirectoryOrEmpty(directory);
+  const files = await Promise.all(
     entries
-      .filter((entry: { isFile: () => boolean; name: string }) => entry.isFile() && isSafePostprocessFileName(entry.name))
-      .map(async (entry: { name: string }) => {
-        const source = await fs.readFile(path.join(postprocessDirectory, entry.name), 'utf8');
-        return buildPostprocessApiDocument(entry.name, source);
-      })
+      .filter((entry) => entry.isFile() && isSafeFileName(entry.name, pattern))
+      .map(async (entry) => ({
+        fileName: entry.name,
+        source: await fs.readFile(path.join(directory, entry.name), 'utf8'),
+      }))
   );
-
-  return documents.sort((left, right) => left.name.localeCompare(right.name));
+  return files.sort((left, right) => left.fileName.localeCompare(right.fileName));
 }
 
-async function readPostprocessDocument(fileName: string): Promise<PostprocessApiDocument> {
-  const source = await fs.readFile(path.join(postprocessDirectory, fileName), 'utf8');
-  return buildPostprocessApiDocument(fileName, source);
+async function readDirectoryOrEmpty(directory: string) {
+  try {
+    return await fs.readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
 }
 
 function isSafeSceneId(sceneId: string): boolean {
   return SCENE_ID_PATTERN.test(sceneId) && !sceneId.includes('..');
 }
 
-function isSafeSceneFileName(fileName: string): boolean {
-  return SCENE_FILE_PATTERN.test(fileName) && !fileName.includes('/') && !fileName.includes('\\') && !fileName.includes('..');
+function isSafeFileName(fileName: string, pattern: RegExp): boolean {
+  return pattern.test(fileName) && !fileName.includes('/') && !fileName.includes('\\') && !fileName.includes('..');
 }
 
-function buildPostprocessApiDocument(fileName: string, source: string): PostprocessApiDocument {
-  const id = fileName.replace(/\.(js|ts)$/i, '');
-  const name = id
-    .replace(/([a-z\d])([A-Z])/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
-    .join(' ') || 'Postprocess';
-
-  return {
-    id,
-    name,
-    fileName,
-    language: fileName.toLowerCase().endsWith('.js') ? 'javascript' : 'typescript',
-    source,
-  };
-}
-
-function isSafePostprocessFileName(fileName: string): boolean {
-  return POSTPROCESS_FILE_PATTERN.test(fileName) && !fileName.includes('/') && !fileName.includes('\\') && !fileName.includes('..');
-}
-
-function isSceneWritePayload(value: unknown): value is { source: string } {
-  return Boolean(value && typeof value === 'object' && typeof (value as { source?: unknown }).source === 'string');
-}
-
-function isScriptWritePayload(value: unknown): value is { source: string } {
-  return Boolean(value && typeof value === 'object' && typeof (value as { source?: unknown }).source === 'string');
+function readSourcePayload(value: unknown): string | null {
+  const source = value && typeof value === 'object' ? (value as { source?: unknown }).source : null;
+  return typeof source === 'string' ? source : null;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -281,10 +249,10 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
   res.end(JSON.stringify(payload));
 }
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   // Subpath deployments (e.g. GitHub Pages) set BASE_PATH=/<repo>/ at build time.
   base: process.env.BASE_PATH || '/',
-  plugins: [svelte(), createSceneFilesApiPlugin()],
+  plugins: [svelte(), createWorkspaceFilesApiPlugin(resolveWorkspaceRoot(mode))],
   optimizeDeps: {
     exclude: codeMirrorPackages,
   },
@@ -307,4 +275,4 @@ export default defineConfig({
     },
     dedupe: codeMirrorPackages,
   },
-});
+}));

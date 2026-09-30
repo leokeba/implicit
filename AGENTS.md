@@ -21,6 +21,7 @@ The product vision is **code-first, reproducible fabrication**: scene source fil
 ```
 npm run dev      # Vite dev server on port 3000 (required for filesystem document sync)
 npm run check    # svelte-check + TypeScript — primary static validation
+npm run check:workspace  # type-check the IMPLICIT_WORKSPACE folder's manifests/scripts
 npm run build    # production build — second validation gate
 ```
 
@@ -28,7 +29,7 @@ There is no test framework. Validation is `npm run check`, `npm run build`, plus
 
 ## Architecture Map
 
-- `src/scenes/<id>/` — **a scene is a folder**: `scene.glsl` (the implicit surface, `mapScene(vec3 p)`) plus an optional `scene.ts` orchestration manifest (`defineScene({...})` from `implicit/scene`) declaring uniforms, params, fields, slicer config, a pure `preprocess()` for computed defaults, and the postprocess pipeline. Uniform declarations are injected into the GLSL from the manifest.
+- `src/scenes/<id>/` — **a scene is a folder** (bundled defaults; private scenes live in the workspace folder, see below): `scene.glsl` (the implicit surface, `mapScene(vec3 p)`) plus an optional `scene.ts` orchestration manifest (`defineScene({...})` from `implicit/scene`) declaring uniforms, params, fields, slicer config, a pure `preprocess()` for computed defaults, and the postprocess pipeline. Uniform declarations are injected into the GLSL from the manifest.
 - `src/scene-runtime/` — the `implicit/scene` module (tsconfig path alias): `defineScene`, `usePostprocess`, manifest normalization, and all authoring types. Scene manifests are type-checked by `npm run check` and evaluated at runtime via the script host.
 - `src/core/script-host.ts` — shared in-browser TS compile/eval (`ts.transpileModule` + `new Function` with a `require` shim) for manifests and postprocess scripts.
 - `src/core/scene-manifest.ts` — evaluates a scene folder's TS modules into a normalized manifest (supports scene-local `./module` imports).
@@ -43,9 +44,10 @@ There is no test framework. Validation is `npm run check`, `npm run build`, plus
   **Bambu Connect's importer is unforgiving and fails silently.** It requires `Metadata/slice_info.config`, `Metadata/model_settings.config` *and* `Metadata/project_settings.config` — missing any one makes it abandon the import with no error shown. It then finds the G-code via the plate's `gcode_file` key and reads `thumbnail_file` unguarded (omitting it throws `Cannot read properties of undefined (reading 'split')`), and reads `filament_ids` and `print_compatible_printers` from project settings unguarded. `print_compatible_printers` entries must match `Bambu Lab (.*) 0.`, i.e. `Bambu Lab P1S 0.4 nozzle`. These constraints were read out of Connect's own bundle; keep `package.ts` in step with them.
 - `src/ui/bambu-handoff.ts`, `src/app/bambu-send.ts` — the Bambu send path: write the plate into a File System Access folder, then open Bambu Connect on its absolute path via `bambu-connect://import-file`. Bambu gates third-party print starts behind Bambu Connect unless the printer is in LAN-only + Developer Mode, so this route is what keeps cloud features working. The absolute path cannot be read from a directory handle, so it is configured by hand and cross-checked against the handle's folder name.
 - `src/ui/handle-store.ts` — IndexedDB persistence for File System Access directory handles, shared by the workspace folder and the Bambu handoff folder.
-- `src/printers/models/*.json`, `src/filaments/profiles/*.json` — printer and filament presets, referenced by id from manifests. Bambu targets add `bambuModelId` (printer) and `bambuType`/`bambuTrayInfoIndex`/`densityGramsPerCm3` (filament).
+- `src/printers/*.json`, `src/filaments/*.json` — bundled printer and filament presets, referenced by id from manifests. Bambu targets add `bambuModelId` (printer) and `bambuType`/`bambuTrayInfoIndex`/`densityGramsPerCm3` (filament).
 - `src/ui/`, `src/components/` — Svelte 5 UI: inspector schema (override badges + reset), document sync, workspace store, panels.
-- `vite.config.ts` — also hosts the dev-server file API (`/__implicit_api/scenes/<id>/<file>`, `/__implicit_api/postprocess-scripts`) that lets the in-app editors read/write real files. Without the dev server the app is read-only on bundled sources (no browser-draft storage; files are the only source of truth).
+- **Workspace folder** — everything file-based (scenes, postprocess scripts, printer and filament presets) has two layers: the bundled defaults compiled from `src/` via `import.meta.glob`, and a workspace folder with the same layout (`scenes/`, `postprocess-scripts/`, `printers/`, `filaments/`) laid over them by the `mergeWithBundled*` helpers in each core registry (same id: workspace wins; scenes overlay per file). The public repo keeps only two example scenes and the generic scripts; Leo's designs live in a private sibling repo (`../implicit-designs`) that is never referenced from this one. `src/ui/workspace-backend.ts` is the contract (`listContents()` + saves), implemented by `src/ui/dev-server-backend.ts` (vite file API) and `src/ui/local-folder-backend.ts` (File System Access API for the static build). App.svelte polls `listContents()` and applies changes per kind, skipping a kind whose editor holds unsaved edits.
+- `vite.config.ts` — also hosts the dev-server file API (`GET /__implicit_api/workspace`, `PUT /__implicit_api/scenes/<id>/<file>`, `PUT /__implicit_api/postprocess-scripts/<file>`) over the folder named by `IMPLICIT_WORKSPACE` (env or gitignored `.env.local`; default `src/`). `npm run check:workspace` (`scripts/check-workspace.mjs`) type-checks that folder against `implicit/scene`. Without the dev server the app is read-only on bundled sources unless a folder is connected (no browser-draft storage; files are the only source of truth).
 
 ## Conventions
 

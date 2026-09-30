@@ -33,24 +33,41 @@ interface FilamentProfileFile {
     bambuTrayInfoIndex?: unknown;
 }
 
-const filamentProfileModules = import.meta.glob('../filaments/profiles/*.json', {
+const filamentProfileModules = import.meta.glob('../filaments/*.json', {
     eager: true,
     import: 'default',
 }) as Record<string, unknown>;
 
-export function loadFilamentProfiles(): FilamentProfile[] {
-    const profiles: FilamentProfile[] = [];
+/** Presets shipped with the app; always available, overlaid by workspace presets. */
+export const bundledFilamentProfiles: FilamentProfile[] = sortFilamentProfiles(
+    Object.entries(filamentProfileModules)
+        .map(([path, moduleValue]) => safeParseFilamentProfile(path, moduleValue))
+        .filter((profile): profile is FilamentProfile => profile !== null)
+);
 
-    for (const [path, moduleValue] of Object.entries(filamentProfileModules)) {
-        const parsed = safeParseFilamentProfile(path, moduleValue);
-        if (!parsed) {
-            continue;
-        }
-        profiles.push(parsed);
+/** Parses one workspace preset file; null (with a console warning) on bad input. */
+export function parseFilamentProfileJson(label: string, source: string): FilamentProfile | null {
+    let value: unknown;
+    try {
+        value = JSON.parse(source);
+    } catch {
+        console.warn(`Skipping unparsable filament profile: ${label}`);
+        return null;
     }
+    return safeParseFilamentProfile(label, value);
+}
 
-    profiles.sort((a, b) => a.name.localeCompare(b.name));
-    return profiles;
+/** Bundled presets overlaid by workspace presets; on the same id the workspace wins. */
+export function mergeWithBundledFilamentProfiles(workspace: FilamentProfile[]): FilamentProfile[] {
+    const byId = new Map(bundledFilamentProfiles.map((profile) => [profile.id, profile]));
+    for (const profile of workspace) {
+        byId.set(profile.id, profile);
+    }
+    return sortFilamentProfiles(Array.from(byId.values()));
+}
+
+function sortFilamentProfiles(profiles: FilamentProfile[]): FilamentProfile[] {
+    return profiles.slice().sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function applyFilamentProfile(
