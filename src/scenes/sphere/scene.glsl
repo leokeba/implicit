@@ -8,5 +8,5 @@
 
 float mapScene(vec3 p) {
     p.y = (p.y + 1.0) / max(0.05, uSceneFlatten) - 1.0;
-    return sdSphere(p, 1.0) * max(0.05, uSceneFlatten);
+    return opSmoothUnion(sdSphere(p, 1.0), sdCappedCylinder(p+vec3(0.0, 1.0, 0.0), 0.4, 0.3), 0.1) * max(0.05, uSceneFlatten);
 }

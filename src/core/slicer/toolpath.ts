@@ -1,5 +1,6 @@
 import { clamp, distance3, lerp, pointLineDistance3, turnAngleDegrees } from './math';
 import { getSpiralPitchMm, sdfYToHeightMm, type VaseSlicerSettings } from './config';
+import { surfacePitchFor } from './surface-march';
 import type { SliceContourLayer, SlicePoint, ToolpathPoint, VaseBaseToolpath } from './types';
 
 /**
@@ -95,6 +96,13 @@ function buildInterpolatedSpiralBaseToolpath(
     // revolution N to k=0 of revolution N+1 is a uniform perimeter step
     // with no flat-Y segment and no XZ jump-back.
     const flatLayerCount = Math.max(1, Math.min(settings.bottomLayers, layers - 1));
+    // Surface mode spaces revolutions by bead geometry rather than by the
+    // layer ladder, and shortens the step wherever a full one would slide the
+    // bead off the one below. Flow has to follow: the strip between two
+    // revolutions is only as wide as the step actually taken, and filling it
+    // with a whole bead would pile up the extra exactly where the wall is
+    // most fragile. Planar layers keep the fixed bead.
+    const surfaceFlow = settings.slicerMode === 'surface';
     // Per-contour deposit heights; uniform spacing unless adaptive layer
     // height decimation merged revolutions upstream.
     const heights = contourLayers.map((layer, index) => layer.printHeightMm ?? (settings.layerHeight * (index + 1)));
@@ -108,6 +116,7 @@ function buildInterpolatedSpiralBaseToolpath(
         let y: number;
         let segmentExtrusionPerMm: number;
         let layerThicknessMm = settings.layerHeight;
+        let flowRatio = 1;
 
         if (layerIndex < flatLayerCount) {
             const contour = contourLayers[layerIndex].contour;
@@ -139,6 +148,9 @@ function buildInterpolatedSpiralBaseToolpath(
             segmentExtrusionPerMm = layerIndex === flatLayerCount && flatLayerCount === 1
                 ? lerp(firstLayerExtrusionPerMm, extrusionPerMm, blend)
                 : extrusionPerMm;
+            if (surfaceFlow) {
+                flowRatio = surfaceStepFlowRatio(lowPoint, highPoint, settings);
+            }
         }
 
         const x = settings.centerX + (sampleX * settings.modelScale);
@@ -146,7 +158,7 @@ function buildInterpolatedSpiralBaseToolpath(
 
         if (points.length > 0) {
             const segment = Math.hypot(x - prevX, y - prevY, z - prevZ);
-            eAcc += segment * segmentExtrusionPerMm;
+            eAcc += segment * segmentExtrusionPerMm * flowRatio;
         }
 
         points.push({
@@ -157,6 +169,7 @@ function buildInterpolatedSpiralBaseToolpath(
             speedMmPerSec: layerIndex === 0 ? settings.firstLayerPrintSpeedMmPerSec : settings.printSpeedMmPerSec,
             layer: layerIndex,
             layerThicknessMm,
+            extrusionScale: flowRatio,
         });
 
         prevX = x;
@@ -217,6 +230,32 @@ function buildInterpolatedSpiralBaseToolpath(
         estimatedHeight: printedHeightMm,
         contourLayers,
     };
+}
+
+/**
+ * Share of a full bead the step from one marched revolution to the next
+ * actually needs.
+ *
+ * The two contour points are the ends of the strip this move fills, so their
+ * separation is the true spacing - after the march's clamp, and after the
+ * projection, smoothing and resampling that follow it, none of which the
+ * march's own intended pitch survives exactly. Measured against the distance
+ * at which two bead sections would merely touch when offset the same way, it
+ * is the fraction of a bead the strip holds.
+ *
+ * Capped at one: a gap wider than a bead is a spacing problem, and answering
+ * it with more than a bead of material through a 0.4 mm nozzle would not
+ * close it anyway. Quantized to a percent so runs of equal flow survive move
+ * merging, which will not merge across a change in extrusion scale.
+ */
+function surfaceStepFlowRatio(low: SlicePoint, high: SlicePoint, settings: VaseSlicerSettings): number {
+    const stepMm = distance3(low, high) * settings.modelScale;
+    if (stepMm <= 1e-9) {
+        return 0;
+    }
+    const riseMm = (high.y - low.y) * settings.modelScale;
+    const touchMm = surfacePitchFor(settings.lineWidth, settings.layerHeight, clamp(riseMm / stepMm, -1, 1));
+    return Math.round(clamp(stepMm / touchMm, 0, 1) * 100) / 100;
 }
 
 /**

@@ -17,6 +17,17 @@
  * are then a bead apart at every slope, including zero, where the march
  * degenerates into a flat spiral and lays material side by side.
  *
+ * A bead apart is not the same as a bead supported. The pitch below is the
+ * distance at which two bead sections *touch*, which on a wall is also the
+ * distance at which the new one *rests* on the last, because the last one is
+ * underneath. On a downward-facing surface the same spacing puts the new bead
+ * beside its neighbour at nearly the same height, over air, welded to it
+ * along a sliver. So the step is additionally capped by how far it may move
+ * sideways - `maxBeadAdvance` of a bead width - which forces the overlap the
+ * weld needs. The march still follows the same surface; it just takes more,
+ * shorter steps across the shallow parts of it, and lays proportionally less
+ * material in each.
+ *
  * This is only practical because the model is a field rather than a mesh:
  * the normal is the gradient, projection is Newton on the distance value,
  * and both are a GPU point query away.
@@ -49,8 +60,10 @@ export interface SurfaceMarchOptions {
     overhangWarnDegrees: number;
     /**
      * How far a revolution may advance sideways, as a fraction of the bead
-     * width, before it counts as hanging beside its neighbour rather than
-     * resting on it. 1.0 is the natural pitch and disables the test.
+     * width. A step whose horizontal component would exceed this is shortened
+     * until it does not, so the new bead keeps at least `1 - maxBeadAdvance`
+     * of its width over the one below and has something to fuse to. 1.0 is
+     * the natural pitch, where beads merely touch, and disables the clamp.
      */
     maxBeadAdvance: number;
     /**
@@ -149,6 +162,7 @@ export function marchSurfaceContours(
     // inside out is caught. Perimeter alone cannot say: a vase with a neck
     // narrows and widens again, and marching should follow it.
     let seedArea = signedContourArea(contour);
+    const convergedPerimeter = 2 * Math.PI * options.beadWidth * options.maxBeadAdvance;
 
     for (let index = 0; index < options.maxContours; index++) {
         pushLayer(layers, contour, settings);
@@ -156,12 +170,14 @@ export function marchSurfaceContours(
 
         const perimeter = contourPerimeter(contour);
         // Converged onto a pole. The test has to be the step size, not some
-        // vanishing epsilon: near a pole the surface is shallow, so the step
-        // is close to a full bead width, and a front whose radius is already
-        // under one step lands past the centre and turns inside out. What is
-        // left when this fires is a hole about a bead across, half of which
-        // the last revolution's own width covers.
-        if (perimeter <= 2 * Math.PI * options.beadWidth) {
+        // vanishing epsilon: a front whose radius is already under one step
+        // lands past the centre and turns itself inside out. Near a pole the
+        // surface is shallow, so the step is whatever the sideways clamp
+        // allows - and the test has to follow it down, or a clamped march
+        // stops a step or two short and leaves a pinhole where a full-bead
+        // one closed. What is left when this fires is a hole under a step
+        // across, which the last revolution's own width covers.
+        if (perimeter <= convergedPerimeter) {
             break;
         }
 
@@ -194,26 +210,19 @@ export function marchSurfaceContours(
         next = smoothClosedContourTaubin(next, 1);
         next = projectOntoSurface(sampler, settings, next, options, 1);
 
-        const nextPerimeter = contourPerimeter(next);
-
-        // Most of the revolution would hang beside its neighbour rather than
-        // rest on it. This is only a reason to stop on a closing front: a
-        // closing front lays each bead over the hollow interior, so nothing
-        // will ever come along to hold it up, and a flat top cannot be
-        // printed as a single wall on three axes. On an opening front - the
-        // shallow base of a sphere - the model still has surface to follow,
-        // and whether that base is printable is a question about the model
-        // rather than about the march.
-        if (nextPerimeter <= perimeter && stepped.unsupportedPoints * 2 > contour.length) {
-            stopReason = `a revolution would advance more than ${(options.maxBeadAdvance * 100).toFixed(0)}% of a bead width sideways, so it would hang beside the one below rather than rest on it`;
-            break;
-        }
-
         // Past a pole the front has nowhere left to go and turns itself
         // inside out: the winding flips, or the loop starts growing again
         // after it had been closing.
+        //
+        // On an opening already down to about a step this is the convergence
+        // test above arriving a revolution late - the front landed past the
+        // centre instead of inside the threshold - so it closed rather than
+        // failed, and saying so would be a warning about a print that came
+        // out right. Wider than that and the front really did run away.
         if (signedContourArea(next) * seedArea <= 0) {
-            stopReason = 'the front turned itself inside out, which means it had already closed';
+            if (perimeter > convergedPerimeter * 3) {
+                stopReason = 'the front turned itself inside out, which means it had already closed';
+            }
             break;
         }
 
@@ -257,8 +266,6 @@ interface SteppedContour {
     contour: SlicePoint[];
     /** Points whose step ran onto a downward-facing surface. */
     overhangPoints: number;
-    /** Points whose new bead would not rest on the previous revolution. */
-    unsupportedPoints: number;
     /** Points that stopped climbing on an upward-facing surface. */
     flatTopPoints: number;
 }
@@ -273,12 +280,12 @@ function stepContour(
     const stepped: SlicePoint[] = new Array(contour.length);
     const overhangLimit = -Math.sin((options.overhangWarnDegrees * Math.PI) / 180);
     // A revolution advances horizontally by pitch * cos(slope); once that
-    // exceeds the permitted share of a bead width the new bead has nothing
-    // under it.
+    // exceeds the permitted share of a bead width the new bead hangs beside
+    // the last one instead of sitting on it, so the step is shortened until
+    // it does not.
     const maxHorizontalAdvance = options.beadWidth * options.maxBeadAdvance;
     const minRise = options.beadHeight * options.minRiseFraction;
     let overhangPoints = 0;
-    let unsupportedPoints = 0;
     let flatTopPoints = 0;
 
     for (let i = 0; i < contour.length; i++) {
@@ -316,11 +323,18 @@ function stepContour(
             overhangPoints++;
         }
 
-        const pitch = surfacePitchFor(options, uy);
-        if (pitch * Math.sqrt(Math.max(0, 1 - uy * uy)) > maxHorizontalAdvance) {
-            unsupportedPoints++;
-        }
-        if (uy * pitch < minRise && ny > options.flatTopNormal) {
+        // Two pitches. `natural` is the distance at which the bead sections
+        // touch, and it is what the stop tests read: whether the surface is
+        // still rising is a question about the surface, and must not change
+        // just because the step across it was shortened. `pitch` is what the
+        // front actually moves - `natural` capped so the sideways component
+        // leaves the required overlap on the revolution below.
+        const natural = surfacePitchFor(options.beadWidth, options.beadHeight, uy);
+        const horizontal = Math.sqrt(Math.max(0, 1 - uy * uy));
+        const pitch = horizontal * natural > maxHorizontalAdvance
+            ? maxHorizontalAdvance / horizontal
+            : natural;
+        if (uy * natural < minRise && ny > options.flatTopNormal) {
             flatTopPoints++;
         }
         stepped[i] = {
@@ -333,7 +347,6 @@ function stepContour(
     return {
         contour: projectOntoSurface(sampler, settings, stepped, options, options.projectionIterations),
         overhangPoints,
-        unsupportedPoints,
         flatTopPoints,
     };
 }
@@ -497,10 +510,12 @@ export function surfaceSeedHeight(settings: VaseSlicerSettings): number {
 /**
  * Centre distance at which two bead sections touch when offset in a
  * direction whose vertical component is `uy` (a unit vector's elevation).
+ * Width and height are passed in rather than read off the march options
+ * because the toolpath builder asks the same question in millimetres.
  */
-export function surfacePitchFor(options: SurfaceMarchOptions, uy: number): number {
-    const a = Math.max(1e-9, options.beadWidth * 0.5);
-    const b = Math.max(1e-9, options.beadHeight * 0.5);
+export function surfacePitchFor(beadWidth: number, beadHeight: number, uy: number): number {
+    const a = Math.max(1e-9, beadWidth * 0.5);
+    const b = Math.max(1e-9, beadHeight * 0.5);
     const sin = Math.min(1, Math.abs(uy));
     const cos = Math.sqrt(Math.max(0, 1 - sin * sin));
     return 2 / Math.sqrt(((cos / a) * (cos / a)) + ((sin / b) * (sin / b)));

@@ -79,17 +79,20 @@ export interface VaseSlicerSettings {
      */
     spiralPitchMm: number;
     /**
-     * Surface mode: how far a revolution may advance sideways before it is
-     * treated as no longer resting on the one below, as a fraction of the
-     * bead width. Higher marches further into shallow territory; 1.0 is the
-     * natural pitch, where beads merely touch, and disables the test.
+     * Surface mode: how far a revolution may advance sideways per step, as a
+     * fraction of the bead width. Steps that would exceed it are shortened,
+     * so `1 - surfaceMaxBeadAdvance` of every bead sits over the one below
+     * and has something to fuse to. 1.0 is the natural pitch, where beads
+     * merely touch - which is fine on a wall, where touching means resting,
+     * and is what printed the shallow base of a sphere as a spiral of
+     * unbonded wire. The default of 0.5 keeps beads half overlapped, the same
+     * limit as the familiar 45-degree overhang rule.
      *
-     * It is a blunt instrument for closing a dome, because the slope near a
-     * pole is small over a whole band, not just at the point: at 0.5 a 50 mm
-     * sphere is left with a 32 mm hole. The default leaves closure to the
-     * flatness test instead, which stops where the surface is horizontal
-     * rather than merely shallow. Lower this to be cautious about shallow
-     * overhangs.
+     * It costs revolutions, not material: a 50 mm sphere goes from 291 to 335
+     * of them, and lays the same 2.7 g, because flow follows the shortened
+     * step. It is not a stopping rule - it cannot be, since the slope near a
+     * pole is shallow over a whole band and a rule on local slope would cut a
+     * dome off far from its top. Closure is still the flatness test's job.
      */
     surfaceMaxBeadAdvance: number;
     brimWidthMm: number;
@@ -143,7 +146,7 @@ export function getDefaultVaseSettings(): VaseSlicerSettings {
         bottomLayers: 0,
         maxLayerHeightMm: 0,
         spiralPitchMm: 0,
-        surfaceMaxBeadAdvance: 1.0,
+        surfaceMaxBeadAdvance: 0.5,
         brimWidthMm: 5,
         brimGapMm: 0.1,
         enableContourAlignment: true,
