@@ -34,7 +34,7 @@
  */
 
 import { clamp } from './math';
-import { heightMmToSdfY, type VaseSlicerSettings } from './config';
+import { getModelHeightMm, heightMmToSdfY, type VaseSlicerSettings } from './config';
 import { contourPerimeter, dedupeClosedContour, signedContourArea } from './contours';
 import { resampleClosedContour, smoothClosedContourTaubin } from './contour-postprocess';
 import type { GpuFieldSampler } from './field-sampler-gpu';
@@ -84,6 +84,13 @@ export interface SurfaceMarchOptions {
      * What makes the top of a model different is that the surface under those
      * points faces up: they are standing on a shelf with nothing beyond it,
      * not on a wall they merely happen to be traversing.
+     *
+     * The same cosine, negated, marks the opposite case: a step that no
+     * longer climbs on a surface facing *down* means the front has walked
+     * out under an overhang and is laying beads beside each other over
+     * air. A sloped underside is not this - there the step still rises, and
+     * the sideways clamp keeps each bead half on the one before - so a
+     * sphere's lower half marches on, and only a shelf stops it.
      */
     flatTopNormal: number;
     /**
@@ -163,6 +170,10 @@ export function marchSurfaceContours(
     // narrows and widens again, and marching should follow it.
     let seedArea = signedContourArea(contour);
     const convergedPerimeter = 2 * Math.PI * options.beadWidth * options.maxBeadAdvance;
+    // Planar slicing stops at the slice window or the printer's height,
+    // whichever is lower; a march has to be told the same, or a model that
+    // runs out through the top of the window climbs until the revolution cap.
+    const ceilingY = heightMmToSdfY(getModelHeightMm(settings), settings);
 
     for (let index = 0; index < options.maxContours; index++) {
         pushLayer(layers, contour, settings);
@@ -200,6 +211,13 @@ export function marchSurfaceContours(
             stopReason = 'the surface went flat, so the top is left open';
             break;
         }
+        // The mirror image: part of the revolution has walked out under a
+        // flat underside. Nothing converges there - the march only climbs -
+        // so there is no small-opening exception to make.
+        if (stepped.undersidePoints > contour.length * options.flatTopFraction) {
+            stopReason = 'the surface turned to face down, and there is nothing under it to print onto';
+            break;
+        }
 
         let next = prepareContour(stepped.contour, options);
         if (next.length < 3) {
@@ -209,6 +227,11 @@ export function marchSurfaceContours(
         // another projection rather than being the last word.
         next = smoothClosedContourTaubin(next, 1);
         next = projectOntoSurface(sampler, settings, next, options, 1);
+
+        if (maxHeight(next) > ceilingY) {
+            stopReason = 'the front reached the top of the slice window';
+            break;
+        }
 
         // Past a pole the front has nowhere left to go and turns itself
         // inside out: the winding flips, or the loop starts growing again
@@ -268,6 +291,8 @@ interface SteppedContour {
     overhangPoints: number;
     /** Points that stopped climbing on an upward-facing surface. */
     flatTopPoints: number;
+    /** Points that stopped climbing on a downward-facing surface. */
+    undersidePoints: number;
 }
 
 function stepContour(
@@ -287,6 +312,7 @@ function stepContour(
     const minRise = options.beadHeight * options.minRiseFraction;
     let overhangPoints = 0;
     let flatTopPoints = 0;
+    let undersidePoints = 0;
 
     for (let i = 0; i < contour.length; i++) {
         const point = contour[i];
@@ -334,8 +360,12 @@ function stepContour(
         const pitch = horizontal * natural > maxHorizontalAdvance
             ? maxHorizontalAdvance / horizontal
             : natural;
-        if (uy * natural < minRise && ny > options.flatTopNormal) {
-            flatTopPoints++;
+        if (uy * natural < minRise) {
+            if (ny > options.flatTopNormal) {
+                flatTopPoints++;
+            } else if (ny < -options.flatTopNormal) {
+                undersidePoints++;
+            }
         }
         stepped[i] = {
             x: point.x + ux * pitch,
@@ -348,6 +378,7 @@ function stepContour(
         contour: projectOntoSurface(sampler, settings, stepped, options, options.projectionIterations),
         overhangPoints,
         flatTopPoints,
+        undersidePoints,
     };
 }
 
@@ -486,6 +517,14 @@ function orientContourForAscent(
     return averageHeight(stepped.contour) >= averageHeight(contour)
         ? contour
         : contour.slice().reverse();
+}
+
+function maxHeight(contour: SlicePoint[]): number {
+    let highest = Number.NEGATIVE_INFINITY;
+    for (const point of contour) {
+        highest = Math.max(highest, point.y);
+    }
+    return highest;
 }
 
 function averageHeight(contour: SlicePoint[]): number {
