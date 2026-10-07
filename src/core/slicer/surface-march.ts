@@ -164,6 +164,7 @@ export function marchSurfaceContours(
     contour = orientContourForAscent(sampler, settings, contour, options);
 
     let overhangContours = 0;
+    let foldedContours = 0;
     let stopReason: string | null = null;
     // Winding, watched so a front that runs past a pole and turns itself
     // inside out is caught. Perimeter alone cannot say: a vase with a neck
@@ -173,7 +174,9 @@ export function marchSurfaceContours(
     // Planar slicing stops at the slice window or the printer's height,
     // whichever is lower; a march has to be told the same, or a model that
     // runs out through the top of the window climbs until the revolution cap.
-    const ceilingY = heightMmToSdfY(getModelHeightMm(settings), settings);
+    // Half a bead of slack, so a pole sitting exactly on the window's top
+    // still closes instead of being cut a step short by projection noise.
+    const ceilingY = heightMmToSdfY(getModelHeightMm(settings), settings) + (options.beadHeight * 0.5);
 
     for (let index = 0; index < options.maxContours; index++) {
         pushLayer(layers, contour, settings);
@@ -219,7 +222,16 @@ export function marchSurfaceContours(
             break;
         }
 
-        let next = prepareContour(stepped.contour, options);
+        // Where the front curves towards its own step more tightly than the
+        // step is long, neighbouring points cross and the front folds over
+        // itself. Resampling would spread the fold's points out and carry it
+        // along as a tangle; it is cut out here, before that.
+        const trimmed = trimFrontFolds(stepped.contour, options);
+        if (trimmed.folds > 0) {
+            foldedContours++;
+        }
+
+        let next = prepareContour(trimmed.contour, options);
         if (next.length < 3) {
             break;
         }
@@ -261,6 +273,9 @@ export function marchSurfaceContours(
     if (overhangContours > 0) {
         warnings.push(`${overhangContours} revolution${overhangContours === 1 ? '' : 's'} march onto a downward-facing surface, which has nothing beneath it to print onto.`);
     }
+    if (foldedContours > 0) {
+        warnings.push(`${foldedContours} revolution${foldedContours === 1 ? '' : 's'} folded over at a concave part of the surface; the folds were trimmed, so the bead spacing there is wider than the march intended.`);
+    }
 
     return { layers, warnings };
 }
@@ -283,6 +298,127 @@ function prepareContour(contour: SlicePoint[], options: SurfaceMarchOptions): Sl
     // a pole does not carry a fixed budget of points into a 1 mm loop.
     const count = clamp(Math.round(contourPerimeter(deduped) / options.targetSegment), 12, 4096);
     return resampleClosedContour(deduped, count);
+}
+
+/**
+ * Cuts the small loops a stepped front makes wherever it curves towards its
+ * own step - the swallowtails of an offset curve. Each point moves along
+ * its own uphill direction, and where the front is concave those
+ * directions converge; once the step is longer than the local radius of
+ * curvature, neighbouring points pass each other and the polyline runs
+ * through itself. Left alone, every later revolution inherits the loop and
+ * prints it as a stitch of back-and-forth beads.
+ *
+ * The front lies on the surface, so a crossing is a pair of segments that
+ * come within a hair of each other in three dimensions - no projection
+ * plane is needed, and the test is the same on a vertical wall as across a
+ * pole. Only nearby pairs are compared, since a fold is local: the loop
+ * between the two crossing segments is dropped and the front rejoined
+ * across the gap. A tolerance well under a segment keeps a genuinely sharp
+ * concave corner, where segments draw close but never meet, out of it.
+ *
+ * What is cut is material the front would have laid twice. The bead spacing
+ * across the trimmed gap is wider than one step, which is the usual price
+ * of offsetting a concave curve and is reported as such.
+ */
+export function trimFrontFolds(contour: SlicePoint[], options: SurfaceMarchOptions): { contour: SlicePoint[]; folds: number } {
+    const count = contour.length;
+    if (count < 6) {
+        return { contour, folds: 0 };
+    }
+
+    // A fold spans at most a few bead widths of the front: anything larger
+    // is not a swallowtail but the whole loop turning inside out, which the
+    // winding test handles.
+    const window = Math.min(
+        Math.floor((count - 1) / 2),
+        clamp(Math.round((options.beadWidth * 24) / options.targetSegment), 8, 256),
+    );
+    const toleranceSq = (options.targetSegment * 0.1) ** 2;
+    const removed = new Uint8Array(count);
+    let folds = 0;
+
+    for (let i = 0; i < count; i++) {
+        if (removed[i]) {
+            continue;
+        }
+        const a0 = contour[i];
+        const a1 = contour[(i + 1) % count];
+        // Ascending gap, so the first hit is the smallest loop through this
+        // segment. Gap 1 shares a vertex and is skipped.
+        for (let gap = 2; gap <= window; gap++) {
+            const j = (i + gap) % count;
+            const b0 = contour[j];
+            const b1 = contour[(j + 1) % count];
+            if (segmentDistanceSq(a0, a1, b0, b1) > toleranceSq) {
+                continue;
+            }
+            for (let k = 1; k <= gap; k++) {
+                removed[(i + k) % count] = 1;
+            }
+            folds++;
+            break;
+        }
+    }
+
+    if (folds === 0) {
+        return { contour, folds: 0 };
+    }
+
+    const kept: SlicePoint[] = [];
+    for (let i = 0; i < count; i++) {
+        if (!removed[i]) {
+            kept.push(contour[i]);
+        }
+    }
+    // Trimming more than half the front means it is not folds being cut but
+    // the front itself; leave it to the global tests rather than guess.
+    if (kept.length < Math.max(3, count / 2)) {
+        return { contour, folds: 0 };
+    }
+    return { contour: kept, folds };
+}
+
+/** Squared distance between the closest points of two segments (Ericson, 5.1.9). */
+function segmentDistanceSq(p1: SlicePoint, q1: SlicePoint, p2: SlicePoint, q2: SlicePoint): number {
+    const d1x = q1.x - p1.x; const d1y = q1.y - p1.y; const d1z = q1.z - p1.z;
+    const d2x = q2.x - p2.x; const d2y = q2.y - p2.y; const d2z = q2.z - p2.z;
+    const rx = p1.x - p2.x; const ry = p1.y - p2.y; const rz = p1.z - p2.z;
+    const a = (d1x * d1x) + (d1y * d1y) + (d1z * d1z);
+    const e = (d2x * d2x) + (d2y * d2y) + (d2z * d2z);
+    const f = (d2x * rx) + (d2y * ry) + (d2z * rz);
+    const epsilon = 1e-24;
+
+    let s = 0;
+    let t = 0;
+    if (a <= epsilon && e <= epsilon) {
+        return (rx * rx) + (ry * ry) + (rz * rz);
+    }
+    if (a <= epsilon) {
+        t = clamp(f / e, 0, 1);
+    } else {
+        const c = (d1x * rx) + (d1y * ry) + (d1z * rz);
+        if (e <= epsilon) {
+            s = clamp(-c / a, 0, 1);
+        } else {
+            const b = (d1x * d2x) + (d1y * d2y) + (d1z * d2z);
+            const denominator = (a * e) - (b * b);
+            s = denominator !== 0 ? clamp(((b * f) - (c * e)) / denominator, 0, 1) : 0;
+            t = ((b * s) + f) / e;
+            if (t < 0) {
+                t = 0;
+                s = clamp(-c / a, 0, 1);
+            } else if (t > 1) {
+                t = 1;
+                s = clamp((b - c) / a, 0, 1);
+            }
+        }
+    }
+
+    const cx = (p1.x + (d1x * s)) - (p2.x + (d2x * t));
+    const cy = (p1.y + (d1y * s)) - (p2.y + (d2y * t));
+    const cz = (p1.z + (d1z * s)) - (p2.z + (d2z * t));
+    return (cx * cx) + (cy * cy) + (cz * cz);
 }
 
 interface SteppedContour {
