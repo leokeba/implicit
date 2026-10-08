@@ -16,6 +16,11 @@ import {
     parseGcodeLines,
 } from './gcode-template';
 
+/** Height the nozzle rises off the finished rim before the end G-code. */
+const END_OF_PRINT_LIFT_MM = 5;
+/** Within every bundled machine's Z limit (the header declares 20 mm/s). */
+const END_OF_PRINT_LIFT_SPEED_MM_PER_SEC = 10;
+
 /** Emit the final G-code for a finished toolpath. */
 export function buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings, extraHeaderLines?: string[]): string {
     if (toolpath.points.length < 2) {
@@ -256,8 +261,14 @@ export function buildGcode(toolpath: VaseToolpath, settings: VaseSlicerSettings,
     if (settings.retractMm > 0) {
         lines.push(`G1 F${mmPerSecToFeedrate(settings.retractSpeedMmPerSec).toFixed(0)} E-${settings.retractMm.toFixed(4)}`);
     }
+    // Lift clear of the rim before the end G-code runs: a preset that parks
+    // the head (the Prusa one goes straight to X0 Y210) would otherwise drag
+    // the nozzle across the last revolution while it is still soft. Clamped
+    // to the machine's height so a print that fills it does not ask for more.
+    const lastZ = Math.max(0.0, lastPoint.y);
+    const liftZ = Math.max(lastZ, Math.min(lastZ + END_OF_PRINT_LIFT_MM, settings.maxPrintHeightMm));
     lines.push('; FEATURE: Travel');
-    lines.push('G0 F6000 Z' + Math.max(0.0, lastPoint.y).toFixed(3));
+    lines.push(`G0 F${mmPerSecToFeedrate(END_OF_PRINT_LIFT_SPEED_MM_PER_SEC).toFixed(0)} Z${liftZ.toFixed(3)}`);
 
     const endLines = parseGcodeLines(settings.endGcode, getDefaultEndGcode());
     for (const line of endLines) {
