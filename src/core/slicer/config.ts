@@ -59,6 +59,7 @@ export interface VaseSlicerSettings {
     /**
      * Number of solid bottom layers (0 = open vase). Each is printed as a
      * flat perimeter plus concentric inward fill before the helix starts.
+     * Surface mode allows one at most: see resolveVaseSettings.
      */
     bottomLayers: number;
     /**
@@ -188,6 +189,14 @@ export function resolveVaseSettings(next: Partial<VaseSlicerSettings>): VaseSlic
     merged.retractSpeedMmPerSec = clamp(merged.retractSpeedMmPerSec, 5, 80);
     merged.primeMm = clamp(merged.primeMm, 0, 5);
     merged.bottomLayers = clampInt(merged.bottomLayers, 0, 3);
+    if (merged.slicerMode === 'surface') {
+        // A marched revolution is not a layer. The first is the planar seed
+        // slice and fills like any first layer, but the second is the seed
+        // pushed one bead along the surface - on a shallow base, sideways at
+        // almost the same height - so a second solid bottom would lay its
+        // fill on the plane the first one just filled.
+        merged.bottomLayers = Math.min(merged.bottomLayers, 1);
+    }
     merged.maxLayerHeightMm = clamp(merged.maxLayerHeightMm, 0, 1.5);
     merged.spiralPitchMm = clamp(merged.spiralPitchMm, 0, 10);
     merged.brimWidthMm = clamp(merged.brimWidthMm, 0, 30);

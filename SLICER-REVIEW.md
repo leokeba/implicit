@@ -1,16 +1,6 @@
 # Slicer Review
 
-Findings from a read-through of `src/core/slicer.ts` and `src/core/slicer/` on 2026-10-07. Four were fixed as they were found: the surface march now stops at the slice window, stops when the front walks out under a flat underside, and trims the folds a stepped front makes at concave parts of the surface (`trimFrontFolds`); and the brim and bottom fill are built on a real polygon offset (`polygon-offset.ts`). What follows is what is still open, in the order it matters for a print, plus the things that are not bugs but are worth remembering.
-
-## Open
-
-### 1. End-of-print lift is a no-op
-
-`src/core/slicer/gcode.ts`, the `G0 F6000 Z...` after the final retract moves Z to the last point's own height. The Bambu preset's end G-code lifts, the generic one does not, so a generic export leaves the nozzle sitting in the rim while it cools. Lift by a few millimetres, clamped to `maxPrintHeightMm`.
-
-### 2. Surface mode with `bottomLayers` of 2 or more
-
-`src/core/slicer/toolpath.ts` prints the first `flatLayerCount` contours through the flat-layer branch, which in surface mode means marched contours with per-point heights. The emitter then lays 2D fill rings for them at whatever Z is modal. The config allows the combination and it does something odd. Either reject it in `resolveVaseSettings` or clamp `bottomLayers` to 1 when `slicerMode` is `surface`.
+Findings from a read-through of `src/core/slicer.ts` and `src/core/slicer/` on 2026-10-07. All of its findings have since been fixed: the surface march stops at the slice window, stops when the front walks out under a flat underside, and trims the folds a stepped front makes at concave parts of the surface (`trimFrontFolds`); the brim and bottom fill are built on a real polygon offset (`polygon-offset.ts`); the nozzle lifts off the rim before the end G-code; and surface mode allows one solid bottom layer at most. What remains is the things that are not bugs but are worth remembering, and what was checked and found sound.
 
 ## Remember
 
@@ -22,6 +12,8 @@ These are not bugs. They are places where the design makes an assumption that is
 - **Fold trimming is a tolerance test.** `trimFrontFolds` treats two nearby segments of the front as crossing when they come within a tenth of a segment in 3D, and drops the loop between them. A sharp concave corner of the front draws its segments close but not that close, so it survives; the Noise Fold scene trims on about a quarter of its revolutions and the sphere and noise shade on none. The trimmed gap is wider than one step, which the warning says.
 - **Brim and fill rings are built one line width at a time.** Each ring is offset from the ring before it, not from the outline by its full distance. Eroding twice by a disk is the same as eroding once by the sum, and a short step never forms the tangle a long one does over a noisy outline, so it is both exact and fast. The offset is validated by distance with a 3% tolerance of the step, which is why a single large step (`maxStep` unset) is only safe on a clean outline. Gap corners are rounded, not mitered, so brims have round outside corners; a miter would let parts of the raw offset slip into a vertex's reach without crossing anything, and the topology the loop tracing relies on would break.
 - **Thin first layers get little or no fill, correctly.** The fill stops once nothing larger than two bead cross-sections is left. Lamp Shade starts from a foot of about 3 mm² and gets one ring; Noise Fold's first layer is a C-shaped band about 2.4 mm thick and gets two. Before the rewrite the fill gave up on the first ring whose raw offset crossed itself, so these got none, and only shapes with smooth outlines got a full bottom.
+- **Surface mode caps solid bottom layers at one.** `resolveVaseSettings` clamps the resolved value, so the inspector shows 1 while the requested override is kept and comes back in planar mode. A marched revolution is not a layer: the second one on a shallow base sits beside the first at almost the same height, and a second solid bottom would fill the same plane twice.
+- **The end-of-print lift is ours, not the preset's.** The emitter rises 5 mm (clamped to the machine height) at 10 mm/s after the final retract, before any end G-code. The Bambu preset adds its own relative 10 mm on top; the Prusa preset parks straight after, which is why the lift has to come first.
 - **Minimum layer time ignores brim and bottom fill.** Those moves exist only in the emitter and the preview splice, so `applyMinimumLayerTime` never sees them.
 - **The cylindrical ray test counts a shared vertex twice** (`u > 1` is strict in `rayIntersectContourOuter`), so the bridging warning can trip on a vertex hit. Harmless.
 - **16-bit field encoding.** The slice grid packs distances over the batch bounds' diagonal, so the resolution is about 0.005 mm at `modelScale` 50 and 0.02 mm at 200. Well under the grid pitch, but it is where precision would go first on a very large model. The point sampler used by the march encodes over a window that tracks the step size and is sub-micron.
