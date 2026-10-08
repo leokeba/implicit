@@ -10,7 +10,7 @@ import type { PrinterModel } from '../../core/printer-models';
 import type { PipelineStepView } from '../../studio/types';
 import type { ScalarControlSpec } from '../../scene-runtime';
 
-export type ControlTabId = 'scene' | 'camera' | 'render' | 'print' | 'machine' | 'material' | 'postprocess' | 'output';
+export type ControlTabId = 'scene' | 'view' | 'slice' | 'printer' | 'postprocess' | 'output';
 
 export type NumericSlicerKey =
     | 'minY'

@@ -1,18 +1,20 @@
-import type { ControlTabId } from './inspector-schema';
+import { INSPECTOR_TABS, type ControlTabId } from './inspector-schema';
 import { writable } from 'svelte/store';
 
 const WORKSPACE_STORAGE_KEY = 'implicit-ui-workspace';
-const LEGACY_TAB_STORAGE_KEY = 'implicit-ui-active-tab';
 
-export const DEFAULT_INSPECTOR_WIDTH = 388;
-export const MIN_INSPECTOR_WIDTH = 340;
+export const DEFAULT_INSPECTOR_WIDTH = 360;
+export const MIN_INSPECTOR_WIDTH = 300;
 export const MAX_INSPECTOR_WIDTH = 520;
-export const DEFAULT_EDITOR_WIDTH = 420;
+export const DEFAULT_EDITOR_WIDTH = 440;
 export const MIN_EDITOR_WIDTH = 320;
-export const MAX_EDITOR_WIDTH = 720;
-export const DEFAULT_EDITOR_HEIGHT = 320;
-export const MIN_EDITOR_HEIGHT = 220;
-export const MAX_EDITOR_HEIGHT = 560;
+export const MAX_EDITOR_WIDTH = 760;
+
+/**
+ * Below the wide breakpoint there is room for one side panel only; it shows
+ * either the inspector or the code editor.
+ */
+export type DockPane = 'inspector' | 'editor';
 
 interface WorkspacePreferences {
     activeTab: ControlTabId;
@@ -21,7 +23,7 @@ interface WorkspacePreferences {
     overlayVisible: boolean;
     editorVisible: boolean;
     editorWidth: number;
-    editorHeight: number;
+    dockPane: DockPane;
 }
 
 export interface WorkspaceState extends WorkspacePreferences {
@@ -35,12 +37,12 @@ function clampInspectorWidth(width: number): number {
     return Math.min(MAX_INSPECTOR_WIDTH, Math.max(MIN_INSPECTOR_WIDTH, Math.round(width)));
 }
 
-function clampEditorHeight(height: number): number {
-    return Math.min(MAX_EDITOR_HEIGHT, Math.max(MIN_EDITOR_HEIGHT, Math.round(height)));
-}
-
 function clampEditorWidth(width: number): number {
     return Math.min(MAX_EDITOR_WIDTH, Math.max(MIN_EDITOR_WIDTH, Math.round(width)));
+}
+
+function readTabId(value: unknown): ControlTabId | null {
+    return INSPECTOR_TABS.find((tab) => tab.id === value)?.id ?? null;
 }
 
 function getDefaultPreferences(): WorkspacePreferences {
@@ -51,50 +53,34 @@ function getDefaultPreferences(): WorkspacePreferences {
         overlayVisible: true,
         editorVisible: true,
         editorWidth: DEFAULT_EDITOR_WIDTH,
-        editorHeight: DEFAULT_EDITOR_HEIGHT,
+        dockPane: 'inspector',
     };
 }
 
-function readLegacyTabPreference(): ControlTabId | null {
-    if (typeof localStorage === 'undefined') {
-        return null;
-    }
-
-    try {
-        const stored = localStorage.getItem(LEGACY_TAB_STORAGE_KEY) as ControlTabId | null;
-        return stored ?? null;
-    } catch {
-        return null;
-    }
-}
-
 function readStoredPreferences(): WorkspacePreferences {
+    const defaults = getDefaultPreferences();
     if (typeof localStorage === 'undefined') {
-        return getDefaultPreferences();
+        return defaults;
     }
 
     try {
         const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
         if (!raw) {
-            const legacyTab = readLegacyTabPreference();
-            return {
-                ...getDefaultPreferences(),
-                activeTab: legacyTab ?? 'scene',
-            };
+            return defaults;
         }
 
         const parsed = JSON.parse(raw) as Partial<WorkspacePreferences>;
         return {
-            activeTab: parsed.activeTab ?? readLegacyTabPreference() ?? 'scene',
-            inspectorCollapsed: parsed.inspectorCollapsed ?? false,
+            activeTab: readTabId(parsed.activeTab) ?? defaults.activeTab,
+            inspectorCollapsed: parsed.inspectorCollapsed ?? defaults.inspectorCollapsed,
             inspectorWidth: clampInspectorWidth(parsed.inspectorWidth ?? DEFAULT_INSPECTOR_WIDTH),
-            overlayVisible: parsed.overlayVisible ?? true,
-            editorVisible: typeof parsed.editorVisible === 'boolean' ? parsed.editorVisible : true,
+            overlayVisible: parsed.overlayVisible ?? defaults.overlayVisible,
+            editorVisible: typeof parsed.editorVisible === 'boolean' ? parsed.editorVisible : defaults.editorVisible,
             editorWidth: clampEditorWidth(parsed.editorWidth ?? DEFAULT_EDITOR_WIDTH),
-            editorHeight: clampEditorHeight(parsed.editorHeight ?? DEFAULT_EDITOR_HEIGHT),
+            dockPane: parsed.dockPane === 'editor' ? 'editor' : 'inspector',
         };
     } catch {
-        return getDefaultPreferences();
+        return defaults;
     }
 }
 
@@ -110,12 +96,11 @@ function persistPreferences(state: WorkspaceState): void {
         overlayVisible: state.overlayVisible,
         editorVisible: state.editorVisible,
         editorWidth: state.editorWidth,
-        editorHeight: state.editorHeight,
+        dockPane: state.dockPane,
     };
 
     try {
         localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(nextPreferences));
-        localStorage.setItem(LEGACY_TAB_STORAGE_KEY, state.activeTab);
     } catch {
         // Ignore storage errors.
     }
@@ -210,26 +195,18 @@ export function createWorkspaceStore(initialLabels: Pick<WorkspaceState, 'active
                 editorWidth: DEFAULT_EDITOR_WIDTH,
             }));
         },
-        setEditorHeight(height: number): void {
-            if (!Number.isFinite(height)) {
-                return;
-            }
-
-            mutate((state) => ({
-                ...state,
-                editorHeight: clampEditorHeight(height),
-            }));
-        },
-        resetEditorHeight(): void {
-            mutate((state) => ({
-                ...state,
-                editorHeight: DEFAULT_EDITOR_HEIGHT,
-            }));
-        },
         setEditorResizing(isEditorResizing: boolean): void {
             update((state) => ({
                 ...state,
                 isEditorResizing,
+            }));
+        },
+        /** Shows the given pane in the single side panel and opens it. */
+        showDockPane(dockPane: DockPane): void {
+            mutate((state) => ({
+                ...state,
+                dockPane,
+                inspectorCollapsed: false,
             }));
         },
         setActiveLabels(activeSceneLabel: string, activeViewModeLabel: string): void {

@@ -47,7 +47,7 @@
         {/if}
         <div class="name-dialog-actions">
             <button class="chrome-button chrome-button-ghost" type="button" on:click={() => dialogElement.close()}>Cancel</button>
-            <button class="chrome-button" type="submit" disabled={!value.trim()}>{confirmLabel}</button>
+            <button class="chrome-button chrome-button-primary" type="submit" disabled={!value.trim()}>{confirmLabel}</button>
         </div>
     </form>
 </dialog>

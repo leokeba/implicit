@@ -44,11 +44,6 @@
 
 <aside id="controls" aria-label="Inspector">
     <div class="controls-shell">
-        <div class="controls-header">
-            <h2>Inspector</h2>
-            <p class="controls-note">Scene, render, and print settings for the active surface.</p>
-        </div>
-
         <!-- svelte-ignore a11y_interactive_supports_focus -->
         <div class="tab-bar" role="tablist" aria-label="Inspector sections" on:keydown={handleTabKeydown}>
             {#each INSPECTOR_TABS as tab}

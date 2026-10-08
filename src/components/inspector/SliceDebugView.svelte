@@ -139,7 +139,7 @@
 
 <style>
     .slice-debug {
-        margin-top: 0.9rem;
+        margin: 12px 14px 0;
         border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 10px;
         padding: 0.75rem;

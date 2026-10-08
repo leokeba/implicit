@@ -89,14 +89,6 @@ const BOOLEAN_TOGGLE_OPTIONS: InspectorFieldOption[] = [
     { value: 'false', label: 'Off' },
 ];
 
-function findSceneLabel(state: InspectorSchemaState): string {
-    return state.sceneOptions.find((scene) => scene.id === state.sceneId)?.name ?? state.sceneId;
-}
-
-function getViewModeLabel(viewMode: number): string {
-    return VIEW_MODE_OPTIONS.find((option) => Number(option.value) === viewMode)?.label ?? 'Shaded';
-}
-
 /** Locale-aware so chip values match how the browser renders number inputs. */
 function formatFixed(value: number, digits = 2): string {
     if (!Number.isFinite(value)) {
@@ -131,26 +123,20 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
     {
         id: 'scene',
         label: 'Scene',
-        summary: [
-            { label: 'Scene', read: findSceneLabel },
-            { label: 'View', read: (state) => getViewModeLabel(state.viewMode) },
-        ],
-        // Scene and view selection live in the top bar; this tab holds the
+        summary: [],
+        // Scene and view selection live in the top bar and viewport; this tab holds the
         // per-scene controls appended dynamically from the scene manifest.
         sections: [],
     },
     {
-        id: 'camera',
-        label: 'Camera',
-        summary: [
-            { label: 'Orbit', read: (state) => formatFixed(state.viewportParams.orbitSensitivity, 3) },
-            { label: 'Dolly', read: (state) => formatFixed(state.viewportParams.dollySensitivity, 3) },
-        ],
+        id: 'view',
+        label: 'View',
+        summary: [],
         sections: [
             {
                 id: 'navigation-tuning',
-                title: 'Navigation Tuning',
-                caption: 'These controls tune how the orbit camera behaves in the workspace.',
+                title: 'Camera',
+                caption: 'How fast the viewport camera orbits, pans, and zooms.',
                 fields: [
                     { kind: 'number', target: 'viewport', key: 'orbitSensitivity', id: 'viewport-orbit-sensitivity', label: 'Orbit speed', step: '0.001', min: '0.001', max: '0.06' },
                     { kind: 'number', target: 'viewport', key: 'panSensitivity', id: 'viewport-pan-sensitivity', label: 'Pan speed', step: '0.1', min: '0.2', max: '5.0' },
@@ -158,17 +144,6 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'number', target: 'viewport', key: 'dollySensitivity', id: 'viewport-dolly-sensitivity', label: 'Dolly speed', step: '0.0005', min: '0.0005', max: '0.04' },
                 ],
             },
-        ],
-        actions: [{ id: 'resetView', label: 'Reset View', tone: 'secondary' }],
-    },
-    {
-        id: 'render',
-        label: 'Render',
-        summary: [
-            { label: 'Max steps', read: (state) => String(state.raymarchParams.maxSteps) },
-            { label: 'Target FPS', read: (state) => String(state.animationParams.targetFrameRate) },
-        ],
-        sections: [
             {
                 id: 'raymarch',
                 title: 'Raymarch',
@@ -194,10 +169,11 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                 ],
             },
         ],
+        actions: [{ id: 'resetView', label: 'Reset View', tone: 'secondary' }],
     },
     {
-        id: 'print',
-        label: 'Print',
+        id: 'slice',
+        label: 'Slice',
         summary: [
             { label: 'Mode', read: (state) => state.slicerSettings.slicerMode },
             { label: 'Layer', read: (state) => `${formatFixed(state.slicerSettings.layerHeight, 2)} mm` },
@@ -255,18 +231,19 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                 ],
             },
         ],
+        note: 'Planar contour mode is the strict algorithm. Cylindrical radial mode remains useful for star-convex profiles.',
     },
     {
-        id: 'machine',
-        label: 'Machine',
+        id: 'printer',
+        label: 'Printer',
         summary: [
-            { label: 'Printer', read: (state) => state.slicerSettings.printerModelName },
             { label: 'Bed', read: (state) => formatBedSize(state.slicerSettings) },
+            { label: 'Temps', read: (state) => `${Math.round(state.slicerSettings.nozzleTempC)} / ${Math.round(state.slicerSettings.bedTempC)} °C` },
         ],
         sections: [
             {
                 id: 'machine-setup',
-                title: 'Machine Setup',
+                title: 'Machine',
                 caption: 'Printer preset, build volume, and bed placement.',
                 fields: [
                     { kind: 'select', target: 'printerModel', id: 'slicer-printer-model', label: 'Printer model', optionsSource: 'printerModels' },
@@ -279,28 +256,8 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                 ],
             },
             {
-                id: 'machine-gcode',
-                title: 'Machine G-code',
-                caption: 'Templates support placeholders like {nozzleTempC}, {bedTempC}, and {fanPwm}.',
-                fields: [
-                    { kind: 'textarea', target: 'slicerText', key: 'startGcode', id: 'slicer-start-gcode', label: 'Start G-code', rows: 5 },
-                    { kind: 'textarea', target: 'slicerText', key: 'endGcode', id: 'slicer-end-gcode', label: 'End G-code', rows: 5 },
-                ],
-            },
-            PRINTER_CONNECTION_PLACEHOLDER_SECTION,
-        ],
-    },
-    {
-        id: 'material',
-        label: 'Material',
-        summary: [
-            { label: 'Profile', read: (state) => state.slicerSettings.filamentProfileName },
-            { label: 'Temps', read: (state) => `${Math.round(state.slicerSettings.nozzleTempC)} / ${Math.round(state.slicerSettings.bedTempC)} C` },
-        ],
-        sections: [
-            {
                 id: 'material-setup',
-                title: 'Material Setup',
+                title: 'Material',
                 caption: 'Temperatures and extrusion settings for the selected filament.',
                 fields: [
                     { kind: 'select', target: 'filamentProfile', id: 'slicer-filament-profile', label: 'Filament profile', optionsSource: 'filamentProfiles' },
@@ -317,6 +274,16 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
                     { kind: 'number', target: 'slicer', key: 'primeMm', id: 'slicer-prime', label: 'Prime (mm)', step: '0.1', min: '0', max: '5' },
                 ],
             },
+            {
+                id: 'machine-gcode',
+                title: 'Machine G-code',
+                caption: 'Templates support placeholders like {nozzleTempC}, {bedTempC}, and {fanPwm}.',
+                fields: [
+                    { kind: 'textarea', target: 'slicerText', key: 'startGcode', id: 'slicer-start-gcode', label: 'Start G-code', rows: 5 },
+                    { kind: 'textarea', target: 'slicerText', key: 'endGcode', id: 'slicer-end-gcode', label: 'End G-code', rows: 5 },
+                ],
+            },
+            PRINTER_CONNECTION_PLACEHOLDER_SECTION,
         ],
     },
     {
@@ -348,22 +315,18 @@ export const INSPECTOR_TABS: InspectorTabSchema[] = [
     {
         id: 'output',
         label: 'Output',
-        summary: [
-            { label: 'Measured', read: (state) => `${state.benchmarkIterations} run${state.benchmarkIterations === 1 ? '' : 's'}` },
-            { label: 'Warmups', read: (state) => `${state.benchmarkWarmups}` },
-        ],
+        summary: [],
         sections: [
             {
                 id: 'export-benchmark',
-                title: 'Export And Benchmark',
-                caption: 'Run the slicer and inspect results without leaving the workspace.',
+                title: 'Benchmark',
+                caption: 'Repeat the slice to time it; warmup runs are discarded.',
                 fields: [
                     { kind: 'number', target: 'command', key: 'benchmarkIterations', id: 'benchmark-iterations', label: 'Measured runs', step: '1', min: '1', max: '20', disabledWhenPending: true },
                     { kind: 'number', target: 'command', key: 'benchmarkWarmups', id: 'benchmark-warmups', label: 'Warmup runs', step: '1', min: '0', max: '10', disabledWhenPending: true },
                 ],
             },
         ],
-        note: 'Planar contour mode is the strict algorithm. Cylindrical radial mode remains useful for star-convex profiles.',
         actions: [
             { id: 'generateVaseGcode', label: 'Generate Vase G-code', disabledWhenPending: true },
             { id: 'benchmarkVaseGcode', label: 'Benchmark', tone: 'secondary', disabledWhenPending: true },
@@ -403,7 +366,7 @@ export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSch
         };
     }
 
-    if (tabId === 'machine') {
+    if (tabId === 'printer') {
         const machineTab: InspectorTabSchema = {
             ...baseTab,
             sections: baseTab.sections.map((section) => (
@@ -443,7 +406,7 @@ export function buildInspectorTabSchema(tabId: ControlTabId, state: InspectorSch
 }
 
 function withOverrideActions(tab: InspectorTabSchema, state: InspectorSchemaState): InspectorTabSchema {
-    if (state.overrideCount === 0 || (tab.id !== 'scene' && tab.id !== 'print' && tab.id !== 'machine' && tab.id !== 'material')) {
+    if (state.overrideCount === 0 || (tab.id !== 'scene' && tab.id !== 'slice' && tab.id !== 'printer')) {
         return tab;
     }
 

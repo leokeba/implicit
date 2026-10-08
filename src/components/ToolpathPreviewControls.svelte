@@ -8,8 +8,10 @@
     export let onLayerRange: (minLayer: number, maxLayer: number) => void;
     export let onToggleTravels: (visible: boolean) => void;
     export let onToggleAutoScale: (autoScale: boolean) => void;
+    /** Start folded where the legend would cover most of a small viewport. */
+    export let startCollapsed = false;
 
-    let collapsed = false;
+    let collapsed = startCollapsed;
     let layerFrom = 0;
     let layerTo = 0;
     let showTravels = true;

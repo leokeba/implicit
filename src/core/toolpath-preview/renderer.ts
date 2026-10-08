@@ -333,7 +333,9 @@ export class ToolpathRenderer {
         gl.uniform3f(this.uniforms.uCameraRight, camera.right.x, camera.right.y, camera.right.z);
         gl.uniform3f(this.uniforms.uCameraUp, camera.up.x, camera.up.y, camera.up.z);
         gl.uniform3f(this.uniforms.uCameraForward, camera.forward.x, camera.forward.y, camera.forward.z);
-        gl.uniform1f(this.uniforms.uFocalLength, camera.focalLength);
+        // Same shorter-side framing as the raymarch shader, so both layers
+        // share one image plane in portrait viewports too.
+        gl.uniform1f(this.uniforms.uFocalLength, camera.focalLength * Math.min(aspect, 1));
         gl.uniform1f(this.uniforms.uAspect, aspect);
         gl.uniform1f(this.uniforms.uViewportHeight, Math.max(1, camera.viewportHeight));
         gl.uniform1f(this.uniforms.uNear, NEAR_PLANE);

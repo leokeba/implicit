@@ -7,7 +7,10 @@
     import { EditorView } from '@codemirror/view';
     import CodeMirror from 'svelte-codemirror-editor';
 
+    import Icon from './Icon.svelte';
+
     export let panelLabel: string;
+    export let documentMode: 'scene' | 'postprocess';
     export let storageLabel: string;
     export let dirty: boolean;
     export let dirtyLabel = 'Unsaved';
@@ -16,11 +19,8 @@
     export let documentName: string | null;
     export let documentFileName: string | null;
     export let source: string | null;
-    export let helperText: string;
     export let createLabel: string;
     export let saveLabel: string;
-    export let hideLabel: string;
-    export let switchLabel: string;
     export let language: 'glsl' | 'javascript' | 'typescript';
     export let fileOptions: Array<{ value: string; label: string }> = [];
     export let activeFileOption: string | null = null;
@@ -32,9 +32,8 @@
     export let onSave: () => void | Promise<void>;
     export let onRevert: () => void;
     export let onSwitchDocument: () => void | Promise<void>;
-    export let onClose: () => void;
-    export let onStartResize: (event: PointerEvent) => void;
-    export let onResizeKeydown: ((event: KeyboardEvent) => void) | null = null;
+    /** Null where the surrounding panel owns closing (the shared side panel). */
+    export let onClose: (() => void) | null = null;
 
     const editorThemeStyles = {
         '&': {
@@ -146,37 +145,20 @@
 </script>
 
 <section class="scene-editor-shell" aria-label={panelLabel} bind:this={panelElement}>
-    <button
-        class="scene-editor-resizer"
-        type="button"
-        aria-label={`Resize ${panelLabel.toLowerCase()}`}
-        on:pointerdown={onStartResize}
-        on:keydown={(event) => onResizeKeydown?.(event)}
-    ></button>
-
     <header class="scene-editor-header">
-        <div class="scene-editor-title-block">
-            <div class="scene-editor-title-row">
-                <span class="viewport-badge">{panelLabel}</span>
-                <span class="viewport-badge viewport-badge-muted">{storageLabel}</span>
-                {#if dirty}
-                    <span class="viewport-badge scene-editor-dirty-badge">{dirtyLabel}</span>
-                {/if}
-            </div>
-            <h2>{documentName ?? `No active ${panelLabel.toLowerCase()}`}</h2>
-            <p class="scene-editor-caption">
-                <strong>{documentFileName ?? 'No file selected'}</strong>
-                {helperText}
-            </p>
+        <div class="segmented" role="group" aria-label="Document type">
+            <button type="button" aria-pressed={documentMode === 'scene'} on:click={() => documentMode !== 'scene' && onSwitchDocument()}>Scene</button>
+            <button type="button" aria-pressed={documentMode === 'postprocess'} on:click={() => documentMode !== 'postprocess' && onSwitchDocument()}>Scripts</button>
         </div>
 
-        <div class="scene-editor-actions">
+        <div class="scene-editor-file">
             {#if fileOptions.length > 0 && onSelectFileOption}
                 <select
                     id="scene-editor-file-select"
                     name="editor-file"
                     class="scene-editor-file-select"
                     aria-label="Active editor file"
+                    title={documentName ?? undefined}
                     value={activeFileOption ?? ''}
                     on:change={(event) => onSelectFileOption?.((event.currentTarget as HTMLSelectElement).value)}
                 >
@@ -184,24 +166,36 @@
                         <option value={option.value}>{option.label}</option>
                     {/each}
                 </select>
+            {:else}
+                <span class="scene-editor-file-name">{documentFileName ?? 'No file selected'}</span>
             {/if}
+            {#if dirty}
+                <span class="scene-editor-dirty-dot" role="img" aria-label={dirtyLabel} title={dirtyLabel}></span>
+            {/if}
+        </div>
+
+        <div class="scene-editor-actions">
             {#if addFileLabel && onAddFile}
-                <button class="chrome-button chrome-button-ghost" type="button" on:click={onAddFile}>{addFileLabel}</button>
+                <button class="icon-button" type="button" aria-label={addFileLabel} title={addFileLabel} on:click={onAddFile}>
+                    <Icon name="file-plus" />
+                </button>
             {/if}
-            <button class="chrome-button chrome-button-ghost" type="button" on:click={onCreate}>{createLabel}</button>
-            <button class="chrome-button chrome-button-ghost" type="button" on:click={onSwitchDocument}>{switchLabel}</button>
-            <button class="chrome-button chrome-button-ghost" type="button" disabled={!dirty || savePending || !source} on:click={onRevert}>Revert</button>
-            <button class="chrome-button" type="button" disabled={!dirty || savePending || !source} on:click={onSave}>
-                {savePending ? 'Saving...' : saveLabel}
+            <button class="icon-button" type="button" aria-label={createLabel} title={createLabel} on:click={onCreate}>
+                <Icon name={documentMode === 'scene' ? 'folder-plus' : 'file-plus'} />
             </button>
-            <button class="chrome-button chrome-button-ghost" type="button" on:click={onClose}>{hideLabel}</button>
+            <button class="icon-button" type="button" aria-label="Revert unsaved changes" title="Revert unsaved changes" disabled={!dirty || savePending || !source} on:click={onRevert}>
+                <Icon name="revert" />
+            </button>
+            <button class="chrome-button chrome-button-primary" type="button" title={`${saveLabel} (⌘S)`} disabled={!dirty || savePending || !source} on:click={onSave}>
+                {savePending ? 'Saving…' : 'Save'}
+            </button>
+            {#if onClose}
+                <button class="icon-button" type="button" aria-label="Hide editor" title="Hide editor" on:click={onClose}>
+                    <Icon name="close" />
+                </button>
+            {/if}
         </div>
     </header>
-
-    <div class="scene-editor-statusbar">
-        <span class="scene-editor-status-label">Editor Status</span>
-        <p>{statusText}</p>
-    </div>
 
     {#if source !== null}
         <div class="scene-editor-body">
@@ -216,5 +210,12 @@
                 onchange={onChangeSource}
             />
         </div>
+    {:else}
+        <div class="scene-editor-empty">No {panelLabel.toLowerCase()} file is open.</div>
     {/if}
+
+    <footer class="scene-editor-statusbar">
+        <span class="scene-editor-status-text" title={statusText}>{statusText}</span>
+        <span class="scene-editor-storage">{storageLabel}</span>
+    </footer>
 </section>

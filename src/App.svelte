@@ -83,6 +83,7 @@
     import { sendPlateToBambuConnect } from './app/bambu-send';
     import { SliceEtaEstimator } from './app/slice-eta';
     import { createLayoutResizeController } from './app/layout-resize';
+    import { readLayoutMode, type LayoutMode } from './app/layout-mode';
     import {
         persistRuntimeSnapshot,
         readRuntimeSnapshot,
@@ -94,12 +95,6 @@
     // swapped; capturing it at init is intentional.
     // svelte-ignore state_referenced_locally
     const studio = props.studio;
-
-    const EDITOR_SIDE_LAYOUT_MIN_WIDTH = 1440;
-    // Below this the inspector stacks under the viewport. The 981-1180 range
-    // keeps the narrow side-by-side grid (max-width:1180 media query) so
-    // parameters stay visible next to the model on small laptops.
-    const COMPACT_WORKSPACE_MAX_WIDTH = 980;
 
     // Single source of truth: the controller publishes its state after every
     // mutation; these locals are pure derivations of it. Nothing in this
@@ -155,9 +150,8 @@
 
     let workspacePollHandle: number | null = null;
     let printerAvailabilityPollHandle: number | null = null;
-    let editorDockSide = $state(false);
     let sliceDebugSnapshot = $state(studio.getLastSliceDebugSnapshot());
-    let compactWorkspaceLayout = $state(false);
+    let layoutMode: LayoutMode = $state(typeof window === 'undefined' ? 'wide' : readLayoutMode(window.innerWidth, window.innerHeight));
     let runtimeSnapshotHydrated = $state(false);
     let printerTarget: PrinterTarget = $state({
         kind: 'moonraker',
@@ -479,15 +473,13 @@
         studio.resizeViewport();
     }
 
-    function syncWorkspaceLayout(): void {
-        if (typeof window === 'undefined') {
-            compactWorkspaceLayout = false;
-            editorDockSide = false;
-            return;
+    /** Shows the code editor wherever the current layout keeps it. */
+    function revealEditor(): void {
+        if (layoutMode === 'wide') {
+            workspace.setEditorVisible(true);
+        } else {
+            workspace.showDockPane('editor');
         }
-
-        compactWorkspaceLayout = window.innerWidth <= COMPACT_WORKSPACE_MAX_WIDTH;
-        editorDockSide = window.innerWidth >= EDITOR_SIDE_LAYOUT_MIN_WIDTH;
     }
 
     async function selectTab(tabId: ControlTabId): Promise<void> {
@@ -511,7 +503,13 @@
             editorDocumentMode = $workspace.activeTab === 'postprocess' ? 'postprocess' : 'scene';
         }
 
-        workspace.toggleEditor();
+        if (layoutMode === 'wide') {
+            workspace.toggleEditor();
+        } else if ($workspace.dockPane === 'editor' && !$workspace.inspectorCollapsed) {
+            workspace.setInspectorCollapsed(true);
+        } else {
+            workspace.showDockPane('editor');
+        }
         await resizeViewportAfterLayout();
     }
 
@@ -524,10 +522,7 @@
         editorDocumentMode = editorDocumentMode === 'postprocess' ? 'scene' : 'postprocess';
         workspace.selectTab(editorDocumentMode === 'postprocess' ? 'postprocess' : 'scene');
 
-        if (!$workspace.editorVisible) {
-            workspace.setEditorVisible(true);
-        }
-
+        revealEditor();
         await resizeViewportAfterLayout();
     }
 
@@ -1123,7 +1118,7 @@
         activePostprocessScriptId = nextDocument.id;
         editorDocumentMode = 'postprocess';
         workspace.selectTab('postprocess');
-        workspace.setEditorVisible(true);
+        revealEditor();
         postprocessStatus = `Created ${nextDocument.fileName}. Reference it from a scene manifest with usePostprocess('${nextDocument.id}').`;
         status.setWorkspaceStatus(postprocessStatus);
 
@@ -1179,7 +1174,7 @@
         applySceneRegistryResult(studio.syncSceneBundles(sceneDocs.current().documents));
         editorDocumentMode = 'scene';
         workspace.selectTab('scene');
-        workspace.setEditorVisible(true);
+        revealEditor();
         commitScene(nextSceneId);
         activeSceneFileName = SCENE_GLSL_FILE;
         sceneEditorStatus = workspaceBackend.writable
@@ -1245,7 +1240,7 @@
 
     const layoutResize = createLayoutResizeController({
         workspace,
-        isEditorDockedSide: () => editorDockSide,
+        canResizeDock: () => layoutMode !== 'narrow',
         resizeViewport: () => studio.resizeViewport(),
         resizeViewportAfterLayout: () => {
             void resizeViewportAfterLayout();
@@ -1404,15 +1399,8 @@
     }
 
     onMount(() => {
-        syncWorkspaceLayout();
-
         const handleWindowResize = () => {
-            const previousDockSide = editorDockSide;
-            const previousCompactLayout = compactWorkspaceLayout;
-            syncWorkspaceLayout();
-            if (previousDockSide !== editorDockSide || previousCompactLayout !== compactWorkspaceLayout) {
-                void resizeViewportAfterLayout();
-            }
+            layoutMode = readLayoutMode(window.innerWidth, window.innerHeight);
         };
 
         const handlePersistRuntimeSnapshot = () => {
@@ -1543,13 +1531,9 @@
         documentName: editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneBundle?.name ?? null,
         documentFileName: editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneFileName,
         source: editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneSource,
-        helperText: editorDocumentMode === 'postprocess'
-            ? 'Generic toolpath scripts referenced from scene manifests with usePostprocess(id).'
-            : 'scene.glsl defines the surface; scene.ts orchestrates uniforms, slicing, and the postprocess pipeline.',
         createLabel: editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene',
         saveLabel: editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save File',
-        hideLabel: 'Hide Editor',
-        switchLabel: editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script',
+        documentMode: editorDocumentMode,
         language: editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : sceneEditorLanguage,
         fileOptions: editorDocumentMode === 'scene'
             ? sceneFileNames.map((fileName) => ({ value: fileName, label: fileName }))
@@ -1563,132 +1547,114 @@
         onSave: editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneFile,
         onRevert: editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneFile,
         onSwitchDocument: switchEditorDocument,
-        onClose: toggleEditor,
-        onStartResize: startEditorResize,
-        onResizeKeydown: handleEditorResizeKeydown,
+        // The shared side panel closes as a whole; only the wide layout's
+        // dedicated editor column has its own close button.
+        onClose: layoutMode === 'wide' ? toggleEditor : null,
     }));
+    const showEditorColumn = $derived(layoutMode === 'wide' && $workspace.editorVisible && !viewerFullscreen);
+    const showSidePanel = $derived(!$workspace.inspectorCollapsed && !viewerFullscreen);
 </script>
 
 <svelte:window onkeydown={handleWindowKeydown} />
 
-<div class="app-root" class:inspector-collapsed={$workspace.inspectorCollapsed} class:is-dock-resizing={$workspace.isInspectorResizing} class:is-editor-resizing={$workspace.isEditorResizing} class:editor-visible={$workspace.editorVisible} class:viewer-fullscreen={viewerFullscreen} class:compact-workspace={compactWorkspaceLayout}>
+<div
+    class="app-root"
+    data-layout={layoutMode}
+    class:is-dock-resizing={$workspace.isInspectorResizing}
+    class:is-editor-resizing={$workspace.isEditorResizing}
+    class:viewer-fullscreen={viewerFullscreen}
+    style={`--editor-width: ${$workspace.editorWidth}px; --inspector-width: ${$workspace.inspectorWidth}px;`}
+>
     <TopBar
         {sceneOptions}
         {sceneId}
-        {viewMode}
         {printerModels}
         {filamentProfiles}
         printerModelId={config.settings.printerModelId}
         filamentProfileId={config.settings.filamentProfileId}
-        shaderStatusMode={$status.shaderStatusMode}
-        shaderStatusText={$status.shaderStatusText}
         actionPending={$status.actionPending}
+        {generateActionLabel}
         showDownloadButton={showDownloadButton}
         showPrintButton={printerConfigured && printerReady}
         printActionLabel={printActionLabel}
         onCommitScene={commitScene}
-        onCommitViewMode={commitViewMode}
         onCommitPrinterModel={commitPrinterModel}
         onCommitFilamentProfile={commitFilamentProfile}
+        onGenerateVaseGcode={generateVaseGcode}
         onDownloadGeneratedGcode={downloadGeneratedGcode}
         onSendVaseGcodeToPrinter={sendVaseGcodeToPrinter}
     />
 
-    <div class="workspace-stack" class:editor-docked-left={$workspace.editorVisible && editorDockSide} style={`--editor-height: ${$workspace.editorHeight}px; --editor-width: ${$workspace.editorWidth}px; --inspector-width: ${$workspace.inspectorWidth}px;`}>
-        <div class="workspace-shell" class:editor-docked-left={$workspace.editorVisible && editorDockSide}>
-            {#if $workspace.editorVisible && editorDockSide}
-                <div class="workspace-editor-slot workspace-editor-slot-side">
-                    <DocumentEditorPanel {...documentEditorProps} />
-                </div>
+    <div class="workspace">
+        {#if showEditorColumn}
+            <div class="editor-column">
+                <DocumentEditorPanel {...documentEditorProps} />
+            </div>
+            <button
+                class="column-resizer"
+                type="button"
+                aria-label="Resize code editor (arrow keys adjust, Home resets)"
+                onpointerdown={startEditorResize}
+                onkeydown={handleEditorResizeKeydown}
+                ondblclick={() => { workspace.resetEditorWidth(); void resizeViewportAfterLayout(); }}
+            ></button>
+        {/if}
 
+        <ViewportPanel
+            {layoutMode}
+            {viewMode}
+            onCommitViewMode={commitViewMode}
+            inspectorCollapsed={$workspace.inspectorCollapsed}
+            editorVisible={$workspace.editorVisible}
+            {viewerFullscreen}
+            onResetView={resetView}
+            onToggleInspector={toggleInspector}
+            onToggleEditor={toggleEditor}
+            onToggleViewerFullscreen={toggleViewerFullscreen}
+            {hasToolpath}
+            toolpathVisible={$workspace.overlayVisible}
+            onToggleToolpath={() => workspace.toggleOverlay()}
+            {toolpathPreview}
+            onSelectToolpathChannel={selectToolpathChannel}
+            onToolpathLayerRange={setToolpathLayerRange}
+            onToggleToolpathTravels={(visible) => studio.setToolpathTravelsVisible(visible)}
+            onToggleToolpathAutoScale={setToolpathAutoScale}
+        />
+
+        {#if showSidePanel}
+            {#if layoutMode !== 'narrow'}
                 <button
-                    class="editor-dock-resizer"
+                    class="column-resizer"
                     type="button"
-                    aria-label="Resize scene editor (arrow keys adjust, Home resets)"
-                    onpointerdown={startEditorResize}
-                    onkeydown={handleEditorResizeKeydown}
-                    ondblclick={() => { workspace.resetEditorWidth(); void resizeViewportAfterLayout(); }}
-                ></button>
-            {/if}
-
-            <ViewportPanel
-                actionPending={$status.actionPending}
-                inspectorCollapsed={$workspace.inspectorCollapsed}
-                editorVisible={$workspace.editorVisible}
-                {viewerFullscreen}
-                onResetView={resetView}
-                onToggleInspector={toggleInspector}
-                onToggleEditor={toggleEditor}
-                onToggleViewerFullscreen={toggleViewerFullscreen}
-                onGenerateVaseGcode={generateVaseGcode}
-                generateActionLabel={generateActionLabel}
-                {hasToolpath}
-                toolpathVisible={$workspace.overlayVisible}
-                onToggleToolpath={() => workspace.toggleOverlay()}
-                {toolpathPreview}
-                onSelectToolpathChannel={selectToolpathChannel}
-                onToolpathLayerRange={setToolpathLayerRange}
-                onToggleToolpathTravels={(visible) => studio.setToolpathTravelsVisible(visible)}
-                onToggleToolpathAutoScale={setToolpathAutoScale}
-            />
-
-            {#if !$workspace.inspectorCollapsed && !compactWorkspaceLayout}
-                <button
-                    class="dock-resizer"
-                    type="button"
-                    aria-label="Resize inspector (arrow keys adjust, Home resets)"
+                    aria-label="Resize side panel (arrow keys adjust, Home resets)"
                     onpointerdown={startInspectorResize}
                     ondblclick={resetInspectorWidth}
                     onkeydown={handleDockKeydown}
                 ></button>
-
-                <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
             {/if}
-        </div>
 
-        {#if compactWorkspaceLayout && !$workspace.inspectorCollapsed}
-            <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
-        {/if}
-
-        {#if $workspace.editorVisible && !editorDockSide}
-            <DocumentEditorPanel
-                panelLabel={editorDocumentMode === 'postprocess' ? 'Script Editor' : 'Scene Editor'}
-                storageLabel={editorDocumentMode === 'postprocess' ? postprocessModeLabel : sceneEditorModeLabel}
-                dirty={editorDocumentMode === 'postprocess' ? postprocessDirty : sceneEditorDirty}
-                dirtyLabel={editorDocumentMode === 'postprocess' ? 'Unsaved Script' : 'Unsaved Scene'}
-                savePending={editorDocumentMode === 'postprocess' ? postprocessSavePending : sceneEditorSavePending}
-                statusText={editorDocumentMode === 'postprocess' ? postprocessStatus : sceneEditorStatus}
-                documentName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.name ?? null : activeSceneBundle?.name ?? null}
-                documentFileName={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.fileName ?? null : activeSceneFileName}
-                source={editorDocumentMode === 'postprocess' ? activePostprocessDocument?.source ?? null : activeSceneSource}
-                helperText={editorDocumentMode === 'postprocess'
-                    ? 'Generic toolpath scripts referenced from scene manifests with usePostprocess(id).'
-                    : 'scene.glsl defines the surface; scene.ts orchestrates uniforms, slicing, and the postprocess pipeline.'}
-                createLabel={editorDocumentMode === 'postprocess' ? 'New Script' : 'New Scene'}
-                saveLabel={editorDocumentMode === 'postprocess' ? 'Save Script' : 'Save File'}
-                hideLabel="Hide Editor"
-                switchLabel={editorDocumentMode === 'postprocess' ? 'Switch to Scene' : 'Switch to Script'}
-                language={editorDocumentMode === 'postprocess' ? (activePostprocessDocument?.language ?? 'typescript') : sceneEditorLanguage}
-                fileOptions={editorDocumentMode === 'scene'
-                    ? sceneFileNames.map((fileName) => ({ value: fileName, label: fileName }))
-                    : postprocessDocuments.map((document) => ({ value: document.id, label: document.fileName }))}
-                activeFileOption={editorDocumentMode === 'scene' ? activeSceneFileName : activePostprocessScriptId}
-                onSelectFileOption={editorDocumentMode === 'scene' ? selectSceneFile : selectPostprocessScript}
-                addFileLabel={editorDocumentMode === 'scene' ? 'Add File' : null}
-                onAddFile={createSceneFile}
-                onChangeSource={editorDocumentMode === 'postprocess' ? updatePostprocessSource : updateSceneFileSource}
-                onCreate={editorDocumentMode === 'postprocess' ? createAndActivatePostprocessScript : createAndActivateScene}
-                onSave={editorDocumentMode === 'postprocess' ? saveActivePostprocessDocument : saveActiveSceneFile}
-                onRevert={editorDocumentMode === 'postprocess' ? revertActivePostprocessDocument : revertActiveSceneFile}
-                onSwitchDocument={switchEditorDocument}
-                onClose={toggleEditor}
-                onStartResize={startEditorResize}
-                onResizeKeydown={handleEditorResizeKeydown}
-            />
+            <div class="side-panel">
+                {#if layoutMode !== 'wide'}
+                    <div class="side-panel-switch">
+                        <div class="segmented" role="group" aria-label="Side panel content">
+                            <button type="button" aria-pressed={$workspace.dockPane === 'inspector'} onclick={() => workspace.showDockPane('inspector')}>Parameters</button>
+                            <button type="button" aria-pressed={$workspace.dockPane === 'editor'} onclick={() => revealEditor()}>Code</button>
+                        </div>
+                    </div>
+                {/if}
+                {#if layoutMode === 'wide' || $workspace.dockPane === 'inspector'}
+                    <InspectorPanel activeTab={$workspace.activeTab} state={inspectorState} handlers={inspectorHandlers} onSelectTab={selectTab} />
+                {:else}
+                    <DocumentEditorPanel {...documentEditorProps} />
+                {/if}
+            </div>
         {/if}
     </div>
 
     <StatusStrip
+        shaderStatusMode={$status.shaderStatusMode}
+        shaderStatusText={$status.shaderStatusText}
+        shaderStatusDetail={$status.shaderStatusDetail}
         workspaceStatus={$status.workspaceStatus}
         workspaceActionLabel={workspaceFolderActionLabel}
         onWorkspaceAction={connectWorkspaceFolder}
@@ -1698,7 +1664,6 @@
         progressPercent={$status.progressPercent}
         progressPhaseLabel={$status.progressPhaseLabel}
         progressDetail={$status.progressDetail}
-        shaderStatusDetail={$status.shaderStatusDetail}
     />
 
     {#if nameDialog}
@@ -1711,5 +1676,4 @@
             onCancel={() => settleNameDialog(null)}
         />
     {/if}
-
 </div>

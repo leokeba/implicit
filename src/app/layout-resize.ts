@@ -6,16 +6,14 @@ interface WorkspaceLayoutStore extends Readable<WorkspaceState> {
     resetInspectorWidth(): void;
     setInspectorResizing(active: boolean): void;
     setEditorWidth(width: number): void;
-    setEditorHeight(height: number): void;
     resetEditorWidth(): void;
-    resetEditorHeight(): void;
     setEditorResizing(active: boolean): void;
 }
 
 export interface LayoutResizeOptions {
     workspace: WorkspaceLayoutStore;
-    /** True when the editor is docked to the side (resize horizontally) rather than the bottom. */
-    isEditorDockedSide: () => boolean;
+    /** False when the layout stacks the side panel under the viewport (nothing to drag). */
+    canResizeDock: () => boolean;
     /** Live viewport resize while dragging. */
     resizeViewport: () => void;
     /** Final viewport resize after the layout settles. */
@@ -38,7 +36,7 @@ export interface LayoutResizeController {
  * only wires events to handlers.
  */
 export function createLayoutResizeController(options: LayoutResizeOptions): LayoutResizeController {
-    const { workspace, isEditorDockedSide, resizeViewport, resizeViewportAfterLayout } = options;
+    const { workspace, canResizeDock, resizeViewport, resizeViewportAfterLayout } = options;
     let inspectorResizeCleanup: (() => void) | null = null;
     let editorResizeCleanup: (() => void) | null = null;
 
@@ -65,7 +63,7 @@ export function createLayoutResizeController(options: LayoutResizeOptions): Layo
 
     function startInspectorResize(event: PointerEvent): void {
         const state = get(workspace);
-        if (state.inspectorCollapsed || window.innerWidth <= 980) {
+        if (state.inspectorCollapsed || !canResizeDock()) {
             return;
         }
 
@@ -102,27 +100,13 @@ export function createLayoutResizeController(options: LayoutResizeOptions): Layo
         event.preventDefault();
         cleanupEditorResize();
         workspace.setEditorResizing(true);
-        const state = get(workspace);
 
-        let handlePointerMove: ((moveEvent: PointerEvent) => void) | null = null;
-
-        if (isEditorDockedSide()) {
-            const startX = event.clientX;
-            const startWidth = state.editorWidth;
-            handlePointerMove = (moveEvent: PointerEvent) => {
-                const delta = moveEvent.clientX - startX;
-                workspace.setEditorWidth(startWidth + delta);
-                resizeViewport();
-            };
-        } else {
-            const startY = event.clientY;
-            const startHeight = state.editorHeight;
-            handlePointerMove = (moveEvent: PointerEvent) => {
-                const delta = startY - moveEvent.clientY;
-                workspace.setEditorHeight(startHeight + delta);
-                resizeViewport();
-            };
-        }
+        const startX = event.clientX;
+        const startWidth = get(workspace).editorWidth;
+        const handlePointerMove = (moveEvent: PointerEvent) => {
+            workspace.setEditorWidth(startWidth + moveEvent.clientX - startX);
+            resizeViewport();
+        };
 
         const handlePointerUp = () => {
             cleanupEditorResize();
@@ -134,9 +118,7 @@ export function createLayoutResizeController(options: LayoutResizeOptions): Layo
         window.addEventListener('pointercancel', handlePointerUp, { once: true });
 
         editorResizeCleanup = () => {
-            if (handlePointerMove) {
-                window.removeEventListener('pointermove', handlePointerMove);
-            }
+            window.removeEventListener('pointermove', handlePointerMove);
             window.removeEventListener('pointerup', handlePointerUp);
             window.removeEventListener('pointercancel', handlePointerUp);
         };
@@ -172,30 +154,17 @@ export function createLayoutResizeController(options: LayoutResizeOptions): Layo
     }
 
     function handleEditorResizeKeydown(event: KeyboardEvent): void {
-        const dockedSide = isEditorDockedSide();
-        const growKey = dockedSide ? 'ArrowRight' : 'ArrowUp';
-        const shrinkKey = dockedSide ? 'ArrowLeft' : 'ArrowDown';
-        const state = get(workspace);
-
-        if (event.key === growKey || event.key === shrinkKey) {
+        if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
             event.preventDefault();
-            const delta = event.key === growKey ? 16 : -16;
-            if (dockedSide) {
-                workspace.setEditorWidth(state.editorWidth + delta);
-            } else {
-                workspace.setEditorHeight(state.editorHeight + delta);
-            }
+            const delta = event.key === 'ArrowRight' ? 16 : -16;
+            workspace.setEditorWidth(get(workspace).editorWidth + delta);
             resizeViewportAfterLayout();
             return;
         }
 
         if (event.key === 'Home') {
             event.preventDefault();
-            if (dockedSide) {
-                workspace.resetEditorWidth();
-            } else {
-                workspace.resetEditorHeight();
-            }
+            workspace.resetEditorWidth();
             resizeViewportAfterLayout();
         }
     }

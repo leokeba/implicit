@@ -25,7 +25,10 @@ void main() {
     vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), forward));
     vec3 up = cross(forward, right);
     float aspect = uResolution.x / uResolution.y;
-    vec3 rd = normalize(forward * uFocalLength + right * (uv.x * aspect) + up * uv.y);
+    // The focal length frames the shorter side, so portrait viewports keep
+    // the model's full width instead of cropping it.
+    float focal = uFocalLength * min(aspect, 1.0);
+    vec3 rd = normalize(forward * focal + right * (uv.x * aspect) + up * uv.y);
 
     vec3 hitPos = vec3(0.0);
     float t = raymarch(ro, rd, hitPos);
