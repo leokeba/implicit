@@ -2,6 +2,7 @@ import { clamp } from './math';
 import { getSpiralPitchMm, type VaseSlicerSettings } from './config';
 import type { ToolpathPoint, VaseToolpath } from './types';
 import { calculateExtrusionPerMm } from './toolpath';
+import { decimateClosedLoop, offsetOutline, offsetRegion, type Point2 } from './polygon-offset';
 import {
     buildExcludeObjectDefineLine,
     buildOrcaMetadataHeader,
@@ -305,6 +306,12 @@ export function collectBottomLayerRings(
  * Split out from emission so the preview can draw the same loops the printer
  * will run: brim and bottom fill are generated here rather than in the
  * toolpath, and would otherwise exist only as text in the exported file.
+ *
+ * Each ring is grown from the one inside it by a line width rather than from
+ * the outline by its full distance; see polygon-offset.ts for why that is
+ * both exact and cheap. A ring can come back as several loops - an inlet in
+ * the first layer pinching shut leaves its chamber as a hole - and every
+ * loop of a ring is printed.
  */
 export function buildBrimLoopSet(toolpath: VaseToolpath, settings: VaseSlicerSettings): SupportLoop2D[] {
     const lineWidth = Math.max(0.01, settings.firstLayerLineWidth);
@@ -319,19 +326,27 @@ export function buildBrimLoopSet(toolpath: VaseToolpath, settings: VaseSlicerSet
         return [];
     }
 
-    const loops: SupportLoop2D[] = [];
-    for (let loopIndex = brimLoops; loopIndex >= 1; loopIndex--) {
-        const offset = lineWidth + brimGap + (loopIndex - 1) * lineWidth;
-        const loop = buildBrimLoop(firstLayer, offset);
-        if (loop.length >= 3) {
-            loops.push(loop);
-        }
+    const options = { minArea: lineWidth * lineWidth, maxStep: lineWidth };
+    const rings: Point2[][][] = [];
+    let ring = offsetOutline(bedOutline(firstLayer), lineWidth + brimGap, options);
+    for (let loopIndex = 0; loopIndex < brimLoops && ring.length > 0; loopIndex++) {
+        rings.push(ring);
+        ring = offsetRegion(ring, lineWidth, options);
     }
 
-    return loops;
+    return rings.reverse().flat();
 }
 
-/** Concentric inward fill loops for one solid bottom layer, outermost first. */
+/**
+ * Concentric inward fill loops for one solid bottom layer, outermost first.
+ *
+ * The first ring sits 0.9 line widths inside the perimeter for a slight
+ * overlap, and each further ring shrinks the last by a line width, so the
+ * spacing between neighbouring rings is exact wherever the outline goes. A
+ * ring that pinches through a narrow waist comes back as two islands, both
+ * printed; the fill ends when nothing larger than a couple of bead
+ * cross-sections is left.
+ */
 export function buildBottomFillLoopSet(
     ring: ToolpathPoint[],
     layerIndex: number,
@@ -342,38 +357,25 @@ export function buildBottomFillLoopSet(
     }
 
     const fillLineWidth = layerIndex === 0 ? settings.firstLayerLineWidth : settings.lineWidth;
-    const ringArea = signedArea2D(ring.map((point) => ({ x: point.x, y: point.z })));
-    const ringSign = Math.sign(ringArea);
-    if (ringSign === 0) {
-        return [];
-    }
+    const options = { minArea: fillLineWidth * fillLineWidth * 2, maxStep: fillLineWidth };
+    // Interior fill does not need surface resolution; coarse segments keep
+    // the G-code size proportional to fill area.
+    const fillSegmentMm = Math.max(0.8, settings.targetSegmentMm);
+    const coarsen = (loops: Point2[][]) => loops.map((loop) => decimateClosedLoop(loop, fillSegmentMm));
 
     const loops: SupportLoop2D[] = [];
-    for (let loopIndex = 0; loopIndex < 512; loopIndex++) {
-        // First ring sits ~0.9 line widths inside the perimeter for a
-        // slight overlap, then rings advance by one line width.
-        const inset = fillLineWidth * (0.9 + loopIndex);
-        const loop = buildBrimLoop(ring, -inset);
-        if (loop.length < 3) {
-            break;
-        }
-        const loopArea = signedArea2D(loop);
-        // Stop when the offset collapses: sign flip or sub-bead area.
-        if (Math.sign(loopArea) !== ringSign || Math.abs(loopArea) < fillLineWidth * fillLineWidth * 2) {
-            break;
-        }
-
-        // Interior fill does not need surface resolution; coarse segments
-        // keep the G-code size proportional to fill area.
-        const fillLoop = decimateLoop2D(loop, Math.max(0.8, settings.targetSegmentMm));
-        if (fillLoop.length < 3) {
-            break;
-        }
-
-        loops.push(fillLoop);
+    let current = coarsen(offsetOutline(bedOutline(ring), -fillLineWidth * 0.9, options));
+    for (let step = 0; step < 512 && current.length > 0; step++) {
+        loops.push(...current);
+        current = coarsen(offsetRegion(current, -fillLineWidth, options));
     }
 
     return loops;
+}
+
+/** A toolpath ring as a closed outline in bed coordinates (X, Y = the toolpath's X, Z). */
+function bedOutline(points: ToolpathPoint[]): Point2[] {
+    return points.map((point) => ({ x: point.x, y: point.z }));
 }
 
 function percentToPwm(percent: number): number {
@@ -430,157 +432,4 @@ function appendBrimGcode(
     }
 
     return true;
-}
-
-function buildBrimLoop(
-    source: ToolpathPoint[],
-    offsetMm: number
-): Array<{ x: number; y: number }> {
-    // Positive offsets grow outward (brim), negative offsets shrink inward
-    // (bottom fill).
-    if (Math.abs(offsetMm) <= 1e-6) {
-        return source.map((point) => ({ x: point.x, y: point.z }));
-    }
-
-    const contour = dedupeClosedPath2D(source.map((point) => ({ x: point.x, y: point.z })));
-    if (contour.length < 3) {
-        return contour;
-    }
-
-    const orientation = signedArea2D(contour);
-    if (Math.abs(orientation) < 1e-9) {
-        return contour;
-    }
-
-    const orientationSign = orientation >= 0 ? 1 : -1;
-    const edges = buildOffsetEdges2D(contour, offsetMm, orientationSign);
-    if (edges.length < 3) {
-        return contour;
-    }
-
-    const miterLimit = Math.max(Math.abs(offsetMm) * 6.0, 0.5);
-    const loop: Array<{ x: number; y: number }> = [];
-
-    for (let index = 0; index < edges.length; index++) {
-        const prevEdge = edges[(index - 1 + edges.length) % edges.length];
-        const nextEdge = edges[index];
-        const vertex = contour[index];
-
-        const join = intersectLines2D(prevEdge.a, prevEdge.b, nextEdge.a, nextEdge.b);
-        if (join && distance2D(join, vertex) <= miterLimit) {
-            pushUnique2D(loop, join);
-            continue;
-        }
-
-        pushUnique2D(loop, prevEdge.b);
-        pushUnique2D(loop, nextEdge.a);
-    }
-
-    return dedupeClosedPath2D(loop);
-}
-
-function buildOffsetEdges2D(
-    contour: Array<{ x: number; y: number }>,
-    offsetMm: number,
-    orientationSign: number
-): Array<{ a: { x: number; y: number }; b: { x: number; y: number } }> {
-    const edges: Array<{ a: { x: number; y: number }; b: { x: number; y: number } }> = [];
-
-    for (let i = 0; i < contour.length; i++) {
-        const a = contour[i];
-        const b = contour[(i + 1) % contour.length];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const length = Math.hypot(dx, dy);
-        if (length <= 1e-8) {
-            continue;
-        }
-
-        const tx = dx / length;
-        const ty = dy / length;
-        const nx = orientationSign > 0 ? ty : -ty;
-        const ny = orientationSign > 0 ? -tx : tx;
-        edges.push({
-            a: { x: a.x + nx * offsetMm, y: a.y + ny * offsetMm },
-            b: { x: b.x + nx * offsetMm, y: b.y + ny * offsetMm },
-        });
-    }
-
-    return edges;
-}
-
-function signedArea2D(points: Array<{ x: number; y: number }>): number {
-    let area = 0;
-    for (let i = 0; i < points.length; i++) {
-        const a = points[i];
-        const b = points[(i + 1) % points.length];
-        area += (a.x * b.y) - (b.x * a.y);
-    }
-    return area * 0.5;
-}
-
-/** Keeps every vertex at least minSegment apart along the loop. */
-function decimateLoop2D(points: Array<{ x: number; y: number }>, minSegment: number): Array<{ x: number; y: number }> {
-    if (points.length < 4) {
-        return points;
-    }
-
-    const decimated: Array<{ x: number; y: number }> = [points[0]];
-    let accumulated = 0;
-    for (let index = 1; index < points.length; index++) {
-        accumulated += distance2D(points[index - 1], points[index]);
-        if (accumulated >= minSegment) {
-            decimated.push(points[index]);
-            accumulated = 0;
-        }
-    }
-    return decimated;
-}
-
-function dedupeClosedPath2D(points: Array<{ x: number; y: number }>): Array<{ x: number; y: number }> {
-    const deduped: Array<{ x: number; y: number }> = [];
-    for (const point of points) {
-        pushUnique2D(deduped, point);
-    }
-
-    if (deduped.length > 1 && distance2D(deduped[0], deduped[deduped.length - 1]) <= 1e-6) {
-        deduped.pop();
-    }
-
-    return deduped;
-}
-
-function pushUnique2D(points: Array<{ x: number; y: number }>, next: { x: number; y: number }): void {
-    const previous = points[points.length - 1];
-    if (!previous || distance2D(previous, next) > 1e-6) {
-        points.push(next);
-    }
-}
-
-function distance2D(a: { x: number; y: number }, b: { x: number; y: number }): number {
-    return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function intersectLines2D(
-    a0: { x: number; y: number },
-    a1: { x: number; y: number },
-    b0: { x: number; y: number },
-    b1: { x: number; y: number }
-): { x: number; y: number } | null {
-    const arx = a1.x - a0.x;
-    const ary = a1.y - a0.y;
-    const brx = b1.x - b0.x;
-    const bry = b1.y - b0.y;
-    const det = (arx * bry) - (ary * brx);
-    if (Math.abs(det) <= 1e-9) {
-        return null;
-    }
-
-    const qpx = b0.x - a0.x;
-    const qpy = b0.y - a0.y;
-    const t = ((qpx * bry) - (qpy * brx)) / det;
-    return {
-        x: a0.x + arx * t,
-        y: a0.y + ary * t,
-    };
 }
